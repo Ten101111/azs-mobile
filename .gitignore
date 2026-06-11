@@ -1,0 +1,16 @@
+.DS_Store
+
+# Source datasets with operational/contact data
+data.csv
+cls_2026_05_AZS.xlsx
+azs-mobile/public/stations.json
+
+# Generated and local artifacts
+azs-mobile/dist/
+azs-mobile/qa/
+azs-mobile/node_modules/
+
+# Logs and local env
+*.log
+.env
+.env.*

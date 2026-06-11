@@ -1,0 +1,787 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  AlertTriangle,
+  BarChart3,
+  Building2,
+  ChevronDown,
+  CircleDot,
+  Coffee,
+  Filter,
+  Heart,
+  List,
+  LocateFixed,
+  Map as MapIcon,
+  MapPin,
+  Navigation,
+  Phone,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  Store,
+  Toilet,
+  X,
+} from "lucide-react";
+import "./styles.css";
+
+const statusColors = {
+  "Действующая": "#14945f",
+  CODO: "#14945f",
+  Консервация: "#d09416",
+  Реконструкция: "#7b61ff",
+  Строительство: "#3077d8",
+  Оптимизация: "#d65f32",
+  Продана: "#8f99a8",
+};
+
+const modeLabels = {
+  list: "Список",
+  map: "Карта",
+  analytics: "Аналитика",
+};
+
+const defaultFilters = {
+  npo: "",
+  subject: "",
+  status: "",
+  type: "",
+  location: "",
+  service: "",
+  quality: "",
+};
+
+function uniqueOptions(stations, key) {
+  return [...new Set(stations.map((item) => item[key]).filter(Boolean))].sort((a, b) =>
+    String(a).localeCompare(String(b), "ru"),
+  );
+}
+
+function asInt(value) {
+  return new Intl.NumberFormat("ru-RU").format(value);
+}
+
+function shortStatus(status) {
+  if (!status) return "Без статуса";
+  if (status.length > 24) return status.slice(0, 22) + "...";
+  return status;
+}
+
+function hasValidPoint(station) {
+  return station.lat && station.lon && station.lat !== 0 && station.lon !== 0;
+}
+
+function isValidPhone(phone) {
+  const text = String(phone || "").trim();
+  const digits = text.replace(/\D+/g, "");
+  return digits.length >= 10 && !/отсутств|нет|nan/i.test(text);
+}
+
+function bestPhone(station) {
+  return [station.managerPhone, station.territoryManagerPhone, station.regionalManagerPhone].find(isValidPhone) || "";
+}
+
+function pct(value, total) {
+  if (!total) return 0;
+  return Math.round((value / total) * 100);
+}
+
+function groupTop(stations, getter, limit = 6) {
+  const counts = new Map();
+  stations.forEach((station) => {
+    const key = getter(station) || "Не заполнено";
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  return [...counts.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name, "ru"))
+    .slice(0, limit);
+}
+
+function App() {
+  const [payload, setPayload] = useState({ meta: null, stations: [] });
+  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState(defaultFilters);
+  const [mode, setMode] = useState("list");
+  const [selectedId, setSelectedId] = useState("");
+  const [favorites, setFavorites] = useState(() => JSON.parse(localStorage.getItem("azs:favorites") || "[]"));
+  const [showFilters, setShowFilters] = useState(false);
+  const [detailSheet, setDetailSheet] = useState("half");
+
+  useEffect(() => {
+    fetch("/stations.json")
+      .then((response) => (response.ok ? response : fetch("/stations.sample.json")))
+      .then((response) => response.json())
+      .then((data) => {
+        setPayload(data);
+        setSelectedId(data.stations[0]?.id || "");
+      });
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("azs:favorites", JSON.stringify(favorites));
+  }, [favorites]);
+
+  const stations = payload.stations;
+  const options = useMemo(
+    () => ({
+      npo: uniqueOptions(stations, "npo"),
+      subject: uniqueOptions(stations, "subject"),
+      status: uniqueOptions(stations, "status"),
+      type: uniqueOptions(stations, "type"),
+      location: uniqueOptions(stations, "location"),
+    }),
+    [stations],
+  );
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return stations.filter((station) => {
+      if (needle && !station.search.includes(needle)) return false;
+      if (filters.npo && station.npo !== filters.npo) return false;
+      if (filters.subject && station.subject !== filters.subject) return false;
+      if (filters.status && station.status !== filters.status) return false;
+      if (filters.type && station.type !== filters.type) return false;
+      if (filters.location && station.location !== filters.location) return false;
+      if (filters.service === "shop" && !station.flags.hasShop) return false;
+      if (filters.service === "cafe" && !station.flags.hasCafe) return false;
+      if (filters.service === "toilet" && !station.flags.hasToilet) return false;
+      if (filters.service === "landmark" && !station.flags.landmark) return false;
+      if (filters.quality === "issues" && station.qualityIssues.length === 0) return false;
+      if (filters.quality === "noCoords" && hasValidPoint(station)) return false;
+      return true;
+    });
+  }, [stations, query, filters]);
+
+  const selected = filtered.find((station) => station.id === selectedId) || filtered[0] || stations[0];
+
+  const metrics = useMemo(() => {
+    const active = stations.filter((station) => station.flags.active).length;
+    const noCoords = stations.filter((station) => !hasValidPoint(station)).length;
+    const cafe = stations.filter((station) => station.flags.hasCafe).length;
+    return { active, noCoords, cafe };
+  }, [stations]);
+
+  function setFilter(key, value) {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  function toggleFavorite(id) {
+    setFavorites((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  }
+
+  function selectStation(id) {
+    setSelectedId(id);
+    setDetailSheet("half");
+  }
+
+  function changeMode(nextMode) {
+    setMode(nextMode);
+    if (nextMode === "map") setDetailSheet("peek");
+    if (nextMode === "list") setDetailSheet("half");
+  }
+
+  return (
+    <main className={`app-shell ${mode}-mode`}>
+      <section className="workspace">
+        <header className="topbar">
+          <div>
+            <h1>АЗС</h1>
+            <p>{payload.meta ? `${payload.meta.source} · ${asInt(payload.meta.count)} объектов` : "Загрузка данных"}</p>
+          </div>
+          <button className="icon-button" type="button" onClick={() => setShowFilters(true)} aria-label="Фильтры">
+            <SlidersHorizontal size={20} />
+          </button>
+        </header>
+
+        <div className="search-row">
+          <Search size={18} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="КССС, номер, адрес, регион"
+          />
+          {query && (
+            <button className="clear-button" onClick={() => setQuery("")} aria-label="Очистить поиск">
+              <X size={16} />
+            </button>
+          )}
+        </div>
+
+        <div className="mode-row">
+          <button className={mode === "list" ? "active" : ""} onClick={() => changeMode("list")} type="button">
+            <List size={16} /> Список
+          </button>
+          <button className={mode === "map" ? "active" : ""} onClick={() => changeMode("map")} type="button">
+            <MapIcon size={16} /> Карта
+          </button>
+          <button className={mode === "analytics" ? "active" : ""} onClick={() => changeMode("analytics")} type="button">
+            <BarChart3 size={16} /> Аналитика
+          </button>
+        </div>
+
+        <MetricStrip count={filtered.length} metrics={metrics} />
+
+        <FilterRail filters={filters} options={options} setFilter={setFilter} />
+
+        {mode === "analytics" ? (
+          <AnalyticsDashboard
+            stations={filtered}
+            totalStations={stations}
+            onFilter={setFilter}
+            onOpenList={() => changeMode("list")}
+          />
+        ) : (
+          <div className="content-grid">
+            <section className={`list-pane ${mode === "map" ? "mobile-hidden" : ""}`}>
+              <div className="pane-title">
+                <span>{asInt(filtered.length)} найдено</span>
+                <button type="button" onClick={() => setFilters(defaultFilters)}>Сбросить</button>
+              </div>
+              <StationList
+                stations={filtered}
+                selectedId={selected?.id}
+                favorites={favorites}
+                onSelect={selectStation}
+                onFavorite={toggleFavorite}
+              />
+            </section>
+
+            <section className={`map-pane ${mode === "list" ? "mobile-hidden" : ""}`}>
+              <StationMap stations={filtered} selected={selected} onSelect={selectStation} />
+            </section>
+          </div>
+        )}
+      </section>
+
+      {selected && (
+        <StationDetail
+          station={selected}
+          favorite={favorites.includes(selected.id)}
+          onFavorite={() => toggleFavorite(selected.id)}
+          sheetState={detailSheet}
+          onSheetState={setDetailSheet}
+        />
+      )}
+
+      {showFilters && (
+        <FilterSheet
+          filters={filters}
+          options={options}
+          setFilter={setFilter}
+          onClose={() => setShowFilters(false)}
+          onReset={() => setFilters(defaultFilters)}
+        />
+      )}
+    </main>
+  );
+}
+
+function MetricStrip({ count, metrics }) {
+  return (
+    <div className="metrics">
+      <Metric label="Найдено" value={count} />
+      <Metric label="Действующих" value={metrics.active} tone="green" />
+      <Metric label="Кафе" value={metrics.cafe} tone="red" />
+      <Metric label="Без координат" value={metrics.noCoords} tone="amber" />
+    </div>
+  );
+}
+
+function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
+  const total = stations.length;
+  const active = stations.filter((station) => station.flags.active).length;
+  const invalidCoords = stations.filter((station) => !hasValidPoint(station)).length;
+  const quality = stations.filter((station) => station.qualityIssues.length > 0).length;
+  const shop = stations.filter((station) => station.flags.hasShop).length;
+  const cafe = stations.filter((station) => station.flags.hasCafe).length;
+  const toilet = stations.filter((station) => station.flags.hasToilet).length;
+  const landmark = stations.filter((station) => station.flags.landmark).length;
+  const agency = stations.filter((station) => station.flags.agency).length;
+
+  const statusTop = groupTop(stations, (station) => station.status, 7);
+  const npoTop = groupTop(stations, (station) => station.npo, 5);
+  const formatTop = groupTop(stations, (station) => station.formatLevel2 || station.format, 7);
+  const regionTop = groupTop(stations, (station) => station.subject, 8);
+  const locationTop = groupTop(stations, (station) => station.location, 4);
+
+  return (
+    <section className="analytics-pane">
+      <div className="analytics-head">
+        <div>
+          <h2>Аналитика сети</h2>
+          <p>
+            Показатели пересчитываются по текущей выборке: {asInt(total)} из {asInt(totalStations.length)} объектов.
+          </p>
+        </div>
+        <button
+          className="quality-button"
+          type="button"
+          onClick={() => {
+            onFilter("quality", "issues");
+            onOpenList();
+          }}
+        >
+          <AlertTriangle size={16} /> Объекты с замечаниями
+        </button>
+      </div>
+
+      <div className="analytics-kpis">
+        <Kpi title="Действующие" value={active} share={pct(active, total)} tone="green" />
+        <Kpi title="С магазином" value={shop} share={pct(shop, total)} />
+        <Kpi title="С кафе" value={cafe} share={pct(cafe, total)} tone="red" />
+        <Kpi title="С санузлом" value={toilet} share={pct(toilet, total)} />
+        <Kpi title="Без координат" value={invalidCoords} share={pct(invalidCoords, total)} tone="amber" />
+        <Kpi title="Замечания" value={quality} share={pct(quality, total)} tone="amber" />
+        <Kpi title="Знаковые" value={landmark} share={pct(landmark, total)} />
+        <Kpi title="Агентская схема" value={agency} share={pct(agency, total)} />
+      </div>
+
+      <div className="analytics-grid">
+        <ChartCard title="Статусы" items={statusTop} total={total} />
+        <ChartCard title="НПО" items={npoTop} total={total} />
+        <ChartCard title="Форматы" items={formatTop} total={total} />
+        <ChartCard title="Регионы" items={regionTop} total={total} />
+        <ChartCard title="Локация" items={locationTop} total={total} compact />
+        <div className="analytics-card quality-list-card">
+          <h3>Качество данных</h3>
+          <button
+            type="button"
+            onClick={() => {
+              onFilter("quality", "noCoords");
+              onOpenList();
+            }}
+          >
+            <MapPin size={16} />
+            <span>Без координат</span>
+            <strong>{asInt(invalidCoords)}</strong>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onFilter("quality", "issues");
+              onOpenList();
+            }}
+          >
+            <AlertTriangle size={16} />
+            <span>Есть замечания</span>
+            <strong>{asInt(quality)}</strong>
+          </button>
+          <p>Эти фильтры можно использовать как рабочий список для чистки данных перед подключением полноценной карты.</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Kpi({ title, value, share, tone = "" }) {
+  return (
+    <div className={`analytics-kpi ${tone}`}>
+      <span>{title}</span>
+      <strong>{asInt(value)}</strong>
+      <small>{share}% выборки</small>
+    </div>
+  );
+}
+
+function ChartCard({ title, items, total, compact = false }) {
+  const max = Math.max(...items.map((item) => item.value), 1);
+  return (
+    <div className={`analytics-card ${compact ? "compact" : ""}`}>
+      <h3>{title}</h3>
+      <div className="bar-list">
+        {items.map((item) => (
+          <div className="bar-row" key={item.name}>
+            <div className="bar-label">
+              <span>{item.name}</span>
+              <strong>{asInt(item.value)}</strong>
+            </div>
+            <div className="bar-track">
+              <i style={{ width: `${Math.max(4, (item.value / max) * 100)}%` }} />
+            </div>
+            <small>{pct(item.value, total)}%</small>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value, tone = "" }) {
+  return (
+    <div className={`metric ${tone}`}>
+      <span>{label}</span>
+      <strong>{asInt(value)}</strong>
+    </div>
+  );
+}
+
+function FilterRail({ filters, options, setFilter }) {
+  return (
+    <div className="filter-rail">
+      <SelectChip label="НПО" value={filters.npo} options={options.npo} onChange={(value) => setFilter("npo", value)} />
+      <SelectChip label="Регион" value={filters.subject} options={options.subject} onChange={(value) => setFilter("subject", value)} />
+      <SelectChip label="Статус" value={filters.status} options={options.status} onChange={(value) => setFilter("status", value)} />
+      <SelectChip label="Тип" value={filters.type} options={options.type} onChange={(value) => setFilter("type", value)} />
+      <SelectChip label="Сервис" value={filters.service} options={[
+        ["shop", "Магазин"],
+        ["cafe", "Кафе"],
+        ["toilet", "Санузел"],
+        ["landmark", "Знаковый"],
+      ]} onChange={(value) => setFilter("service", value)} />
+    </div>
+  );
+}
+
+function SelectChip({ label, value, options, onChange }) {
+  const normalized = options.map((option) => (Array.isArray(option) ? option : [option, option]));
+  return (
+    <label className={`select-chip ${value ? "filled" : ""}`}>
+      <span>{value ? normalized.find(([id]) => id === value)?.[1] || value : label}</span>
+      <ChevronDown size={14} />
+      <select value={value} onChange={(event) => onChange(event.target.value)} aria-label={label}>
+        <option value="">{label}</option>
+        {normalized.map(([id, title]) => (
+          <option value={id} key={id}>
+            {title}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function StationList({ stations, selectedId, favorites, onSelect, onFavorite }) {
+  if (!stations.length) {
+    return (
+      <div className="empty">
+        <Filter size={24} />
+        <strong>Нет объектов</strong>
+        <span>Попробуйте изменить поиск или фильтры.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="station-list">
+      {stations.slice(0, 350).map((station) => (
+        <button
+          className={`station-row ${selectedId === station.id ? "selected" : ""}`}
+          key={station.id}
+          type="button"
+          onClick={() => onSelect(station.id)}
+        >
+          <span className="status-dot" style={{ background: statusColors[station.status] || "#8f99a8" }} />
+          <span className="row-main">
+            <span className="row-title">
+              {station.name || `АЗС № ${station.stationNumber}`}
+              <small>{station.ksss}</small>
+            </span>
+            <span className="row-address">{station.address || station.subject}</span>
+            <span className="badges">
+              <Badge>{shortStatus(station.status)}</Badge>
+              {station.flags.hasShop && <Badge icon={<Store size={12} />}>Магазин</Badge>}
+              {station.flags.hasCafe && <Badge icon={<Coffee size={12} />}>Кафе</Badge>}
+              {station.flags.hasToilet && <Badge icon={<Toilet size={12} />}>Санузел</Badge>}
+              {station.qualityIssues.length > 0 && <Badge tone="warn" icon={<AlertTriangle size={12} />}>{station.qualityIssues.length}</Badge>}
+            </span>
+          </span>
+          <span
+            className={`favorite-dot ${favorites.includes(station.id) ? "on" : ""}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onFavorite(station.id);
+            }}
+          >
+            <Heart size={15} fill="currentColor" />
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Badge({ children, icon, tone = "" }) {
+  return (
+    <span className={`badge ${tone}`}>
+      {icon}
+      {children}
+    </span>
+  );
+}
+
+function StationMap({ stations, selected, onSelect }) {
+  const points = stations.filter(hasValidPoint);
+  const latValues = points.map((station) => station.lat);
+  const lonValues = points.map((station) => station.lon);
+  const minLat = Math.min(...latValues, 41);
+  const maxLat = Math.max(...latValues, 70);
+  const minLon = Math.min(...lonValues, 20);
+  const maxLon = Math.max(...lonValues, 96);
+
+  function project(station) {
+    const x = ((station.lon - minLon) / Math.max(maxLon - minLon, 1)) * 88 + 6;
+    const y = 94 - ((station.lat - minLat) / Math.max(maxLat - minLat, 1)) * 82;
+    return { x, y };
+  }
+
+  return (
+    <div className="map-surface">
+      <div className="map-header">
+        <div>
+          <strong>{asInt(points.length)} точек на карте</strong>
+          <span>{asInt(stations.length - points.length)} без координат</span>
+        </div>
+        <LocateFixed size={20} />
+      </div>
+      <div className="map-canvas">
+        <div className="map-grid" />
+        {points.slice(0, 900).map((station) => {
+          const pos = project(station);
+          const selectedPoint = selected?.id === station.id;
+          return (
+            <button
+              key={station.id}
+              className={`map-point ${selectedPoint ? "selected" : ""}`}
+              style={{
+                left: `${pos.x}%`,
+                top: `${pos.y}%`,
+                background: statusColors[station.status] || "#8f99a8",
+              }}
+              type="button"
+              title={`${station.name} · ${station.subject}`}
+              onClick={() => onSelect(station.id)}
+            />
+          );
+        })}
+        {selected && hasValidPoint(selected) && (
+          <div className="map-callout" style={{ left: `${project(selected).x}%`, top: `${project(selected).y}%` }}>
+            <strong>{selected.name}</strong>
+            <span>{selected.subject}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState }) {
+  const routeUrl = hasValidPoint(station)
+    ? `https://yandex.ru/maps/?rtext=~${station.lat},${station.lon}&rtt=auto`
+    : "";
+  const phone = bestPhone(station);
+  const [touchStart, setTouchStart] = useState(null);
+
+  function cycleSheet() {
+    onSheetState(sheetState === "full" ? "half" : "full");
+  }
+
+  function handleTouchEnd(event) {
+    if (touchStart == null) return;
+    const endY = event.changedTouches[0]?.clientY ?? touchStart;
+    const delta = endY - touchStart;
+    setTouchStart(null);
+    if (Math.abs(delta) < 42) return;
+    if (delta > 0 && event.currentTarget.scrollTop > 4) return;
+    if (delta < 0) {
+      onSheetState(sheetState === "closed" || sheetState === "peek" ? "half" : "full");
+    } else {
+      onSheetState("closed");
+    }
+  }
+
+  return (
+    <aside
+      className={`detail sheet-${sheetState}`}
+      onTouchStart={(event) => setTouchStart(event.touches[0]?.clientY ?? null)}
+      onTouchEnd={handleTouchEnd}
+    >
+      <button className="detail-grabber" type="button" onClick={cycleSheet} aria-label="Развернуть карточку" />
+      <div className="detail-head">
+        <div>
+          <span className="eyeless">{station.ksss}</span>
+          <h2>{station.name}</h2>
+          <p>{station.address || station.subject}</p>
+        </div>
+        <button className={`icon-button favorite ${favorite ? "on" : ""}`} type="button" onClick={onFavorite} aria-label="Избранное">
+          <Heart size={19} fill="currentColor" />
+        </button>
+      </div>
+
+      <div className="action-row">
+        <a className={`action-button ${phone ? "" : "disabled"}`} href={phone ? `tel:${phone}` : undefined}>
+          <Phone size={17} /> Позвонить
+        </a>
+        <a className={`action-button primary ${routeUrl ? "" : "disabled"}`} href={routeUrl || undefined} target="_blank" rel="noreferrer">
+          <Navigation size={17} /> Маршрут
+        </a>
+      </div>
+
+      <DetailGroup title="Основное" defaultOpen>
+        <div className="fact-grid">
+          <Fact label="КССС" value={station.ksss} />
+          <Fact label="Номер" value={station.stationNumber} />
+          <Fact label="Статус" value={station.status} />
+          <Fact label="Тип" value={station.type} />
+          <Fact label="НПО" value={station.npo} />
+          <Fact label="Регион" value={station.subject} />
+          <Fact label="Город" value={station.city} />
+          <Fact label="Координаты" value={hasValidPoint(station) ? `${station.lat}, ${station.lon}` : ""} />
+        </div>
+      </DetailGroup>
+
+      <DetailGroup title="Классификация">
+        <div className="fact-grid">
+          <Fact label="Формат" value={station.format} />
+          <Fact label="Формат L2" value={station.formatLevel2} />
+          <Fact label="Minale" value={station.formatMinale} />
+          <Fact label="Локация" value={station.location} />
+          <Fact label="Окружение" value={station.environment} wide />
+        </div>
+        <div className="flag-line">
+          {station.flags.active && <Badge>Действующая</Badge>}
+          {station.flags.agency && <Badge>Агентская схема</Badge>}
+          {station.flags.likard && <Badge>Ликард</Badge>}
+          {station.flags.teboil && <Badge>Тебойл</Badge>}
+          {station.flags.md && <Badge>MD</Badge>}
+        </div>
+      </DetailGroup>
+
+      <DetailGroup title="Сервисы" defaultOpen>
+        <div className="service-icons">
+          <Service icon={<Store size={17} />} title="Магазин" active={station.flags.hasShop} note={station.shop} />
+          <Service icon={<Coffee size={17} />} title="Кафе" active={station.flags.hasCafe} note={station.lukCafeL2} />
+          <Service icon={<Toilet size={17} />} title="Санузел" active={station.flags.hasToilet} note={station.toilet} />
+          <Service icon={<ShieldCheck size={17} />} title="Знаковый" active={station.flags.landmark} note={station.flags.m11 ? "М-11" : station.flags.m12 ? "М-12" : ""} />
+        </div>
+        <div className="fact-grid section-gap">
+          <Fact label="Кластер" value={station.serviceCluster} wide />
+          <Fact label="LukCafe L1" value={station.lukCafeL1} />
+          <Fact label="LukCafe L2" value={station.lukCafeL2} />
+        </div>
+      </DetailGroup>
+
+      <DetailGroup title="Ответственные" defaultOpen>
+        <Contact title="РУ" name={station.regionalManager} phone={station.regionalManagerPhone} />
+        <Contact title="ТМ" name={station.territoryManager} phone={station.territoryManagerPhone} />
+        <Contact title="Менеджер" name={station.manager} phone={station.managerPhone} />
+        <Contact title="Старший оператор" name={station.seniorOperator} phone="" />
+      </DetailGroup>
+
+      <DetailGroup title="Инфраструктура">
+        <div className="fact-grid">
+          <Fact label="ТРК" value={station.trkCount} />
+          <Fact label="Посты" value={station.postsCount} />
+          <Fact label="Торгзал, м2" value={station.shopArea} />
+          <Fact label="Операторная, м2" value={station.operatorArea} />
+          <Fact label="Оплата" value={station.paymentType} wide />
+        </div>
+      </DetailGroup>
+
+      <DetailGroup title="Трасса и история">
+        <div className="fact-grid">
+          <Fact label="Фед. трасса" value={station.roadFederal} />
+          <Fact label="Номер трассы" value={station.roadNumber} />
+          <Fact label="Наименование" value={station.roadName} wide />
+          <Fact label="Дата изменения" value={station.dateChanged} wide />
+          <Fact label="Комментарий" value={station.comments} wide />
+        </div>
+      </DetailGroup>
+
+      {station.qualityIssues.length > 0 && (
+        <DetailGroup title="Качество данных" warning defaultOpen>
+          {station.qualityIssues.map((issue) => (
+            <span key={issue}>{issue}</span>
+          ))}
+        </DetailGroup>
+      )}
+    </aside>
+  );
+}
+
+function DetailGroup({ title, children, defaultOpen = false, warning = false }) {
+  return (
+    <details className={`detail-section detail-group ${warning ? "warning" : ""}`} open={defaultOpen}>
+      <summary>
+        <h3>{warning && <AlertTriangle size={16} />} {title}</h3>
+        <ChevronDown size={16} />
+      </summary>
+      {children}
+    </details>
+  );
+}
+
+function Fact({ label, value, wide = false }) {
+  return (
+    <div className={`fact ${wide ? "wide" : ""}`}>
+      <span>{label}</span>
+      <strong>{value || "—"}</strong>
+    </div>
+  );
+}
+
+function Service({ icon, title, active, note }) {
+  return (
+    <div className={`service ${active ? "active" : ""}`}>
+      {icon}
+      <strong>{title}</strong>
+      <span>{note || (active ? "Есть" : "Нет")}</span>
+    </div>
+  );
+}
+
+function Contact({ title, name, phone }) {
+  return (
+    <div className="contact">
+      <CircleDot size={15} />
+      <div>
+        <span>{title}</span>
+        <strong>{name || "—"}</strong>
+      </div>
+      {phone && <a href={`tel:${phone}`}>{phone}</a>}
+    </div>
+  );
+}
+
+function FilterSheet({ filters, options, setFilter, onClose, onReset }) {
+  const [touchStart, setTouchStart] = useState(null);
+
+  function handleTouchEnd(event) {
+    if (touchStart == null) return;
+    const endY = event.changedTouches[0]?.clientY ?? touchStart;
+    setTouchStart(null);
+    if (endY - touchStart > 58) onClose();
+  }
+
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div
+        className="filter-sheet"
+        onClick={(event) => event.stopPropagation()}
+        onTouchStart={(event) => setTouchStart(event.touches[0]?.clientY ?? null)}
+        onTouchEnd={handleTouchEnd}
+      >
+        <button className="sheet-grabber" type="button" onClick={onClose} aria-label="Закрыть фильтры" />
+        <div className="sheet-title">
+          <strong>Фильтры</strong>
+          <button className="icon-button" onClick={onClose} type="button" aria-label="Закрыть">
+            <X size={19} />
+          </button>
+        </div>
+        <FilterRail filters={filters} options={options} setFilter={setFilter} />
+        <SelectChip label="Качество" value={filters.quality} options={[
+          ["issues", "Есть замечания"],
+          ["noCoords", "Без координат"],
+        ]} onChange={(value) => setFilter("quality", value)} />
+        <button className="reset-button" onClick={onReset} type="button">Сбросить фильтры</button>
+      </div>
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<App />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
