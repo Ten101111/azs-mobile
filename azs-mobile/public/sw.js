@@ -1,5 +1,6 @@
-const CACHE_NAME = "azs-mobile-v1";
-const CORE_ASSETS = ["/", "/stations.json", "/manifest.webmanifest", "/icon.svg", "/icon-180.png", "/icon-192.png", "/icon-512.png"];
+const CACHE_NAME = "azs-mobile-v2";
+const CORE_ASSETS = ["/", "/manifest.webmanifest", "/icon.svg", "/icon-180.png", "/icon-192.png", "/icon-512.png"];
+const DATA_ASSETS = ["/stations.json", "/stations.sample.json"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -18,13 +19,36 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+
+  const requestUrl = new URL(event.request.url);
+  if (requestUrl.origin !== self.location.origin) return;
+
+  if (DATA_ASSETS.includes(requestUrl.pathname)) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          return response;
+        })
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/stations.sample.json"))),
+    );
+    return;
+  }
+
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
+    caches.match(event.request).then((cached) => {
+      const networkFetch = fetch(event.request).then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return response;
-      })
-      .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/"))),
+      });
+
+      if (event.request.mode === "navigate") {
+        return networkFetch.catch(() => caches.match("/"));
+      }
+
+      return cached || networkFetch.catch(() => caches.match("/"));
+    }),
   );
 });

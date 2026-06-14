@@ -14,3 +14,4 @@ azs-mobile/node_modules/
 *.log
 .env
 .env.*
+!azs-mobile/.env.example

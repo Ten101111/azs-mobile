@@ -108,6 +108,7 @@ def main():
             "manager": pick(row, "ФИО_менеджер_АЗС", "ФИО_менеджер_АЗС.1"),
             "managerPhone": normalize_phone(pick(row, "Телефон_менеджер_АЗС", "Телефон_менеджер_АЗС.1")),
             "seniorOperator": pick(row, "ФИО_старший_оператор_АЗС", "ФИО_старший_оператор_АЗС.1"),
+            "seniorOperatorPhone": normalize_phone(pick(row, "Телефон_старший_оператор_АЗС", "Телефон_старший_оператор_АЗС.1")),
             "format": pick(row, "Формат"),
             "formatLevel2": pick(row, "Формат_level2"),
             "formatMinale": pick(row, "Формат_Minale"),

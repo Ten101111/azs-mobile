@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
   BarChart3,
-  Building2,
   ChevronDown,
   CircleDot,
   Coffee,
@@ -34,12 +33,6 @@ const statusColors = {
   Продана: "#8f99a8",
 };
 
-const modeLabels = {
-  list: "Список",
-  map: "Карта",
-  analytics: "Аналитика",
-};
-
 const defaultFilters = {
   npo: "",
   subject: "",
@@ -49,6 +42,11 @@ const defaultFilters = {
   service: "",
   quality: "",
 };
+
+const YANDEX_MAPS_API_KEY = import.meta.env.VITE_YANDEX_MAPS_API_KEY || "";
+const YANDEX_MAPS_MARKER_LIMIT = 900;
+const UPDATE_DATA_COMMAND = "cd /Users/artmanoking/Downloads/Projects/azs-mobile/azs-mobile && npm run prepare-data";
+let yandexMapsPromise;
 
 function uniqueOptions(stations, key) {
   return [...new Set(stations.map((item) => item[key]).filter(Boolean))].sort((a, b) =>
@@ -70,6 +68,146 @@ function hasValidPoint(station) {
   return station.lat && station.lon && station.lat !== 0 && station.lon !== 0;
 }
 
+function toLatLng(station) {
+  return [Number(station.lat), Number(station.lon)];
+}
+
+function mapLocationForYmaps(points, selected, focusSelected = true) {
+  if (focusSelected && selected && hasValidPoint(selected)) {
+    return { center: toLatLng(selected), zoom: 13 };
+  }
+
+  if (points.length === 1) {
+    return { center: toLatLng(points[0]), zoom: 10 };
+  }
+
+  if (points.length > 1) {
+    const latValues = points.map((station) => Number(station.lat));
+    const lonValues = points.map((station) => Number(station.lon));
+    return {
+      bounds: [
+        [Math.min(...latValues), Math.min(...lonValues)],
+        [Math.max(...latValues), Math.max(...lonValues)],
+      ],
+    };
+  }
+
+  return { center: [55.7558, 37.6176], zoom: 4 };
+}
+
+function loadYandexMaps(apiKey) {
+  if (!apiKey) {
+    return Promise.reject(new Error("YANDEX_MAPS_API_KEY_MISSING"));
+  }
+
+  if (window.ymaps) {
+    return new Promise((resolve) => window.ymaps.ready(() => resolve(window.ymaps)));
+  }
+
+  if (yandexMapsPromise) return yandexMapsPromise;
+
+  yandexMapsPromise = new Promise((resolve, reject) => {
+    const existingScript = document.querySelector("script[data-yandex-maps-api]");
+    const timeoutId = window.setTimeout(() => reject(new Error("YANDEX_MAPS_SCRIPT_TIMEOUT")), 12000);
+
+    function handleReady() {
+      window.clearTimeout(timeoutId);
+      if (!window.ymaps) {
+        reject(new Error("YANDEX_MAPS_API_NOT_AVAILABLE"));
+        return;
+      }
+
+      window.ymaps.ready(() => resolve(window.ymaps));
+    }
+
+    if (existingScript) {
+      existingScript.addEventListener("load", handleReady, { once: true });
+      existingScript.addEventListener(
+        "error",
+        () => {
+          window.clearTimeout(timeoutId);
+          reject(new Error("YANDEX_MAPS_SCRIPT_FAILED"));
+        },
+        { once: true },
+      );
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = `https://api-maps.yandex.ru/2.1/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`;
+    script.async = true;
+    script.dataset.yandexMapsApi = "true";
+    script.addEventListener("load", handleReady, { once: true });
+    script.addEventListener(
+      "error",
+      () => {
+        window.clearTimeout(timeoutId);
+        reject(new Error("YANDEX_MAPS_SCRIPT_FAILED"));
+      },
+      { once: true },
+    );
+    document.head.appendChild(script);
+  });
+
+  return yandexMapsPromise;
+}
+
+function stationFeature(station, selectedId) {
+  return {
+    type: "Feature",
+    id: station.id,
+    geometry: {
+      type: "Point",
+      coordinates: toLatLng(station),
+    },
+    properties: {
+      hintContent: `${station.name || station.stationNumber} · ${station.subject || ""}`,
+      balloonContentHeader: station.name || `АЗС № ${station.stationNumber}`,
+      balloonContentBody: station.address || station.subject || "",
+    },
+    options: {
+      preset: selectedId === station.id ? "islands#redCircleDotIcon" : "islands#circleDotIcon",
+      iconColor: selectedId === station.id ? "#c91d32" : statusColors[station.status] || "#8f99a8",
+    },
+  };
+}
+
+function MapLegend() {
+  const items = [
+    ["Действующая", statusColors["Действующая"]],
+    ["Консервация", statusColors["Консервация"]],
+    ["Реконструкция", statusColors["Реконструкция"]],
+    ["Оптимизация", statusColors["Оптимизация"]],
+    ["Другой статус", "#8f99a8"],
+  ];
+
+  return (
+    <div className="map-legend">
+      {items.map(([label, color]) => (
+        <span key={label}>
+          <i style={{ background: color }} />
+          {label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function geolocationErrorMessage(error) {
+  if (!navigator.geolocation) return "Геолокация недоступна в этом браузере.";
+  if (!window.isSecureContext) return "Геолокация работает только через HTTPS или localhost.";
+  if (error?.code === 1) return "Доступ к геолокации запрещен.";
+  if (error?.code === 2) return "Не удалось определить местоположение.";
+  if (error?.code === 3) return "Истекло время ожидания геолокации.";
+  return "Не удалось получить геолокацию.";
+}
+
+function formatAccuracy(accuracy) {
+  if (!accuracy) return "";
+  if (accuracy >= 1000) return `точность около ${(accuracy / 1000).toFixed(1)} км`;
+  return `точность около ${Math.round(accuracy)} м`;
+}
+
 function isValidPhone(phone) {
   const text = String(phone || "").trim();
   const digits = text.replace(/\D+/g, "");
@@ -77,7 +215,7 @@ function isValidPhone(phone) {
 }
 
 function bestPhone(station) {
-  return [station.managerPhone, station.territoryManagerPhone, station.regionalManagerPhone].find(isValidPhone) || "";
+  return [station.managerPhone, station.seniorOperatorPhone, station.territoryManagerPhone, station.regionalManagerPhone].find(isValidPhone) || "";
 }
 
 function pct(value, total) {
@@ -97,12 +235,21 @@ function groupTop(stations, getter, limit = 6) {
     .slice(0, limit);
 }
 
+function missingResponsible(station) {
+  return !station.manager && !station.regionalManager && !station.territoryManager && !station.seniorOperator;
+}
+
+function missingContactPhone(station) {
+  return !bestPhone(station);
+}
+
 function App() {
   const [payload, setPayload] = useState({ meta: null, stations: [] });
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState(defaultFilters);
   const [mode, setMode] = useState("list");
   const [selectedId, setSelectedId] = useState("");
+  const [selectionMode, setSelectionMode] = useState("auto");
   const [favorites, setFavorites] = useState(() => JSON.parse(localStorage.getItem("azs:favorites") || "[]"));
   const [showFilters, setShowFilters] = useState(false);
   const [detailSheet, setDetailSheet] = useState("half");
@@ -120,6 +267,11 @@ function App() {
   useEffect(() => {
     localStorage.setItem("azs:favorites", JSON.stringify(favorites));
   }, [favorites]);
+
+  useEffect(() => {
+    setSelectionMode("auto");
+    setSelectedId("");
+  }, [query, filters.npo, filters.subject, filters.status, filters.type, filters.location, filters.service, filters.quality]);
 
   const stations = payload.stations;
   const options = useMemo(
@@ -171,6 +323,7 @@ function App() {
 
   function selectStation(id) {
     setSelectedId(id);
+    setSelectionMode("manual");
     setDetailSheet("half");
   }
 
@@ -217,6 +370,9 @@ function App() {
           <button className={mode === "analytics" ? "active" : ""} onClick={() => changeMode("analytics")} type="button">
             <BarChart3 size={16} /> Аналитика
           </button>
+          <button className={mode === "quality" ? "active" : ""} onClick={() => changeMode("quality")} type="button">
+            <ShieldCheck size={16} /> Контроль
+          </button>
         </div>
 
         <MetricStrip count={filtered.length} metrics={metrics} />
@@ -229,6 +385,17 @@ function App() {
             totalStations={stations}
             onFilter={setFilter}
             onOpenList={() => changeMode("list")}
+          />
+        ) : mode === "quality" ? (
+          <ControlDashboard
+            stations={filtered}
+            totalStations={stations}
+            onFilter={setFilter}
+            onOpenList={() => changeMode("list")}
+            onOpenStation={(id) => {
+              selectStation(id);
+              changeMode("list");
+            }}
           />
         ) : (
           <div className="content-grid">
@@ -247,7 +414,12 @@ function App() {
             </section>
 
             <section className={`map-pane ${mode === "list" ? "mobile-hidden" : ""}`}>
-              <StationMap stations={filtered} selected={selected} onSelect={selectStation} />
+              <StationMap
+                stations={filtered}
+                selected={selected}
+                focusSelected={selectionMode === "manual"}
+                onSelect={selectStation}
+              />
             </section>
           </div>
         )}
@@ -370,6 +542,144 @@ function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
         </div>
       </div>
     </section>
+  );
+}
+
+function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpenStation }) {
+  const [copied, setCopied] = useState(false);
+  const total = stations.length;
+  const issueStations = stations.filter((station) => station.qualityIssues.length > 0);
+  const noCoords = stations.filter((station) => !hasValidPoint(station));
+  const noResponsible = stations.filter(missingResponsible);
+  const noPhone = stations.filter(missingContactPhone);
+  const issueCounts = groupTop(
+    stations.flatMap((station) => station.qualityIssues).map((issue) => ({ issue })),
+    (item) => item.issue,
+    8,
+  );
+  const contactReady = stations.filter((station) => !missingResponsible(station) && !missingContactPhone(station)).length;
+  const serviceReady = stations.filter((station) => station.flags.hasShop || station.flags.hasCafe || station.flags.hasToilet).length;
+  const mapReady = total - noCoords.length;
+
+  function copyUpdateCommand() {
+    navigator.clipboard?.writeText(UPDATE_DATA_COMMAND).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    });
+  }
+
+  return (
+    <section className="analytics-pane control-pane">
+      <div className="analytics-head">
+        <div>
+          <h2>Контроль объектов</h2>
+          <p>
+            Рабочий срез для выезда: карточка, контакты, координаты, сервисы и готовность данных по текущей выборке.
+          </p>
+        </div>
+        <button
+          className="quality-button"
+          type="button"
+          onClick={() => {
+            onFilter("quality", "issues");
+            onOpenList();
+          }}
+        >
+          <AlertTriangle size={16} /> Открыть проблемные
+        </button>
+      </div>
+
+      <div className="analytics-kpis">
+        <Kpi title="Карточек в срезе" value={total} share={pct(total, totalStations.length)} />
+        <Kpi title="С замечаниями" value={issueStations.length} share={pct(issueStations.length, total)} tone="amber" />
+        <Kpi title="Без координат" value={noCoords.length} share={pct(noCoords.length, total)} tone="amber" />
+        <Kpi title="Без телефона" value={noPhone.length} share={pct(noPhone.length, total)} tone="red" />
+      </div>
+
+      <div className="control-grid">
+        <div className="analytics-card readiness-card">
+          <h3>Операционная готовность</h3>
+          <ReadinessRow title="Карта" value={mapReady} total={total} />
+          <ReadinessRow title="Контакты" value={Math.max(contactReady, 0)} total={total} />
+          <ReadinessRow title="Сервисный профиль" value={serviceReady} total={total} />
+        </div>
+
+        <div className="analytics-card quality-list-card">
+          <h3>Основные разрывы</h3>
+          <button type="button" onClick={() => onFilter("quality", "noCoords")}>
+            <MapPin size={16} />
+            <span>Без координат</span>
+            <strong>{asInt(noCoords.length)}</strong>
+          </button>
+          <button type="button" onClick={() => onFilter("quality", "issues")}>
+            <AlertTriangle size={16} />
+            <span>Любые замечания</span>
+            <strong>{asInt(issueStations.length)}</strong>
+          </button>
+          <button type="button" onClick={onOpenList}>
+            <Phone size={16} />
+            <span>Проверить контакты</span>
+            <strong>{asInt(noPhone.length)}</strong>
+          </button>
+        </div>
+
+        <div className="analytics-card issue-card">
+          <h3>Типы замечаний</h3>
+          <div className="issue-stack">
+            {issueCounts.length ? (
+              issueCounts.map((item) => (
+                <div className="issue-row" key={item.name}>
+                  <span>{item.name}</span>
+                  <strong>{asInt(item.value)}</strong>
+                </div>
+              ))
+            ) : (
+              <p>В текущей выборке замечаний нет.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="analytics-card update-card">
+          <h3>Обновление классификатора</h3>
+          <p>Источник: `cls_2026_05_AZS.xlsx`. Локальная подготовка пересобирает `public/stations.json` для приложения.</p>
+          <code>{UPDATE_DATA_COMMAND}</code>
+          <button type="button" onClick={copyUpdateCommand}>{copied ? "Скопировано" : "Скопировать команду"}</button>
+        </div>
+      </div>
+
+      <div className="analytics-card issue-table-card">
+        <h3>Объекты для проверки</h3>
+        <div className="issue-table">
+          {issueStations.slice(0, 28).map((station) => (
+            <button type="button" key={station.id} onClick={() => onOpenStation(station.id)}>
+              <span className="status-dot" style={{ background: statusColors[station.status] || "#8f99a8" }} />
+              <span>
+                <strong>{station.name}</strong>
+                <small>{station.ksss} · {station.subject || station.address || "Регион не заполнен"}</small>
+              </span>
+              <em>{station.qualityIssues[0]}</em>
+            </button>
+          ))}
+          {!issueStations.length && <p>В текущей выборке нет объектов с замечаниями.</p>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ReadinessRow({ title, value, total }) {
+  const share = pct(value, total);
+  return (
+    <div className="readiness-row">
+      <div>
+        <span>{title}</span>
+        <strong>{asInt(value)} / {asInt(total)}</strong>
+      </div>
+      <div className="bar-track">
+        <i style={{ width: `${Math.max(4, share)}%` }} />
+      </div>
+      <small>{share}%</small>
+    </div>
   );
 }
 
@@ -509,19 +819,167 @@ function Badge({ children, icon, tone = "" }) {
   );
 }
 
-function StationMap({ stations, selected, onSelect }) {
-  const points = stations.filter(hasValidPoint);
-  const latValues = points.map((station) => station.lat);
-  const lonValues = points.map((station) => station.lon);
-  const minLat = Math.min(...latValues, 41);
-  const maxLat = Math.max(...latValues, 70);
-  const minLon = Math.min(...lonValues, 20);
-  const maxLon = Math.max(...lonValues, 96);
+function StationMap({ stations, selected, focusSelected, onSelect }) {
+  const mapNodeRef = useRef(null);
+  const mapRef = useRef(null);
+  const ymapsRef = useRef(null);
+  const objectManagerRef = useRef(null);
+  const userPlacemarkRef = useRef(null);
+  const onSelectRef = useRef(onSelect);
+  const [mapStatus, setMapStatus] = useState(YANDEX_MAPS_API_KEY ? "idle" : "missing-key");
+  const [mapError, setMapError] = useState("");
+  const [geoStatus, setGeoStatus] = useState("idle");
+  const [geoMessage, setGeoMessage] = useState("");
+  const [userLocation, setUserLocation] = useState(null);
 
-  function project(station) {
-    const x = ((station.lon - minLon) / Math.max(maxLon - minLon, 1)) * 88 + 6;
-    const y = 94 - ((station.lat - minLat) / Math.max(maxLat - minLat, 1)) * 82;
-    return { x, y };
+  const points = useMemo(() => stations.filter(hasValidPoint), [stations]);
+  const visiblePoints = useMemo(() => points.slice(0, YANDEX_MAPS_MARKER_LIMIT), [points]);
+  const hiddenPointCount = Math.max(points.length - visiblePoints.length, 0);
+
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  }, [onSelect]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!YANDEX_MAPS_API_KEY) {
+      setMapStatus("missing-key");
+      return undefined;
+    }
+
+    setMapStatus("loading");
+    loadYandexMaps(YANDEX_MAPS_API_KEY)
+      .then((ymaps) => {
+        if (cancelled || !mapNodeRef.current) return;
+
+        const location = mapLocationForYmaps(points, selected, focusSelected);
+        const map = new ymaps.Map(mapNodeRef.current, {
+          center: location.center || [55.7558, 37.6176],
+          zoom: location.zoom || 4,
+          controls: ["zoomControl", "fullscreenControl"],
+        });
+
+        if (location.bounds) {
+          map.setBounds(location.bounds, { checkZoomRange: true, zoomMargin: 32 });
+        }
+
+        const objectManager = new ymaps.ObjectManager({
+          clusterize: true,
+          gridSize: 48,
+          clusterDisableClickZoom: false,
+        });
+
+        objectManager.objects.events.add("click", (event) => {
+          onSelectRef.current(event.get("objectId"));
+        });
+
+        map.geoObjects.add(objectManager);
+        ymapsRef.current = ymaps;
+        mapRef.current = map;
+        objectManagerRef.current = objectManager;
+        setMapStatus("ready");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setMapError(error.message);
+        setMapStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+      objectManagerRef.current = null;
+      userPlacemarkRef.current = null;
+      if (mapRef.current) {
+        mapRef.current.destroy();
+        mapRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const location = mapLocationForYmaps(points, selected, focusSelected);
+    if (location.bounds && !focusSelected) {
+      mapRef.current.setBounds(location.bounds, { checkZoomRange: true, duration: 450, zoomMargin: 32 });
+    } else if (location.center) {
+      mapRef.current.setCenter(location.center, location.zoom, { duration: 450 });
+    }
+  }, [points, selected, focusSelected]);
+
+  useEffect(() => {
+    if (!objectManagerRef.current || !ymapsRef.current) return;
+
+    objectManagerRef.current.removeAll();
+    objectManagerRef.current.add({
+      type: "FeatureCollection",
+      features: visiblePoints.map((station) => stationFeature(station, selected?.id)),
+    });
+  }, [visiblePoints, selected?.id, mapStatus]);
+
+  useEffect(() => {
+    if (!mapRef.current || !ymapsRef.current || !userLocation) return;
+
+    const coords = [userLocation.lat, userLocation.lon];
+    const caption = formatAccuracy(userLocation.accuracy);
+
+    if (!userPlacemarkRef.current) {
+      userPlacemarkRef.current = new ymapsRef.current.Placemark(
+        coords,
+        {
+          iconCaption: "Вы здесь",
+          balloonContentHeader: "Ваше местоположение",
+          balloonContentBody: caption,
+        },
+        {
+          preset: "islands#blueCircleDotIcon",
+          iconColor: "#3077d8",
+        },
+      );
+      mapRef.current.geoObjects.add(userPlacemarkRef.current);
+    } else {
+      userPlacemarkRef.current.geometry.setCoordinates(coords);
+      userPlacemarkRef.current.properties.set({
+        iconCaption: "Вы здесь",
+        balloonContentHeader: "Ваше местоположение",
+        balloonContentBody: caption,
+      });
+    }
+
+    mapRef.current.setCenter(coords, Math.max(mapRef.current.getZoom(), 15), { duration: 450 });
+  }, [userLocation, mapStatus]);
+
+  function locateUser() {
+    if (!navigator.geolocation || !window.isSecureContext) {
+      setGeoStatus("error");
+      setGeoMessage(geolocationErrorMessage());
+      return;
+    }
+
+    setGeoStatus("locating");
+    setGeoMessage("Определяем местоположение...");
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const nextLocation = {
+          lat: position.coords.latitude,
+          lon: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        };
+        setUserLocation(nextLocation);
+        setGeoStatus("found");
+        setGeoMessage(formatAccuracy(nextLocation.accuracy) || "Местоположение найдено.");
+      },
+      (error) => {
+        setGeoStatus("error");
+        setGeoMessage(geolocationErrorMessage(error));
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 30000,
+      },
+    );
   }
 
   return (
@@ -529,34 +987,53 @@ function StationMap({ stations, selected, onSelect }) {
       <div className="map-header">
         <div>
           <strong>{asInt(points.length)} точек на карте</strong>
-          <span>{asInt(stations.length - points.length)} без координат</span>
+          <span>
+            {asInt(stations.length - points.length)} без координат
+            {hiddenPointCount > 0 ? ` · показано ${asInt(visiblePoints.length)}` : ""}
+          </span>
         </div>
-        <LocateFixed size={20} />
+        <button
+          className={`map-locate-button ${geoStatus === "found" ? "active" : ""}`}
+          type="button"
+          onClick={locateUser}
+          disabled={mapStatus !== "ready" || geoStatus === "locating"}
+          aria-label="Показать мою геолокацию"
+          title="Показать мою геолокацию"
+        >
+          <LocateFixed size={18} />
+        </button>
       </div>
       <div className="map-canvas">
-        <div className="map-grid" />
-        {points.slice(0, 900).map((station) => {
-          const pos = project(station);
-          const selectedPoint = selected?.id === station.id;
-          return (
-            <button
-              key={station.id}
-              className={`map-point ${selectedPoint ? "selected" : ""}`}
-              style={{
-                left: `${pos.x}%`,
-                top: `${pos.y}%`,
-                background: statusColors[station.status] || "#8f99a8",
-              }}
-              type="button"
-              title={`${station.name} · ${station.subject}`}
-              onClick={() => onSelect(station.id)}
-            />
-          );
-        })}
-        {selected && hasValidPoint(selected) && (
-          <div className="map-callout" style={{ left: `${project(selected).x}%`, top: `${project(selected).y}%` }}>
-            <strong>{selected.name}</strong>
-            <span>{selected.subject}</span>
+        <div className="yandex-map" ref={mapNodeRef} />
+        {mapStatus === "ready" && <MapLegend />}
+        {mapStatus === "ready" && geoMessage && (
+          <div className={`geo-toast ${geoStatus}`}>
+            <LocateFixed size={14} />
+            <span>{geoMessage}</span>
+          </div>
+        )}
+        {mapStatus !== "ready" && (
+          <div className="map-state">
+            {mapStatus === "missing-key" ? (
+              <>
+                <strong>Нужен ключ Yandex Maps API</strong>
+                <span>Создай `azs-mobile/.env.local` и добавь `VITE_YANDEX_MAPS_API_KEY=...`.</span>
+              </>
+            ) : mapStatus === "error" ? (
+              <>
+                <strong>Карта не загрузилась</strong>
+                <span>
+                  {mapError === "YANDEX_MAPS_SCRIPT_TIMEOUT"
+                    ? "Яндекс не отдал JS API. Проверь, что ключ активен, создан для JavaScript API и разрешает текущий HTTP Referer."
+                    : mapError || "Проверь API-ключ и ограничения HTTP Referer."}
+                </span>
+              </>
+            ) : (
+              <>
+                <strong>Загрузка Яндекс Карты</strong>
+                <span>Подключаем слой карты и точки АЗС.</span>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -664,7 +1141,7 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
         <Contact title="РУ" name={station.regionalManager} phone={station.regionalManagerPhone} />
         <Contact title="ТМ" name={station.territoryManager} phone={station.territoryManagerPhone} />
         <Contact title="Менеджер" name={station.manager} phone={station.managerPhone} />
-        <Contact title="Старший оператор" name={station.seniorOperator} phone="" />
+        <Contact title="Старший оператор" name={station.seniorOperator} phone={station.seniorOperatorPhone} />
       </DetailGroup>
 
       <DetailGroup title="Инфраструктура">
