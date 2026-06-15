@@ -1,7 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
 import {
   AlertTriangle,
   BarChart3,
@@ -68,15 +66,6 @@ function shortStatus(status) {
 
 function hasValidPoint(station) {
   return station.lat && station.lon && station.lat !== 0 && station.lon !== 0;
-}
-
-function toLatLng(station) {
-  return [Number(station.lat), Number(station.lon)];
-}
-
-function leafletBounds(points) {
-  if (!points.length) return null;
-  return L.latLngBounds(points.map(toLatLng));
 }
 
 function toYmapsCoordinates(station) {
@@ -181,25 +170,6 @@ function createStationMarker(ymaps3, station, selectedId, onSelect) {
     },
     element,
   );
-}
-
-function leafletStationIcon(station, selectedId) {
-  const color = selectedId === station.id ? "#c91d32" : statusColors[station.status] || "#8f99a8";
-  return L.divIcon({
-    className: "",
-    html: `<span class="ymap-marker ${selectedId === station.id ? "selected" : ""}" style="--marker-color:${color}"></span>`,
-    iconSize: selectedId === station.id ? [22, 22] : [14, 14],
-    iconAnchor: selectedId === station.id ? [11, 11] : [7, 7],
-  });
-}
-
-function leafletUserIcon() {
-  return L.divIcon({
-    className: "",
-    html: '<span class="ymap-user-marker"></span>',
-    iconSize: [20, 20],
-    iconAnchor: [10, 10],
-  });
 }
 
 function MapLegend() {
@@ -447,7 +417,6 @@ function App() {
               <StationMap
                 stations={filtered}
                 selected={selected}
-                isVisible={mode === "map"}
                 focusSelected={selectionMode === "manual"}
                 onSelect={selectStation}
               />
@@ -850,14 +819,14 @@ function Badge({ children, icon, tone = "" }) {
   );
 }
 
-function StationMap({ stations, selected, isVisible, focusSelected, onSelect }) {
+function StationMap({ stations, selected, focusSelected, onSelect }) {
   const mapNodeRef = useRef(null);
   const mapRef = useRef(null);
-  const markerLayerRef = useRef(null);
+  const ymapsRef = useRef(null);
   const markerRefs = useRef([]);
   const userMarkerRef = useRef(null);
   const onSelectRef = useRef(onSelect);
-  const [mapStatus, setMapStatus] = useState("loading");
+  const [mapStatus, setMapStatus] = useState(YANDEX_MAPS_API_KEY ? "idle" : "missing-key");
   const [mapError, setMapError] = useState("");
   const [geoStatus, setGeoStatus] = useState("idle");
   const [geoMessage, setGeoMessage] = useState("");
@@ -874,106 +843,73 @@ function StationMap({ stations, selected, isVisible, focusSelected, onSelect }) 
   useEffect(() => {
     let cancelled = false;
 
-    setMapStatus("loading");
-    try {
-      if (!mapNodeRef.current) return undefined;
-
-      const map = L.map(mapNodeRef.current, {
-        zoomControl: true,
-        attributionControl: true,
-      }).setView([55.7558, 37.6176], 4);
-
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap",
-      }).addTo(map);
-
-      const markerLayer = L.layerGroup().addTo(map);
-      const bounds = leafletBounds(points);
-      if (bounds?.isValid()) {
-        map.fitBounds(bounds, { padding: [28, 28], maxZoom: 12 });
-      }
-
-      if (cancelled) {
-        map.remove();
-        return undefined;
-      }
-
-      mapRef.current = map;
-      markerLayerRef.current = markerLayer;
-      setMapStatus("ready");
-      window.requestAnimationFrame(() => {
-        map.invalidateSize();
-        window.setTimeout(() => map.invalidateSize(), 250);
-      });
-    } catch (error) {
-      if (cancelled) return undefined;
-      setMapError(error.message);
-      setMapStatus("error");
+    if (!YANDEX_MAPS_API_KEY) {
+      setMapStatus("missing-key");
+      return undefined;
     }
+
+    setMapStatus("loading");
+    loadYandexMaps(YANDEX_MAPS_API_KEY)
+      .then((ymaps3) => {
+        if (cancelled || !mapNodeRef.current) return;
+
+        const location = mapLocationForYmaps(points, selected, focusSelected);
+        const map = new ymaps3.YMap(mapNodeRef.current, { location });
+
+        map.addChild(new ymaps3.YMapDefaultSchemeLayer({}));
+        map.addChild(new ymaps3.YMapDefaultFeaturesLayer({}));
+
+        ymapsRef.current = ymaps3;
+        mapRef.current = map;
+        setMapStatus("ready");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setMapError(error.message);
+        setMapStatus("error");
+      });
 
     return () => {
       cancelled = true;
       markerRefs.current = [];
       userMarkerRef.current = null;
       if (mapRef.current) {
-        mapRef.current.remove();
+        mapRef.current.destroy();
         mapRef.current = null;
       }
-      markerLayerRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    if (!mapRef.current || !isVisible) return;
-    window.requestAnimationFrame(() => {
-      mapRef.current?.invalidateSize();
-      window.setTimeout(() => mapRef.current?.invalidateSize(), 250);
-    });
-  }, [isVisible]);
-
-  useEffect(() => {
     if (!mapRef.current) return;
-    if (focusSelected && selected && hasValidPoint(selected)) {
-      mapRef.current.setView(toLatLng(selected), 13, { animate: true });
-      return;
-    }
-
-    const bounds = leafletBounds(points);
-    if (bounds?.isValid()) {
-      mapRef.current.fitBounds(bounds, { padding: [28, 28], maxZoom: 12, animate: true });
-    }
+    const location = mapLocationForYmaps(points, selected, focusSelected);
+    mapRef.current.setLocation({ ...location, duration: 450 });
   }, [points, selected, focusSelected]);
 
   useEffect(() => {
-    if (!mapRef.current || !markerLayerRef.current) return;
+    if (!mapRef.current || !ymapsRef.current) return;
 
-    markerLayerRef.current.clearLayers();
-    markerRefs.current = visiblePoints.map((station) => {
-      const marker = L.marker(toLatLng(station), {
-        icon: leafletStationIcon(station, selected?.id),
-        title: `${station.name || station.stationNumber} · ${station.subject || ""}`,
-      });
-      marker.on("click", () => onSelectRef.current(station.id));
-      marker.addTo(markerLayerRef.current);
-      return marker;
-    });
+    markerRefs.current.forEach((marker) => mapRef.current.removeChild(marker));
+    markerRefs.current = visiblePoints.map((station) => createStationMarker(ymapsRef.current, station, selected?.id, onSelectRef.current));
+    markerRefs.current.forEach((marker) => mapRef.current.addChild(marker));
   }, [visiblePoints, selected?.id, mapStatus]);
 
   useEffect(() => {
-    if (!mapRef.current || !userLocation) return;
+    if (!mapRef.current || !ymapsRef.current || !userLocation) return;
 
-    const coords = [userLocation.lat, userLocation.lon];
+    const coords = [userLocation.lon, userLocation.lat];
 
     if (userMarkerRef.current) {
-      mapRef.current.removeLayer(userMarkerRef.current);
+      mapRef.current.removeChild(userMarkerRef.current);
     }
 
-    userMarkerRef.current = L.marker(coords, {
-      icon: leafletUserIcon(),
-      title: `Вы здесь · ${formatAccuracy(userLocation.accuracy)}`,
-    }).addTo(mapRef.current);
-    mapRef.current.setView(coords, 15, { animate: true });
+    const userElement = document.createElement("div");
+    userElement.className = "ymap-user-marker";
+    userElement.title = `Вы здесь · ${formatAccuracy(userLocation.accuracy)}`;
+
+    userMarkerRef.current = new ymapsRef.current.YMapMarker({ coordinates: coords, zIndex: 30 }, userElement);
+    mapRef.current.addChild(userMarkerRef.current);
+    mapRef.current.setLocation({ center: coords, zoom: 15, duration: 450 });
   }, [userLocation, mapStatus]);
 
   function locateUser() {
@@ -1041,14 +977,23 @@ function StationMap({ stations, selected, isVisible, focusSelected, onSelect }) 
         )}
         {mapStatus !== "ready" && (
           <div className="map-state">
-            {mapStatus === "error" ? (
+            {mapStatus === "missing-key" ? (
+              <>
+                <strong>Нужен ключ Yandex Maps API</strong>
+                <span>Создай `azs-mobile/.env.local` и добавь `VITE_YANDEX_MAPS_API_KEY=...`.</span>
+              </>
+            ) : mapStatus === "error" ? (
               <>
                 <strong>Карта не загрузилась</strong>
-                <span>{mapError || "Не удалось инициализировать OpenStreetMap/Leaflet."}</span>
+                <span>
+                  {mapError === "YANDEX_MAPS_SCRIPT_TIMEOUT"
+                    ? "Яндекс не отдал JS API. Проверь, что ключ активен, создан для JavaScript API и разрешает текущий HTTP Referer."
+                    : mapError || "Проверь API-ключ и ограничения HTTP Referer."}
+                </span>
               </>
             ) : (
               <>
-                <strong>Загрузка карты</strong>
+                <strong>Загрузка Яндекс Карты</strong>
                 <span>Подключаем слой карты и точки АЗС.</span>
               </>
             )}
