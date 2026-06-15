@@ -68,17 +68,17 @@ function hasValidPoint(station) {
   return station.lat && station.lon && station.lat !== 0 && station.lon !== 0;
 }
 
-function toLatLng(station) {
-  return [Number(station.lat), Number(station.lon)];
+function toYmapsCoordinates(station) {
+  return [Number(station.lon), Number(station.lat)];
 }
 
 function mapLocationForYmaps(points, selected, focusSelected = true) {
   if (focusSelected && selected && hasValidPoint(selected)) {
-    return { center: toLatLng(selected), zoom: 13 };
+    return { center: toYmapsCoordinates(selected), zoom: 13 };
   }
 
   if (points.length === 1) {
-    return { center: toLatLng(points[0]), zoom: 10 };
+    return { center: toYmapsCoordinates(points[0]), zoom: 10 };
   }
 
   if (points.length > 1) {
@@ -86,13 +86,13 @@ function mapLocationForYmaps(points, selected, focusSelected = true) {
     const lonValues = points.map((station) => Number(station.lon));
     return {
       bounds: [
-        [Math.min(...latValues), Math.min(...lonValues)],
-        [Math.max(...latValues), Math.max(...lonValues)],
+        [Math.min(...lonValues), Math.min(...latValues)],
+        [Math.max(...lonValues), Math.max(...latValues)],
       ],
     };
   }
 
-  return { center: [55.7558, 37.6176], zoom: 4 };
+  return { center: [37.6176, 55.7558], zoom: 4 };
 }
 
 function loadYandexMaps(apiKey) {
@@ -100,8 +100,8 @@ function loadYandexMaps(apiKey) {
     return Promise.reject(new Error("YANDEX_MAPS_API_KEY_MISSING"));
   }
 
-  if (window.ymaps) {
-    return new Promise((resolve) => window.ymaps.ready(() => resolve(window.ymaps)));
+  if (window.ymaps3) {
+    return window.ymaps3.ready.then(() => window.ymaps3);
   }
 
   if (yandexMapsPromise) return yandexMapsPromise;
@@ -112,12 +112,12 @@ function loadYandexMaps(apiKey) {
 
     function handleReady() {
       window.clearTimeout(timeoutId);
-      if (!window.ymaps) {
+      if (!window.ymaps3) {
         reject(new Error("YANDEX_MAPS_API_NOT_AVAILABLE"));
         return;
       }
 
-      window.ymaps.ready(() => resolve(window.ymaps));
+      window.ymaps3.ready.then(() => resolve(window.ymaps3)).catch(reject);
     }
 
     if (existingScript) {
@@ -134,7 +134,7 @@ function loadYandexMaps(apiKey) {
     }
 
     const script = document.createElement("script");
-    script.src = `https://api-maps.yandex.ru/2.1/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`;
+    script.src = `https://api-maps.yandex.ru/v3/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`;
     script.async = true;
     script.dataset.yandexMapsApi = "true";
     script.addEventListener("load", handleReady, { once: true });
@@ -152,24 +152,24 @@ function loadYandexMaps(apiKey) {
   return yandexMapsPromise;
 }
 
-function stationFeature(station, selectedId) {
-  return {
-    type: "Feature",
-    id: station.id,
-    geometry: {
-      type: "Point",
-      coordinates: toLatLng(station),
+function createStationMarker(ymaps3, station, selectedId, onSelect) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = `ymap-marker ${selectedId === station.id ? "selected" : ""}`;
+  element.style.setProperty("--marker-color", selectedId === station.id ? "#c91d32" : statusColors[station.status] || "#8f99a8");
+  element.title = `${station.name || station.stationNumber} · ${station.subject || ""}`;
+  element.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onSelect(station.id);
+  });
+
+  return new ymaps3.YMapMarker(
+    {
+      coordinates: toYmapsCoordinates(station),
+      zIndex: selectedId === station.id ? 20 : 10,
     },
-    properties: {
-      hintContent: `${station.name || station.stationNumber} · ${station.subject || ""}`,
-      balloonContentHeader: station.name || `АЗС № ${station.stationNumber}`,
-      balloonContentBody: station.address || station.subject || "",
-    },
-    options: {
-      preset: selectedId === station.id ? "islands#redCircleDotIcon" : "islands#circleDotIcon",
-      iconColor: selectedId === station.id ? "#c91d32" : statusColors[station.status] || "#8f99a8",
-    },
-  };
+    element,
+  );
 }
 
 function MapLegend() {
@@ -823,8 +823,8 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
   const mapNodeRef = useRef(null);
   const mapRef = useRef(null);
   const ymapsRef = useRef(null);
-  const objectManagerRef = useRef(null);
-  const userPlacemarkRef = useRef(null);
+  const markerRefs = useRef([]);
+  const userMarkerRef = useRef(null);
   const onSelectRef = useRef(onSelect);
   const [mapStatus, setMapStatus] = useState(YANDEX_MAPS_API_KEY ? "idle" : "missing-key");
   const [mapError, setMapError] = useState("");
@@ -850,34 +850,17 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
 
     setMapStatus("loading");
     loadYandexMaps(YANDEX_MAPS_API_KEY)
-      .then((ymaps) => {
+      .then((ymaps3) => {
         if (cancelled || !mapNodeRef.current) return;
 
         const location = mapLocationForYmaps(points, selected, focusSelected);
-        const map = new ymaps.Map(mapNodeRef.current, {
-          center: location.center || [55.7558, 37.6176],
-          zoom: location.zoom || 4,
-          controls: ["zoomControl", "fullscreenControl"],
-        });
+        const map = new ymaps3.YMap(mapNodeRef.current, { location });
 
-        if (location.bounds) {
-          map.setBounds(location.bounds, { checkZoomRange: true, zoomMargin: 32 });
-        }
+        map.addChild(new ymaps3.YMapDefaultSchemeLayer({}));
+        map.addChild(new ymaps3.YMapDefaultFeaturesLayer({}));
 
-        const objectManager = new ymaps.ObjectManager({
-          clusterize: true,
-          gridSize: 48,
-          clusterDisableClickZoom: false,
-        });
-
-        objectManager.objects.events.add("click", (event) => {
-          onSelectRef.current(event.get("objectId"));
-        });
-
-        map.geoObjects.add(objectManager);
-        ymapsRef.current = ymaps;
+        ymapsRef.current = ymaps3;
         mapRef.current = map;
-        objectManagerRef.current = objectManager;
         setMapStatus("ready");
       })
       .catch((error) => {
@@ -888,8 +871,8 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
 
     return () => {
       cancelled = true;
-      objectManagerRef.current = null;
-      userPlacemarkRef.current = null;
+      markerRefs.current = [];
+      userMarkerRef.current = null;
       if (mapRef.current) {
         mapRef.current.destroy();
         mapRef.current = null;
@@ -900,53 +883,33 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
   useEffect(() => {
     if (!mapRef.current) return;
     const location = mapLocationForYmaps(points, selected, focusSelected);
-    if (location.bounds && !focusSelected) {
-      mapRef.current.setBounds(location.bounds, { checkZoomRange: true, duration: 450, zoomMargin: 32 });
-    } else if (location.center) {
-      mapRef.current.setCenter(location.center, location.zoom, { duration: 450 });
-    }
+    mapRef.current.setLocation({ ...location, duration: 450 });
   }, [points, selected, focusSelected]);
 
   useEffect(() => {
-    if (!objectManagerRef.current || !ymapsRef.current) return;
+    if (!mapRef.current || !ymapsRef.current) return;
 
-    objectManagerRef.current.removeAll();
-    objectManagerRef.current.add({
-      type: "FeatureCollection",
-      features: visiblePoints.map((station) => stationFeature(station, selected?.id)),
-    });
+    markerRefs.current.forEach((marker) => mapRef.current.removeChild(marker));
+    markerRefs.current = visiblePoints.map((station) => createStationMarker(ymapsRef.current, station, selected?.id, onSelectRef.current));
+    markerRefs.current.forEach((marker) => mapRef.current.addChild(marker));
   }, [visiblePoints, selected?.id, mapStatus]);
 
   useEffect(() => {
     if (!mapRef.current || !ymapsRef.current || !userLocation) return;
 
-    const coords = [userLocation.lat, userLocation.lon];
-    const caption = formatAccuracy(userLocation.accuracy);
+    const coords = [userLocation.lon, userLocation.lat];
 
-    if (!userPlacemarkRef.current) {
-      userPlacemarkRef.current = new ymapsRef.current.Placemark(
-        coords,
-        {
-          iconCaption: "Вы здесь",
-          balloonContentHeader: "Ваше местоположение",
-          balloonContentBody: caption,
-        },
-        {
-          preset: "islands#blueCircleDotIcon",
-          iconColor: "#3077d8",
-        },
-      );
-      mapRef.current.geoObjects.add(userPlacemarkRef.current);
-    } else {
-      userPlacemarkRef.current.geometry.setCoordinates(coords);
-      userPlacemarkRef.current.properties.set({
-        iconCaption: "Вы здесь",
-        balloonContentHeader: "Ваше местоположение",
-        balloonContentBody: caption,
-      });
+    if (userMarkerRef.current) {
+      mapRef.current.removeChild(userMarkerRef.current);
     }
 
-    mapRef.current.setCenter(coords, Math.max(mapRef.current.getZoom(), 15), { duration: 450 });
+    const userElement = document.createElement("div");
+    userElement.className = "ymap-user-marker";
+    userElement.title = `Вы здесь · ${formatAccuracy(userLocation.accuracy)}`;
+
+    userMarkerRef.current = new ymapsRef.current.YMapMarker({ coordinates: coords, zIndex: 30 }, userElement);
+    mapRef.current.addChild(userMarkerRef.current);
+    mapRef.current.setLocation({ center: coords, zoom: 15, duration: 450 });
   }, [userLocation, mapStatus]);
 
   function locateUser() {
