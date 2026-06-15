@@ -68,6 +68,10 @@ function hasValidPoint(station) {
   return station.lat && station.lon && station.lat !== 0 && station.lon !== 0;
 }
 
+function toLatLng(station) {
+  return [Number(station.lat), Number(station.lon)];
+}
+
 function toYmapsCoordinates(station) {
   return [Number(station.lon), Number(station.lat)];
 }
@@ -95,61 +99,130 @@ function mapLocationForYmaps(points, selected, focusSelected = true) {
   return { center: [37.6176, 55.7558], zoom: 4 };
 }
 
+function mapLocationForYmaps2(points, selected, focusSelected = true) {
+  if (focusSelected && selected && hasValidPoint(selected)) {
+    return { center: toLatLng(selected), zoom: 13 };
+  }
+
+  if (points.length === 1) {
+    return { center: toLatLng(points[0]), zoom: 10 };
+  }
+
+  if (points.length > 1) {
+    const latValues = points.map((station) => Number(station.lat));
+    const lonValues = points.map((station) => Number(station.lon));
+    return {
+      bounds: [
+        [Math.min(...latValues), Math.min(...lonValues)],
+        [Math.max(...latValues), Math.max(...lonValues)],
+      ],
+    };
+  }
+
+  return { center: [55.7558, 37.6176], zoom: 4 };
+}
+
 function loadYandexMaps(apiKey) {
   if (!apiKey) {
     return Promise.reject(new Error("YANDEX_MAPS_API_KEY_MISSING"));
   }
 
   if (window.ymaps3) {
-    return window.ymaps3.ready.then(() => window.ymaps3);
+    return window.ymaps3.ready.then(() => ({ version: "v3", api: window.ymaps3 }));
+  }
+
+  if (window.ymaps) {
+    return new Promise((resolve) => window.ymaps.ready(() => resolve({ version: "v2", api: window.ymaps })));
   }
 
   if (yandexMapsPromise) return yandexMapsPromise;
 
-  yandexMapsPromise = new Promise((resolve, reject) => {
-    const existingScript = document.querySelector("script[data-yandex-maps-api]");
-    const timeoutId = window.setTimeout(() => reject(new Error("YANDEX_MAPS_SCRIPT_TIMEOUT")), 12000);
+  function loadScript(version, url, referrerPolicy) {
+    return new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        reject(new Error(`YANDEX_MAPS_${version}_TIMEOUT`));
+      }, 12000);
+      const existingScript = document.querySelector(`script[data-yandex-maps-api="${version}"]`);
 
-    function handleReady() {
-      window.clearTimeout(timeoutId);
-      if (!window.ymaps3) {
-        reject(new Error("YANDEX_MAPS_API_NOT_AVAILABLE"));
+      function cleanup() {
+        window.clearTimeout(timeoutId);
+      }
+
+      function handleReady() {
+        cleanup();
+        if (version === "v3") {
+          if (!window.ymaps3) {
+            reject(new Error("YANDEX_MAPS_V3_NOT_AVAILABLE"));
+            return;
+          }
+          window.ymaps3.ready.then(() => resolve({ version: "v3", api: window.ymaps3 })).catch(reject);
+          return;
+        }
+
+        if (!window.ymaps) {
+          reject(new Error("YANDEX_MAPS_V2_NOT_AVAILABLE"));
+          return;
+        }
+        window.ymaps.ready(() => resolve({ version: "v2", api: window.ymaps }));
+      }
+
+      if (existingScript) {
+        existingScript.addEventListener("load", handleReady, { once: true });
+        existingScript.addEventListener("error", () => reject(new Error(`YANDEX_MAPS_${version}_FAILED`)), { once: true });
         return;
       }
 
-      window.ymaps3.ready.then(() => resolve(window.ymaps3)).catch(reject);
-    }
-
-    if (existingScript) {
-      existingScript.addEventListener("load", handleReady, { once: true });
-      existingScript.addEventListener(
+      const script = document.createElement("script");
+      script.src = url;
+      script.async = true;
+      script.dataset.yandexMapsApi = version;
+      if (referrerPolicy) script.referrerPolicy = referrerPolicy;
+      script.addEventListener("load", handleReady, { once: true });
+      script.addEventListener(
         "error",
         () => {
-          window.clearTimeout(timeoutId);
-          reject(new Error("YANDEX_MAPS_SCRIPT_FAILED"));
+          cleanup();
+          script.remove();
+          reject(new Error(`YANDEX_MAPS_${version}_FAILED`));
         },
         { once: true },
       );
-      return;
-    }
+      document.head.appendChild(script);
+    });
+  }
 
-    const script = document.createElement("script");
-    script.src = `https://api-maps.yandex.ru/v3/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`;
-    script.async = true;
-    script.dataset.yandexMapsApi = "true";
-    script.addEventListener("load", handleReady, { once: true });
-    script.addEventListener(
-      "error",
-      () => {
-        window.clearTimeout(timeoutId);
-        reject(new Error("YANDEX_MAPS_SCRIPT_FAILED"));
-      },
-      { once: true },
-    );
-    document.head.appendChild(script);
-  });
+  yandexMapsPromise = loadScript(
+    "v3",
+    `https://api-maps.yandex.ru/v3/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`,
+  ).catch(() =>
+    loadScript(
+      "v2",
+      `https://api-maps.yandex.ru/2.1/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`,
+      "no-referrer",
+    ),
+  );
 
   return yandexMapsPromise;
+}
+
+function stationFeature(station, selectedId) {
+  return {
+    type: "Feature",
+    id: station.id,
+    geometry: {
+      type: "Point",
+      coordinates: toLatLng(station),
+    },
+    properties: {
+      hintContent: `${station.name || station.stationNumber} · ${station.subject || ""}`,
+      balloonContentHeader: station.name || `АЗС № ${station.stationNumber}`,
+      balloonContentBody: station.address || station.subject || "",
+    },
+    options: {
+      preset: selectedId === station.id ? "islands#redCircleDotIcon" : "islands#circleDotIcon",
+      iconColor: selectedId === station.id ? "#c91d32" : statusColors[station.status] || "#8f99a8",
+    },
+  };
 }
 
 function createStationMarker(ymaps3, station, selectedId, onSelect) {
@@ -206,6 +279,71 @@ function formatAccuracy(accuracy) {
   if (!accuracy) return "";
   if (accuracy >= 1000) return `точность около ${(accuracy / 1000).toFixed(1)} км`;
   return `точность около ${Math.round(accuracy)} м`;
+}
+
+function formatLocationMessage(location) {
+  return formatAccuracy(location.accuracy) || (location.source === "yandex" ? "Местоположение определено Яндексом." : "Местоположение найдено.");
+}
+
+function getBrowserLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation || !window.isSecureContext) {
+      reject(new Error("BROWSER_GEOLOCATION_UNAVAILABLE"));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          lat: position.coords.latitude,
+          lon: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          source: "browser",
+        });
+      },
+      reject,
+      {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 30000,
+      },
+    );
+  });
+}
+
+function getYandexLocation(api, version) {
+  if (version === "v3" && api.geolocation?.getPosition) {
+    return api.geolocation.getPosition({ enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }).then((position) => ({
+      lat: position.coords[1],
+      lon: position.coords[0],
+      accuracy: position.accuracy,
+      source: "yandex",
+    }));
+  }
+
+  if (version === "v2" && api.geolocation?.get) {
+    return api.geolocation
+      .get({
+        provider: "yandex",
+        mapStateAutoApply: false,
+        autoReverseGeocode: false,
+        timeout: 12000,
+      })
+      .then((result) => {
+        const geoObject = result.geoObjects?.get(0);
+        const coords = geoObject?.geometry?.getCoordinates();
+        if (!coords) throw new Error("YANDEX_GEOLOCATION_EMPTY");
+
+        return {
+          lat: coords[0],
+          lon: coords[1],
+          bounds: result.geoObjects?.getBounds?.(),
+          source: "yandex",
+        };
+      });
+  }
+
+  return Promise.reject(new Error("YANDEX_GEOLOCATION_UNAVAILABLE"));
 }
 
 function isValidPhone(phone) {
@@ -823,6 +961,8 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
   const mapNodeRef = useRef(null);
   const mapRef = useRef(null);
   const ymapsRef = useRef(null);
+  const apiVersionRef = useRef(null);
+  const objectManagerRef = useRef(null);
   const markerRefs = useRef([]);
   const userMarkerRef = useRef(null);
   const onSelectRef = useRef(onSelect);
@@ -850,17 +990,49 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
 
     setMapStatus("loading");
     loadYandexMaps(YANDEX_MAPS_API_KEY)
-      .then((ymaps3) => {
+      .then(({ version, api }) => {
         if (cancelled || !mapNodeRef.current) return;
 
-        const location = mapLocationForYmaps(points, selected, focusSelected);
-        const map = new ymaps3.YMap(mapNodeRef.current, { location });
+        if (version === "v3") {
+          const location = mapLocationForYmaps(points, selected, focusSelected);
+          const map = new api.YMap(mapNodeRef.current, { location });
 
-        map.addChild(new ymaps3.YMapDefaultSchemeLayer({}));
-        map.addChild(new ymaps3.YMapDefaultFeaturesLayer({}));
+          map.addChild(new api.YMapDefaultSchemeLayer({}));
+          map.addChild(new api.YMapDefaultFeaturesLayer({}));
 
-        ymapsRef.current = ymaps3;
+          apiVersionRef.current = "v3";
+          ymapsRef.current = api;
+          mapRef.current = map;
+          setMapStatus("ready");
+          return;
+        }
+
+        const location = mapLocationForYmaps2(points, selected, focusSelected);
+        const map = new api.Map(mapNodeRef.current, {
+          center: location.center || [55.7558, 37.6176],
+          zoom: location.zoom || 4,
+          controls: ["zoomControl", "fullscreenControl"],
+        });
+
+        if (location.bounds) {
+          map.setBounds(location.bounds, { checkZoomRange: true, zoomMargin: 32 });
+        }
+
+        const objectManager = new api.ObjectManager({
+          clusterize: true,
+          gridSize: 48,
+          clusterDisableClickZoom: false,
+        });
+
+        objectManager.objects.events.add("click", (event) => {
+          onSelectRef.current(event.get("objectId"));
+        });
+
+        map.geoObjects.add(objectManager);
+        apiVersionRef.current = "v2";
+        ymapsRef.current = api;
         mapRef.current = map;
+        objectManagerRef.current = objectManager;
         setMapStatus("ready");
       })
       .catch((error) => {
@@ -873,6 +1045,8 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
       cancelled = true;
       markerRefs.current = [];
       userMarkerRef.current = null;
+      objectManagerRef.current = null;
+      apiVersionRef.current = null;
       if (mapRef.current) {
         mapRef.current.destroy();
         mapRef.current = null;
@@ -882,67 +1056,116 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
 
   useEffect(() => {
     if (!mapRef.current) return;
-    const location = mapLocationForYmaps(points, selected, focusSelected);
-    mapRef.current.setLocation({ ...location, duration: 450 });
-  }, [points, selected, focusSelected]);
+    if (apiVersionRef.current === "v3") {
+      const location = mapLocationForYmaps(points, selected, focusSelected);
+      mapRef.current.setLocation({ ...location, duration: 450 });
+      return;
+    }
+
+    const location = mapLocationForYmaps2(points, selected, focusSelected);
+    if (location.bounds && !focusSelected) {
+      mapRef.current.setBounds(location.bounds, { checkZoomRange: true, duration: 450, zoomMargin: 32 });
+    } else if (location.center) {
+      mapRef.current.setCenter(location.center, location.zoom, { duration: 450 });
+    }
+  }, [points, selected, focusSelected, mapStatus]);
 
   useEffect(() => {
     if (!mapRef.current || !ymapsRef.current) return;
 
-    markerRefs.current.forEach((marker) => mapRef.current.removeChild(marker));
-    markerRefs.current = visiblePoints.map((station) => createStationMarker(ymapsRef.current, station, selected?.id, onSelectRef.current));
-    markerRefs.current.forEach((marker) => mapRef.current.addChild(marker));
+    if (apiVersionRef.current === "v3") {
+      markerRefs.current.forEach((marker) => mapRef.current.removeChild(marker));
+      markerRefs.current = visiblePoints.map((station) => createStationMarker(ymapsRef.current, station, selected?.id, onSelectRef.current));
+      markerRefs.current.forEach((marker) => mapRef.current.addChild(marker));
+      return;
+    }
+
+    if (!objectManagerRef.current) return;
+    objectManagerRef.current.removeAll();
+    objectManagerRef.current.add({
+      type: "FeatureCollection",
+      features: visiblePoints.map((station) => stationFeature(station, selected?.id)),
+    });
   }, [visiblePoints, selected?.id, mapStatus]);
 
   useEffect(() => {
     if (!mapRef.current || !ymapsRef.current || !userLocation) return;
 
-    const coords = [userLocation.lon, userLocation.lat];
+    if (apiVersionRef.current === "v3") {
+      const coords = [userLocation.lon, userLocation.lat];
 
-    if (userMarkerRef.current) {
-      mapRef.current.removeChild(userMarkerRef.current);
-    }
+      if (userMarkerRef.current) {
+        mapRef.current.removeChild(userMarkerRef.current);
+      }
 
-    const userElement = document.createElement("div");
-    userElement.className = "ymap-user-marker";
-    userElement.title = `Вы здесь · ${formatAccuracy(userLocation.accuracy)}`;
+      const userElement = document.createElement("div");
+      userElement.className = "ymap-user-marker";
+      userElement.title = `Вы здесь · ${formatLocationMessage(userLocation)}`;
 
-    userMarkerRef.current = new ymapsRef.current.YMapMarker({ coordinates: coords, zIndex: 30 }, userElement);
-    mapRef.current.addChild(userMarkerRef.current);
-    mapRef.current.setLocation({ center: coords, zoom: 15, duration: 450 });
-  }, [userLocation, mapStatus]);
-
-  function locateUser() {
-    if (!navigator.geolocation || !window.isSecureContext) {
-      setGeoStatus("error");
-      setGeoMessage(geolocationErrorMessage());
+      userMarkerRef.current = new ymapsRef.current.YMapMarker({ coordinates: coords, zIndex: 30 }, userElement);
+      mapRef.current.addChild(userMarkerRef.current);
+      mapRef.current.setLocation({ center: coords, zoom: 15, duration: 450 });
       return;
     }
 
-    setGeoStatus("locating");
-    setGeoMessage("Определяем местоположение...");
+    const coords = [userLocation.lat, userLocation.lon];
+    const caption = formatLocationMessage(userLocation);
 
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const nextLocation = {
-          lat: position.coords.latitude,
-          lon: position.coords.longitude,
-          accuracy: position.coords.accuracy,
-        };
+    if (!userMarkerRef.current) {
+      userMarkerRef.current = new ymapsRef.current.Placemark(
+        coords,
+        {
+          iconCaption: "Вы здесь",
+          balloonContentHeader: "Ваше местоположение",
+          balloonContentBody: caption,
+        },
+        {
+          preset: "islands#blueCircleDotIcon",
+          iconColor: "#3077d8",
+        },
+      );
+      mapRef.current.geoObjects.add(userMarkerRef.current);
+    } else {
+      userMarkerRef.current.geometry.setCoordinates(coords);
+      userMarkerRef.current.properties.set({
+        iconCaption: "Вы здесь",
+        balloonContentHeader: "Ваше местоположение",
+        balloonContentBody: caption,
+      });
+    }
+
+    if (userLocation.bounds) {
+      mapRef.current.setBounds(userLocation.bounds, { checkZoomRange: true, duration: 450, zoomMargin: 48 });
+    } else {
+      mapRef.current.setCenter(coords, Math.max(mapRef.current.getZoom(), 15), { duration: 450 });
+    }
+  }, [userLocation, mapStatus]);
+
+  async function locateUser() {
+    setGeoStatus("locating");
+    setGeoMessage("Определяем местоположение через Яндекс...");
+
+    try {
+      const nextLocation = await getYandexLocation(ymapsRef.current, apiVersionRef.current);
+      setUserLocation(nextLocation);
+      setGeoStatus("found");
+      setGeoMessage(formatLocationMessage(nextLocation));
+      return;
+    } catch (yandexError) {
+      try {
+        const nextLocation = await getBrowserLocation();
         setUserLocation(nextLocation);
         setGeoStatus("found");
-        setGeoMessage(formatAccuracy(nextLocation.accuracy) || "Местоположение найдено.");
-      },
-      (error) => {
+        setGeoMessage(formatLocationMessage(nextLocation));
+      } catch (browserError) {
         setGeoStatus("error");
-        setGeoMessage(geolocationErrorMessage(error));
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 12000,
-        maximumAge: 30000,
-      },
-    );
+        setGeoMessage(
+          browserError.message === "BROWSER_GEOLOCATION_UNAVAILABLE"
+            ? "Яндекс не смог определить местоположение, а браузерная геолокация работает только через HTTPS или localhost."
+            : geolocationErrorMessage(browserError),
+        );
+      }
+    }
   }
 
   return (
@@ -986,8 +1209,8 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
               <>
                 <strong>Карта не загрузилась</strong>
                 <span>
-                  {mapError === "YANDEX_MAPS_SCRIPT_TIMEOUT"
-                    ? "Яндекс не отдал JS API. Проверь, что ключ активен, создан для JavaScript API и разрешает текущий HTTP Referer."
+                  {mapError.includes("YANDEX_MAPS")
+                    ? "Яндекс не отдал JS API. Проверь, что ключ активен для JavaScript API и разрешает текущий адрес приложения."
                     : mapError || "Проверь API-ключ и ограничения HTTP Referer."}
                 </span>
               </>
