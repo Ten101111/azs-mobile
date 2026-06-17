@@ -11,7 +11,6 @@ import {
   List,
   LocateFixed,
   Map as MapIcon,
-  MapPin,
   Navigation,
   Phone,
   Search,
@@ -65,7 +64,9 @@ function shortStatus(status) {
 }
 
 function hasValidPoint(station) {
-  return station.lat && station.lon && station.lat !== 0 && station.lon !== 0;
+  const lat = Number(station.lat);
+  const lon = Number(station.lon);
+  return Number.isFinite(lat) && Number.isFinite(lon) && lat !== 0 && lon !== 0;
 }
 
 function toLatLng(station) {
@@ -398,7 +399,7 @@ function App() {
       .then((response) => response.json())
       .then((data) => {
         setPayload(data);
-        setSelectedId(data.stations[0]?.id || "");
+        setSelectedId(data.stations.find(hasValidPoint)?.id || "");
       });
   }, []);
 
@@ -411,7 +412,8 @@ function App() {
     setSelectedId("");
   }, [query, filters.npo, filters.subject, filters.status, filters.type, filters.location, filters.service, filters.quality]);
 
-  const stations = payload.stations;
+  const stations = useMemo(() => payload.stations.filter(hasValidPoint), [payload.stations]);
+  const excludedNoCoords = Math.max((payload.meta?.count || payload.stations.length) - stations.length, 0);
   const options = useMemo(
     () => ({
       npo: uniqueOptions(stations, "npo"),
@@ -437,7 +439,6 @@ function App() {
       if (filters.service === "toilet" && !station.flags.hasToilet) return false;
       if (filters.service === "landmark" && !station.flags.landmark) return false;
       if (filters.quality === "issues" && station.qualityIssues.length === 0) return false;
-      if (filters.quality === "noCoords" && hasValidPoint(station)) return false;
       return true;
     });
   }, [stations, query, filters]);
@@ -446,9 +447,9 @@ function App() {
 
   const metrics = useMemo(() => {
     const active = stations.filter((station) => station.flags.active).length;
-    const noCoords = stations.filter((station) => !hasValidPoint(station)).length;
     const cafe = stations.filter((station) => station.flags.hasCafe).length;
-    return { active, noCoords, cafe };
+    const toilet = stations.filter((station) => station.flags.hasToilet).length;
+    return { active, cafe, toilet };
   }, [stations]);
 
   function setFilter(key, value) {
@@ -477,7 +478,11 @@ function App() {
         <header className="topbar">
           <div>
             <h1>АЗС</h1>
-            <p>{payload.meta ? `${payload.meta.source} · ${asInt(payload.meta.count)} объектов` : "Загрузка данных"}</p>
+            <p>
+              {payload.meta
+                ? `${asInt(stations.length)} на карте${excludedNoCoords ? ` · скрыто ${asInt(excludedNoCoords)}` : ""}`
+                : "Загрузка данных"}
+            </p>
           </div>
           <button className="icon-button" type="button" onClick={() => setShowFilters(true)} aria-label="Фильтры">
             <SlidersHorizontal size={20} />
@@ -592,7 +597,7 @@ function MetricStrip({ count, metrics }) {
       <Metric label="Найдено" value={count} />
       <Metric label="Действующих" value={metrics.active} tone="green" />
       <Metric label="Кафе" value={metrics.cafe} tone="red" />
-      <Metric label="Без координат" value={metrics.noCoords} tone="amber" />
+      <Metric label="С санузлом" value={metrics.toilet} tone="amber" />
     </div>
   );
 }
@@ -600,7 +605,6 @@ function MetricStrip({ count, metrics }) {
 function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
   const total = stations.length;
   const active = stations.filter((station) => station.flags.active).length;
-  const invalidCoords = stations.filter((station) => !hasValidPoint(station)).length;
   const quality = stations.filter((station) => station.qualityIssues.length > 0).length;
   const shop = stations.filter((station) => station.flags.hasShop).length;
   const cafe = stations.filter((station) => station.flags.hasCafe).length;
@@ -640,7 +644,6 @@ function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
         <Kpi title="С магазином" value={shop} share={pct(shop, total)} />
         <Kpi title="С кафе" value={cafe} share={pct(cafe, total)} tone="red" />
         <Kpi title="С санузлом" value={toilet} share={pct(toilet, total)} />
-        <Kpi title="Без координат" value={invalidCoords} share={pct(invalidCoords, total)} tone="amber" />
         <Kpi title="Замечания" value={quality} share={pct(quality, total)} tone="amber" />
         <Kpi title="Знаковые" value={landmark} share={pct(landmark, total)} />
         <Kpi title="Агентская схема" value={agency} share={pct(agency, total)} />
@@ -657,17 +660,6 @@ function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
           <button
             type="button"
             onClick={() => {
-              onFilter("quality", "noCoords");
-              onOpenList();
-            }}
-          >
-            <MapPin size={16} />
-            <span>Без координат</span>
-            <strong>{asInt(invalidCoords)}</strong>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
               onFilter("quality", "issues");
               onOpenList();
             }}
@@ -676,7 +668,7 @@ function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
             <span>Есть замечания</span>
             <strong>{asInt(quality)}</strong>
           </button>
-          <p>Эти фильтры можно использовать как рабочий список для чистки данных перед подключением полноценной карты.</p>
+          <p>Объекты без координат скрыты из рабочего среза, чтобы карта, маршруты и выездной сценарий оставались чистыми.</p>
         </div>
       </div>
     </section>
@@ -687,7 +679,6 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
   const [copied, setCopied] = useState(false);
   const total = stations.length;
   const issueStations = stations.filter((station) => station.qualityIssues.length > 0);
-  const noCoords = stations.filter((station) => !hasValidPoint(station));
   const noResponsible = stations.filter(missingResponsible);
   const noPhone = stations.filter(missingContactPhone);
   const issueCounts = groupTop(
@@ -697,7 +688,6 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
   );
   const contactReady = stations.filter((station) => !missingResponsible(station) && !missingContactPhone(station)).length;
   const serviceReady = stations.filter((station) => station.flags.hasShop || station.flags.hasCafe || station.flags.hasToilet).length;
-  const mapReady = total - noCoords.length;
 
   function copyUpdateCommand() {
     navigator.clipboard?.writeText(UPDATE_DATA_COMMAND).then(() => {
@@ -730,25 +720,20 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
       <div className="analytics-kpis">
         <Kpi title="Карточек в срезе" value={total} share={pct(total, totalStations.length)} />
         <Kpi title="С замечаниями" value={issueStations.length} share={pct(issueStations.length, total)} tone="amber" />
-        <Kpi title="Без координат" value={noCoords.length} share={pct(noCoords.length, total)} tone="amber" />
         <Kpi title="Без телефона" value={noPhone.length} share={pct(noPhone.length, total)} tone="red" />
+        <Kpi title="Без ответственного" value={noResponsible.length} share={pct(noResponsible.length, total)} tone="amber" />
       </div>
 
       <div className="control-grid">
         <div className="analytics-card readiness-card">
           <h3>Операционная готовность</h3>
-          <ReadinessRow title="Карта" value={mapReady} total={total} />
+          <ReadinessRow title="Карта и маршрут" value={total} total={total} />
           <ReadinessRow title="Контакты" value={Math.max(contactReady, 0)} total={total} />
           <ReadinessRow title="Сервисный профиль" value={serviceReady} total={total} />
         </div>
 
         <div className="analytics-card quality-list-card">
           <h3>Основные разрывы</h3>
-          <button type="button" onClick={() => onFilter("quality", "noCoords")}>
-            <MapPin size={16} />
-            <span>Без координат</span>
-            <strong>{asInt(noCoords.length)}</strong>
-          </button>
           <button type="button" onClick={() => onFilter("quality", "issues")}>
             <AlertTriangle size={16} />
             <span>Любые замечания</span>
@@ -1174,8 +1159,9 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
         <div>
           <strong>{asInt(points.length)} точек на карте</strong>
           <span>
-            {asInt(stations.length - points.length)} без координат
-            {hiddenPointCount > 0 ? ` · показано ${asInt(visiblePoints.length)}` : ""}
+            {hiddenPointCount > 0
+              ? `Показано ${asInt(visiblePoints.length)} из ${asInt(points.length)}`
+              : "Все объекты с координатами"}
           </span>
         </div>
         <button
@@ -1232,19 +1218,45 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
     ? `https://yandex.ru/maps/?rtext=~${station.lat},${station.lon}&rtt=auto`
     : "";
   const phone = bestPhone(station);
-  const [touchStart, setTouchStart] = useState(null);
+  const [dragOffset, setDragOffset] = useState(0);
+  const dragStartRef = useRef(null);
+  const suppressGrabberClickRef = useRef(false);
 
   function cycleSheet() {
+    if (suppressGrabberClickRef.current) {
+      suppressGrabberClickRef.current = false;
+      return;
+    }
+
+    if (sheetState === "closed" || sheetState === "peek") {
+      onSheetState("half");
+      return;
+    }
+
     onSheetState(sheetState === "full" ? "half" : "full");
   }
 
-  function handleTouchEnd(event) {
-    if (touchStart == null) return;
-    const endY = event.changedTouches[0]?.clientY ?? touchStart;
-    const delta = endY - touchStart;
-    setTouchStart(null);
-    if (Math.abs(delta) < 42) return;
-    if (delta > 0 && event.currentTarget.scrollTop > 4) return;
+  function beginSheetDrag(clientY) {
+    dragStartRef.current = clientY;
+    setDragOffset(0);
+  }
+
+  function updateSheetDrag(clientY) {
+    if (dragStartRef.current == null) return;
+    setDragOffset(Math.max(clientY - dragStartRef.current, -80));
+  }
+
+  function finishSheetDrag(clientY, scrollTop = 0) {
+    if (dragStartRef.current == null) return;
+    const delta = clientY - dragStartRef.current;
+    dragStartRef.current = null;
+    setDragOffset(0);
+    if (Math.abs(delta) < 36) return;
+    suppressGrabberClickRef.current = true;
+    window.setTimeout(() => {
+      suppressGrabberClickRef.current = false;
+    }, 0);
+    if (delta > 0 && scrollTop > 4) return;
     if (delta < 0) {
       onSheetState(sheetState === "closed" || sheetState === "peek" ? "half" : "full");
     } else {
@@ -1252,13 +1264,76 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
     }
   }
 
+  function beginMouseSheetDrag(clientY) {
+    beginSheetDrag(clientY);
+
+    function handleMouseMove(event) {
+      updateSheetDrag(event.clientY);
+    }
+
+    function handleMouseUp(event) {
+      window.removeEventListener("mousemove", handleMouseMove);
+      finishSheetDrag(event.clientY);
+    }
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp, { once: true });
+  }
+
+  function handleTouchMove(event) {
+    updateSheetDrag(event.touches[0]?.clientY ?? dragStartRef.current ?? 0);
+  }
+
+  function handleTouchEnd(event) {
+    finishSheetDrag(event.changedTouches[0]?.clientY ?? dragStartRef.current ?? 0, event.currentTarget.scrollTop);
+  }
+
   return (
     <aside
-      className={`detail sheet-${sheetState}`}
-      onTouchStart={(event) => setTouchStart(event.touches[0]?.clientY ?? null)}
+      className={`detail sheet-${sheetState} ${dragOffset ? "dragging" : ""}`}
+      style={{ "--sheet-drag": `${dragOffset}px` }}
+      onTouchStart={(event) => {
+        if (event.target.closest("a, button, summary, select, input")) return;
+        beginSheetDrag(event.touches[0]?.clientY ?? 0);
+      }}
+      onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
-      <button className="detail-grabber" type="button" onClick={cycleSheet} aria-label="Развернуть карточку" />
+      <button
+        className="detail-grabber"
+        type="button"
+        onClick={cycleSheet}
+        onTouchStart={(event) => {
+          event.stopPropagation();
+          beginSheetDrag(event.touches[0]?.clientY ?? 0);
+        }}
+        onTouchMove={(event) => {
+          event.stopPropagation();
+          updateSheetDrag(event.touches[0]?.clientY ?? dragStartRef.current ?? 0);
+        }}
+        onTouchEnd={(event) => {
+          event.stopPropagation();
+          finishSheetDrag(event.changedTouches[0]?.clientY ?? dragStartRef.current ?? 0);
+        }}
+        onPointerDown={(event) => {
+          if (event.pointerType === "touch") return;
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          beginSheetDrag(event.clientY);
+        }}
+        onPointerMove={(event) => {
+          if (event.pointerType === "touch") return;
+          updateSheetDrag(event.clientY);
+        }}
+        onPointerUp={(event) => {
+          if (event.pointerType === "touch") return;
+          finishSheetDrag(event.clientY);
+        }}
+        onMouseDown={(event) => {
+          event.preventDefault();
+          beginMouseSheetDrag(event.clientY);
+        }}
+        aria-label="Развернуть карточку"
+      />
       <div className="detail-head">
         <div>
           <span className="eyeless">{station.ksss}</span>
@@ -1275,7 +1350,7 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
           <Phone size={17} /> Позвонить
         </a>
         <a className={`action-button primary ${routeUrl ? "" : "disabled"}`} href={routeUrl || undefined} target="_blank" rel="noreferrer">
-          <Navigation size={17} /> Маршрут
+          <Navigation size={17} /> Яндекс маршрут
         </a>
       </div>
 
@@ -1433,7 +1508,6 @@ function FilterSheet({ filters, options, setFilter, onClose, onReset }) {
         <FilterRail filters={filters} options={options} setFilter={setFilter} />
         <SelectChip label="Качество" value={filters.quality} options={[
           ["issues", "Есть замечания"],
-          ["noCoords", "Без координат"],
         ]} onChange={(value) => setFilter("quality", value)} />
         <button className="reset-button" onClick={onReset} type="button">Сбросить фильтры</button>
       </div>

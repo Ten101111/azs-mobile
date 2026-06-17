@@ -33,6 +33,7 @@ select {
 button,
 a {
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .app-shell {
@@ -79,6 +80,19 @@ a {
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.icon-button:active,
+.clear-button:active,
+.station-row:active,
+.mode-row button:active,
+.map-locate-button:active,
+.action-button:active,
+.quality-button:active,
+.select-chip:active,
+.reset-button:active {
+  transform: scale(0.97);
 }
 
 .icon-button.favorite.on,
@@ -139,6 +153,7 @@ a {
   gap: 8px;
   color: var(--muted);
   background: transparent;
+  transition: transform 120ms ease, background 120ms ease, color 120ms ease;
 }
 
 .mode-row button.active {
@@ -215,6 +230,7 @@ a {
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, color 120ms ease;
 }
 
 .select-chip.filled {
@@ -615,7 +631,7 @@ a {
 .station-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) 28px;
+  grid-template-columns: 10px minmax(0, 1fr) 38px;
   gap: 10px;
   align-items: start;
   padding: 13px 10px;
@@ -626,6 +642,7 @@ a {
   color: var(--text);
   text-align: left;
   cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
 }
 
 .station-row.selected {
@@ -698,12 +715,19 @@ a {
 }
 
 .favorite-dot {
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #c2c9d2;
+  border-radius: 8px;
+  transition: transform 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.favorite-dot:active {
+  transform: scale(0.92);
+  background: #fff1f3;
 }
 
 .map-surface {
@@ -740,8 +764,8 @@ a {
 }
 
 .map-locate-button {
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -750,6 +774,8 @@ a {
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  box-shadow: 0 6px 18px rgba(21, 27, 36, 0.08);
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
 
 .map-locate-button.active {
@@ -948,7 +974,7 @@ a {
 }
 
 .action-button {
-  min-height: 42px;
+  min-height: 46px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -959,12 +985,14 @@ a {
   text-decoration: none;
   font-weight: 720;
   font-size: 13px;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .action-button.primary {
   border-color: var(--red);
   background: var(--red);
   color: white;
+  box-shadow: 0 10px 24px rgba(201, 29, 50, 0.22);
 }
 
 .action-button.disabled {
@@ -1326,7 +1354,7 @@ a {
   }
 
   .app-shell.map-mode {
-    padding-bottom: calc(180px + 76px + env(safe-area-inset-bottom));
+    padding-bottom: calc(160px + 76px + env(safe-area-inset-bottom));
   }
 
   .app-shell.map-mode .metrics,
@@ -1335,12 +1363,21 @@ a {
   }
 
   .app-shell.map-mode .content-grid {
-    margin-top: 10px;
+    margin-top: 8px;
   }
 
   .app-shell.map-mode .map-surface {
-    height: calc(100vh - 266px);
-    min-height: 430px;
+    height: calc(100vh - 238px);
+    min-height: 452px;
+  }
+
+  .app-shell.map-mode .map-header {
+    height: 58px;
+    padding: 0 12px 0 14px;
+  }
+
+  .app-shell.map-mode .map-canvas {
+    height: calc(100% - 58px);
   }
 
   .detail {
@@ -1351,13 +1388,20 @@ a {
     top: auto;
     z-index: 20;
     height: 52vh;
-    padding: 8px 14px 18px;
+    padding: 8px 14px calc(18px + env(safe-area-inset-bottom));
     border-left: 0;
     border-top: 1px solid var(--line);
     border-radius: 16px 16px 0 0;
     box-shadow: var(--shadow);
+    overscroll-behavior: contain;
     touch-action: pan-y;
+    transform: translateY(var(--sheet-drag, 0px));
+    will-change: height, transform;
     transition: height 180ms ease, transform 180ms ease;
+  }
+
+  .detail.dragging {
+    transition: none;
   }
 
   .analytics-mode .detail,
@@ -1392,39 +1436,39 @@ a {
   }
 
   .detail.sheet-peek {
-    height: 132px;
+    height: 142px;
     overflow: hidden;
   }
 
   .app-shell.map-mode .detail.sheet-peek {
-    height: 132px;
+    height: 142px;
   }
 
   .detail.sheet-half {
-    height: 52vh;
+    height: min(56vh, 520px);
   }
 
   .detail.sheet-full {
-    height: calc(100vh - 82px - env(safe-area-inset-bottom));
+    height: calc(100vh - 78px - env(safe-area-inset-bottom));
   }
 
   .detail.sheet-closed {
-    height: 132px;
+    height: 142px;
     overflow: hidden;
     pointer-events: none;
-    transform: translateY(calc(100% + 90px + env(safe-area-inset-bottom)));
+    transform: translateY(calc(100% + 84px + env(safe-area-inset-bottom)));
   }
 
   .app-shell.map-mode .detail.sheet-half {
-    height: 38vh;
+    height: min(42vh, 390px);
   }
 
   .app-shell.map-mode .detail.sheet-full {
-    height: calc(100vh - 82px - env(safe-area-inset-bottom));
+    height: calc(100vh - 78px - env(safe-area-inset-bottom));
   }
 
   .app-shell.map-mode .detail.sheet-closed {
-    height: 132px;
+    height: 142px;
   }
 
   .detail.sheet-peek .action-row,
@@ -1445,7 +1489,7 @@ a {
   }
 
   .action-button {
-    min-height: 48px;
+    min-height: 52px;
     font-size: 14px;
   }
 
@@ -1483,7 +1527,7 @@ a {
   }
 
   .station-row {
-    grid-template-columns: 9px minmax(0, 1fr) 24px;
+    grid-template-columns: 9px minmax(0, 1fr) 38px;
     padding: 12px 9px;
   }
 
