@@ -13,6 +13,7 @@ import {
   Map as MapIcon,
   Navigation,
   Phone,
+  Users,
   Search,
   ShieldCheck,
   SlidersHorizontal,
@@ -400,6 +401,61 @@ function deltaTone(value) {
   return numeric > 0 ? "positive" : "negative";
 }
 
+function distanceKm(from, station) {
+  if (!from || !hasValidPoint(station)) return Number.POSITIVE_INFINITY;
+  const toRad = (value) => (value * Math.PI) / 180;
+  const earthRadiusKm = 6371;
+  const lat1 = toRad(Number(from.lat));
+  const lat2 = toRad(Number(station.lat));
+  const deltaLat = toRad(Number(station.lat) - Number(from.lat));
+  const deltaLon = toRad(Number(station.lon) - Number(from.lon));
+  const a = Math.sin(deltaLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLon / 2) ** 2;
+  return 2 * earthRadiusKm * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function nearestStation(location, stations) {
+  return stations.reduce(
+    (best, station) => {
+      const distance = distanceKm(location, station);
+      return distance < best.distance ? { station, distance } : best;
+    },
+    { station: null, distance: Number.POSITIVE_INFINITY },
+  );
+}
+
+function formatDistance(distance) {
+  if (!Number.isFinite(distance)) return "";
+  if (distance < 1) return `${Math.max(1, Math.round(distance * 1000))} м`;
+  return `${distance.toLocaleString("ru-RU", { maximumFractionDigits: distance < 10 ? 1 : 0 })} км`;
+}
+
+function metricById(metrics, id) {
+  return metrics?.find((metric) => metric.id === id);
+}
+
+function metricDisplay(metrics, id) {
+  const metric = metricById(metrics, id);
+  return metric ? formatKpiValue(metric.value, metric.unit) : "—";
+}
+
+function formatShortDate(value) {
+  const date = new Date(value);
+  return date.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+}
+
+function formatWeekday(value) {
+  const date = new Date(value);
+  return date.toLocaleDateString("ru-RU", { weekday: "short" }).replace(".", "");
+}
+
+function fetchJson(url, signal) {
+  return fetch(url, { signal, headers: { Accept: "application/json" } }).then((response) => {
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`REQUEST_FAILED_${response.status}`);
+    return response.json();
+  });
+}
+
 function groupTop(stations, getter, limit = 6) {
   const counts = new Map();
   stations.forEach((station) => {
@@ -564,8 +620,13 @@ function App() {
           <AnalyticsDashboard
             stations={filtered}
             totalStations={stations}
+            selected={selected}
             onFilter={setFilter}
             onOpenList={() => changeMode("list")}
+            onOpenStation={(id) => {
+              selectStation(id);
+              changeMode("list");
+            }}
           />
         ) : mode === "quality" ? (
           <ControlDashboard
@@ -640,7 +701,190 @@ function MetricStrip({ count, metrics }) {
   );
 }
 
-function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
+function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpenList, onOpenStation }) {
+  const period = useMemo(() => currentMonthPeriod(), []);
+  const [view, setView] = useState("overview");
+  const [groupBy, setGroupBy] = useState("territoryManager");
+  const [overviewState, setOverviewState] = useState({ status: "idle", data: null, error: "" });
+  const [similarState, setSimilarState] = useState({ status: "idle", data: null, error: "" });
+  const [compareState, setCompareState] = useState({ status: "idle", data: null, error: "" });
+  const [compareIds, setCompareIds] = useState(() => (selected?.ksss ? [selected.ksss] : []));
+  const [compareNotice, setCompareNotice] = useState("");
+
+  useEffect(() => {
+    if (!selected?.ksss || compareIds.length) return;
+    setCompareIds([selected.ksss]);
+  }, [selected?.ksss, compareIds.length]);
+
+  useEffect(() => {
+    if (view !== "slices") return undefined;
+    const controller = new AbortController();
+    setOverviewState({ status: "loading", data: null, error: "" });
+
+    fetchJson(`/api/analytics/overview?period=${period}&groupBy=${groupBy}`, controller.signal)
+      .then((data) => {
+        if (!data || !Array.isArray(data.rows) || !data.rows.length) {
+          setOverviewState({ status: "no-data", data: null, error: "" });
+          return;
+        }
+        setOverviewState({ status: "ready", data, error: "" });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setOverviewState({ status: "error", data: null, error: error.message });
+      });
+
+    return () => controller.abort();
+  }, [view, groupBy, period]);
+
+  useEffect(() => {
+    if (view !== "similar") return undefined;
+    if (!selected?.ksss) {
+      setSimilarState({ status: "no-data", data: null, error: "" });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setSimilarState({ status: "loading", data: null, error: "" });
+
+    fetchJson(`/api/stations/${encodeURIComponent(selected.ksss)}/similar?period=${period}&limit=10`, controller.signal)
+      .then((data) => {
+        if (!data || !Array.isArray(data.items) || !data.items.length) {
+          setSimilarState({ status: "no-data", data: null, error: "" });
+          return;
+        }
+        setSimilarState({ status: "ready", data, error: "" });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setSimilarState({ status: "error", data: null, error: error.message });
+      });
+
+    return () => controller.abort();
+  }, [view, selected?.ksss, period]);
+
+  useEffect(() => {
+    if (view !== "compare") return undefined;
+    if (!compareIds.length) {
+      setCompareState({ status: "no-data", data: null, error: "" });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const params = compareIds.map((id) => `ksss=${encodeURIComponent(id)}`).join("&");
+    setCompareState({ status: "loading", data: null, error: "" });
+
+    fetchJson(`/api/analytics/compare?period=${period}&${params}`, controller.signal)
+      .then((data) => {
+        if (!data || !Array.isArray(data.items) || !data.items.length) {
+          setCompareState({ status: "no-data", data: null, error: "" });
+          return;
+        }
+        setCompareState({ status: "ready", data, error: "" });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setCompareState({ status: "error", data: null, error: error.message });
+      });
+
+    return () => controller.abort();
+  }, [view, compareIds, period]);
+
+  function addCompare(ksss) {
+    if (!ksss || compareIds.includes(ksss)) return;
+    if (compareIds.length >= 5) {
+      setCompareNotice("Можно сравнить до 5 АЗС одновременно.");
+      return;
+    }
+    setCompareNotice("");
+    setCompareIds((current) => [...current, ksss]);
+  }
+
+  function removeCompare(ksss) {
+    setCompareNotice("");
+    setCompareIds((current) => current.filter((item) => item !== ksss));
+  }
+
+  const tabs = [
+    ["overview", "Обзор"],
+    ["slices", "Разрезы"],
+    ["similar", "Похожие"],
+    ["compare", "Сравнение"],
+  ];
+
+  return (
+    <section className="analytics-pane">
+      <div className="analytics-head">
+        <div>
+          <h2>Аналитика сети</h2>
+          <p>
+            {view === "overview"
+              ? `Показатели пересчитываются по текущей выборке: ${asInt(stations.length)} из ${asInt(totalStations.length)} объектов.`
+              : `Период: ${formatPeriod(period)} · источник API /api`}
+          </p>
+        </div>
+        <button
+          className="quality-button"
+          type="button"
+          onClick={() => {
+            onFilter("quality", "issues");
+            onOpenList();
+          }}
+        >
+          <AlertTriangle size={16} /> Объекты с замечаниями
+        </button>
+      </div>
+
+      <div className="analytics-tabs" role="tablist" aria-label="Режим аналитики">
+        {tabs.map(([id, label]) => (
+          <button className={view === id ? "active" : ""} type="button" key={id} onClick={() => setView(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "overview" && (
+        <AnalyticsLocalOverview
+          stations={stations}
+          totalStations={totalStations}
+          onFilter={onFilter}
+          onOpenList={onOpenList}
+        />
+      )}
+      {view === "slices" && (
+        <AnalyticsSlices
+          state={overviewState}
+          groupBy={groupBy}
+          setGroupBy={setGroupBy}
+        />
+      )}
+      {view === "similar" && (
+        <AnalyticsSimilar
+          selected={selected}
+          state={similarState}
+          onOpenStation={onOpenStation}
+          onCompare={(ksss) => {
+            addCompare(ksss);
+            setView("compare");
+          }}
+        />
+      )}
+      {view === "compare" && (
+        <AnalyticsCompare
+          stations={stations}
+          selected={selected}
+          state={compareState}
+          compareIds={compareIds}
+          notice={compareNotice}
+          onAdd={addCompare}
+          onRemove={removeCompare}
+        />
+      )}
+    </section>
+  );
+}
+
+function AnalyticsLocalOverview({ stations, totalStations, onFilter, onOpenList }) {
   const total = stations.length;
   const active = stations.filter((station) => station.flags.active).length;
   const quality = stations.filter((station) => station.qualityIssues.length > 0).length;
@@ -657,26 +901,7 @@ function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
   const locationTop = groupTop(stations, (station) => station.location, 4);
 
   return (
-    <section className="analytics-pane">
-      <div className="analytics-head">
-        <div>
-          <h2>Аналитика сети</h2>
-          <p>
-            Показатели пересчитываются по текущей выборке: {asInt(total)} из {asInt(totalStations.length)} объектов.
-          </p>
-        </div>
-        <button
-          className="quality-button"
-          type="button"
-          onClick={() => {
-            onFilter("quality", "issues");
-            onOpenList();
-          }}
-        >
-          <AlertTriangle size={16} /> Объекты с замечаниями
-        </button>
-      </div>
-
+    <>
       <div className="analytics-kpis">
         <Kpi title="Действующие" value={active} share={pct(active, total)} tone="green" />
         <Kpi title="С магазином" value={shop} share={pct(shop, total)} />
@@ -709,7 +934,241 @@ function AnalyticsDashboard({ stations, totalStations, onFilter, onOpenList }) {
           <p>Объекты без координат скрыты из рабочего среза, чтобы карта, маршруты и выездной сценарий оставались чистыми.</p>
         </div>
       </div>
-    </section>
+    </>
+  );
+}
+
+const groupByOptions = [
+  ["territoryManager", "ТМ"],
+  ["regionalManager", "РУ"],
+  ["station", "АЗС"],
+];
+
+function AnalyticsStateMessage({ state, emptyText, errorText }) {
+  if (state.status === "loading") {
+    return (
+      <div className="analytics-card analytics-message">
+        <CircleDot size={18} />
+        <span>Загружаем данные...</span>
+      </div>
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <div className="analytics-card analytics-message warning">
+        <AlertTriangle size={18} />
+        <span>{errorText}</span>
+      </div>
+    );
+  }
+
+  if (state.status === "no-data") {
+    return (
+      <div className="analytics-card analytics-message">
+        <CircleDot size={18} />
+        <span>{emptyText}</span>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function AnalyticsSlices({ state, groupBy, setGroupBy }) {
+  const rows = state.data?.rows || [];
+  const maxRevenue = Math.max(...rows.map((row) => metricById(row.metrics, "revenue")?.value || 0), 1);
+
+  return (
+    <div className="analytics-api-block">
+      <div className="analytics-toolbar">
+        <div className="segmented">
+          {groupByOptions.map(([id, label]) => (
+            <button className={groupBy === id ? "active" : ""} type="button" key={id} onClick={() => setGroupBy(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {state.data?.source && <span className="source-pill">{state.data.source === "mock" ? "mock" : "db"}</span>}
+      </div>
+
+      <AnalyticsStateMessage
+        state={state}
+        emptyText="По выбранному разрезу пока нет данных."
+        errorText="Аналитика временно недоступна"
+      />
+
+      {state.status === "ready" && (
+        <div className="analytics-card analytics-table-card">
+          <div className="analytics-table">
+            <div className="analytics-table-head">
+              <span>{groupByOptions.find(([id]) => id === groupBy)?.[1]}</span>
+              <span>Выручка</span>
+              <span>Топливо</span>
+              <span>Чеки</span>
+              <span>MoM / YoY</span>
+            </div>
+            {rows.slice(0, 18).map((row) => {
+              const revenue = metricById(row.metrics, "revenue");
+              return (
+                <article className="analytics-table-row" key={row.id}>
+                  <div>
+                    <strong>{row.label}</strong>
+                    <small>{asInt(row.count)} объект.</small>
+                    <i style={{ width: `${Math.max(5, ((revenue?.value || 0) / maxRevenue) * 100)}%` }} />
+                  </div>
+                  <span>{metricDisplay(row.metrics, "revenue")}</span>
+                  <span>{metricDisplay(row.metrics, "fuelVolume")}</span>
+                  <span>{metricDisplay(row.metrics, "checks")}</span>
+                  <span className="delta-pair">
+                    <em className={deltaTone(revenue?.momPct)}>MoM {formatDelta(revenue?.momPct)}</em>
+                    <em className={deltaTone(revenue?.yoyPct)}>YoY {formatDelta(revenue?.yoyPct)}</em>
+                  </span>
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnalyticsSimilar({ selected, state, onOpenStation, onCompare }) {
+  return (
+    <div className="analytics-api-block">
+      <div className="analytics-context">
+        <span>База подбора</span>
+        <strong>{selected ? `${selected.name} · ${selected.ksss}` : "АЗС не выбрана"}</strong>
+      </div>
+
+      <AnalyticsStateMessage
+        state={state}
+        emptyText="Выберите АЗС, чтобы подобрать похожие объекты."
+        errorText="Подбор похожих АЗС временно недоступен"
+      />
+
+      {state.status === "ready" && (
+        <div className="similar-list">
+          {state.data.items.map((item) => (
+            <article className="analytics-card similar-card" key={item.ksss}>
+              <div className="similar-score">
+                <strong>{item.score}</strong>
+                <span>score</span>
+              </div>
+              <div className="similar-main">
+                <h3>{item.name}</h3>
+                <p>{item.ksss} · {item.subject || "Регион не заполнен"}</p>
+                <div className="similar-reasons">
+                  {item.reasons.map((reason) => (
+                    <span key={reason}>{reason}</span>
+                  ))}
+                </div>
+                <div className="similar-metrics">
+                  <span>{metricDisplay(item.metrics, "revenue")}</span>
+                  <span>{metricDisplay(item.metrics, "fuelVolume")}</span>
+                  <span>{metricDisplay(item.metrics, "checks")}</span>
+                </div>
+              </div>
+              <div className="similar-actions">
+                <button type="button" onClick={() => onOpenStation(item.ksss)}>Открыть</button>
+                <button type="button" onClick={() => onCompare(item.ksss)}>Сравнить</button>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnalyticsCompare({ stations, selected, state, compareIds, notice, onAdd, onRemove }) {
+  const availableStations = stations.filter((station) => station.ksss && !compareIds.includes(station.ksss));
+  const rows = [
+    ["Регион", (item) => item.subject || "—"],
+    ["РУ", (item) => item.regionalManager || "—"],
+    ["ТМ", (item) => item.territoryManager || "—"],
+    ["Формат", (item) => item.format || "—"],
+    ["Локация", (item) => item.location || "—"],
+    ["ТРК", (item) => (item.trkCount ? asInt(item.trkCount) : "—")],
+    ["Посты", (item) => (item.postsCount ? asInt(item.postsCount) : "—")],
+    ["Штат", (item) => `${asInt(item.staffTotal)} чел.`],
+    ["Выручка", (item) => metricDisplay(item.metrics, "revenue")],
+    ["Объем топлива", (item) => metricDisplay(item.metrics, "fuelVolume")],
+    ["Чеки", (item) => metricDisplay(item.metrics, "checks")],
+    ["Средний чек", (item) => metricDisplay(item.metrics, "avgCheck")],
+  ];
+
+  return (
+    <div className="analytics-api-block">
+      <div className="compare-picker">
+        <label className="select-chip">
+          <span>{compareIds.length >= 5 ? "Лимит 5 АЗС" : "Добавить АЗС"}</span>
+          <ChevronDown size={14} />
+          <select
+            value=""
+            onChange={(event) => {
+              onAdd(event.target.value);
+              event.target.value = "";
+            }}
+            disabled={compareIds.length >= 5}
+            aria-label="Добавить АЗС в сравнение"
+          >
+            <option value="">{selected ? `Текущая: ${selected.ksss}` : "Выберите АЗС"}</option>
+            {availableStations.map((station) => (
+              <option value={station.ksss} key={station.ksss}>
+                {station.ksss} · {station.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span>{compareIds.length} / 5</span>
+      </div>
+
+      <div className="compare-chips">
+        {compareIds.map((ksss) => (
+          <button type="button" key={ksss} onClick={() => onRemove(ksss)}>
+            {ksss}
+            <X size={13} />
+          </button>
+        ))}
+      </div>
+      {notice && <p className="compare-notice">{notice}</p>}
+
+      <AnalyticsStateMessage
+        state={state}
+        emptyText="Добавьте АЗС для сравнения."
+        errorText="Сравнение временно недоступно"
+      />
+
+      {state.status === "ready" && (
+        <div className="compare-scroll" aria-label="Сравнение АЗС">
+          <table className="compare-table">
+            <thead>
+              <tr>
+                <th>Показатель</th>
+                {state.data.items.map((item) => (
+                  <th key={item.ksss}>
+                    <strong>{item.name}</strong>
+                    <span>{item.ksss}</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(([label, getter]) => (
+                <tr key={label}>
+                  <th>{label}</th>
+                  {state.data.items.map((item) => (
+                    <td key={`${item.ksss}-${label}`}>{getter(item)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1165,21 +1624,36 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
   }, [userLocation, mapStatus]);
 
   async function locateUser() {
+    if (!points.length) {
+      setGeoStatus("error");
+      setGeoMessage("В текущей выборке нет АЗС с координатами.");
+      return;
+    }
+
+    function applyNearest(nextLocation) {
+      const nearest = nearestStation(nextLocation, points);
+      setUserLocation(nextLocation);
+      if (nearest.station) {
+        onSelectRef.current(nearest.station.id);
+        setGeoStatus("found");
+        setGeoMessage(`Ближайшая АЗС: ${nearest.station.name || nearest.station.stationNumber} · ${formatDistance(nearest.distance)}`);
+      } else {
+        setGeoStatus("error");
+        setGeoMessage("Не удалось найти ближайшую АЗС в текущей выборке.");
+      }
+    }
+
     setGeoStatus("locating");
     setGeoMessage("Определяем местоположение через Яндекс...");
 
     try {
       const nextLocation = await getYandexLocation(ymapsRef.current, apiVersionRef.current);
-      setUserLocation(nextLocation);
-      setGeoStatus("found");
-      setGeoMessage(formatLocationMessage(nextLocation));
+      applyNearest(nextLocation);
       return;
     } catch (yandexError) {
       try {
         const nextLocation = await getBrowserLocation();
-        setUserLocation(nextLocation);
-        setGeoStatus("found");
-        setGeoMessage(formatLocationMessage(nextLocation));
+        applyNearest(nextLocation);
       } catch (browserError) {
         setGeoStatus("error");
         setGeoMessage(
@@ -1393,6 +1867,7 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
       </div>
 
       <StationKpis ksss={station.ksss} />
+      <StationStaff ksss={station.ksss} />
 
       <DetailGroup title="Основное" defaultOpen>
         <div className="fact-grid">
@@ -1564,6 +2039,107 @@ function StationKpis({ ksss }) {
                 </div>
               </article>
             ))}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function StationStaff({ ksss }) {
+  const period = useMemo(() => currentMonthPeriod(), []);
+  const [staffState, setStaffState] = useState({ status: "idle", data: null, error: "" });
+
+  useEffect(() => {
+    if (!ksss) {
+      setStaffState({ status: "no-data", data: null, error: "" });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setStaffState({ status: "loading", data: null, error: "" });
+
+    fetchJson(`/api/stations/${encodeURIComponent(ksss)}/staff?period=${period}`, controller.signal)
+      .then((data) => {
+        if (!data || !Array.isArray(data.days) || !data.days.length) {
+          setStaffState({ status: "no-data", data: null, error: "" });
+          return;
+        }
+        setStaffState({ status: "ready", data, error: "" });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setStaffState({ status: "error", data: null, error: error.message });
+      });
+
+    return () => controller.abort();
+  }, [ksss, period]);
+
+  return (
+    <section className="detail-section staff-section">
+      <div className="kpi-head">
+        <h3>
+          <Users size={16} /> Персонал
+        </h3>
+        <span>{formatPeriod(period)}</span>
+      </div>
+
+      {staffState.status === "loading" && (
+        <div className="staff-loading">
+          <div className="kpi-card loading">
+            <i />
+            <b />
+            <small />
+          </div>
+          <div className="staff-calendar">
+            {[1, 2, 3, 4].map((item) => (
+              <span className="staff-day loading" key={item} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {staffState.status === "error" && (
+        <div className="kpi-message warning">
+          <AlertTriangle size={16} />
+          <span>Данные по персоналу временно недоступны</span>
+        </div>
+      )}
+
+      {staffState.status === "no-data" && (
+        <div className="kpi-message">
+          <CircleDot size={16} />
+          <span>По этой АЗС пока нет данных по персоналу</span>
+        </div>
+      )}
+
+      {staffState.status === "ready" && (
+        <>
+          <div className="kpi-source">
+            {staffState.data.source === "mock" ? "Демо-рекомендации до подключения SQL" : "Данные из БД"}
+          </div>
+          <div className="staff-summary">
+            <article>
+              <span>Штатная численность</span>
+              <strong>{asInt(staffState.data.staffTotal)} чел.</strong>
+            </article>
+            <article>
+              <span>Сегодня</span>
+              <strong>{staffState.data.today.day} днем · {staffState.data.today.night} ночью</strong>
+            </article>
+          </div>
+          <div className="staff-calendar" aria-label="Рекомендации по сменам на месяц">
+            {staffState.data.days.map((day) => {
+              const active = day.date === staffState.data.today.date;
+              return (
+                <article className={`staff-day ${active ? "active" : ""}`} key={day.date}>
+                  <span>{formatShortDate(day.date)}</span>
+                  <small>{formatWeekday(day.date)}</small>
+                  <b>{day.day}</b>
+                  <em>{day.night}</em>
+                </article>
+              );
+            })}
           </div>
         </>
       )}

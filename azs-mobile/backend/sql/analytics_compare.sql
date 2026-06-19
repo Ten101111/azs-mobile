@@ -1,0 +1,35 @@
+-- Future SQL template for GET /api/analytics/compare.
+--
+-- Expected params:
+--   %(ksss_list)s
+--   %(period_start)s
+--   %(period_end)s
+--   %(previous_period_start)s
+--   %(previous_year_start)s
+--
+-- Expected result columns:
+--   ksss
+--   station_number
+--   name
+--   subject
+--   regional_manager
+--   territory_manager
+--   format
+--   location
+--   trk_count
+--   posts_count
+--   staff_total
+--   revenue
+--   revenue_mom_pct
+--   revenue_yoy_pct
+--   fuel_volume
+--   fuel_volume_mom_pct
+--   fuel_volume_yoy_pct
+--   checks
+--   checks_mom_pct
+--   checks_yoy_pct
+--   avg_check
+--   avg_check_mom_pct
+--   avg_check_yoy_pct
+--
+-- Replace this placeholder with an object-to-object KPI comparison query.

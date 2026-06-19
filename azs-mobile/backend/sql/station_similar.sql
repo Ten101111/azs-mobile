@@ -1,0 +1,21 @@
+-- Future SQL template for GET /api/stations/{ksss}/similar.
+--
+-- Expected params:
+--   %(ksss)s
+--   %(period_start)s
+--   %(period_end)s
+--   %(limit)s
+--
+-- Expected result columns:
+--   ksss
+--   station_number
+--   name
+--   subject
+--   score
+--   reasons
+--   revenue
+--   fuel_volume
+--   checks
+--   avg_check
+--
+-- Replace this placeholder with similarity scoring from economic KPIs and station characteristics.

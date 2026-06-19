@@ -1,0 +1,14 @@
+-- Future SQL template for GET /api/stations/{ksss}/staff.
+--
+-- Expected params:
+--   %(ksss)s
+--   %(period_start)s
+--   %(period_end)s
+--
+-- Expected result columns:
+--   staff_total
+--   work_date
+--   day_recommended
+--   night_recommended
+--
+-- Replace this placeholder with a query against the personnel planning tables.

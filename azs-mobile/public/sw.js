@@ -1,4 +1,4 @@
-const CACHE_NAME = "azs-mobile-v2";
+const CACHE_NAME = "azs-mobile-v3";
 const CORE_ASSETS = ["/", "/manifest.webmanifest", "/icon.svg", "/icon-180.png", "/icon-192.png", "/icon-512.png"];
 const DATA_ASSETS = ["/stations.json", "/stations.sample.json"];
 
@@ -22,6 +22,10 @@ self.addEventListener("fetch", (event) => {
 
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
+  if (requestUrl.pathname.startsWith("/api/")) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
 
   if (DATA_ASSETS.includes(requestUrl.pathname)) {
     event.respondWith(
