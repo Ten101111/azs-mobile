@@ -409,7 +409,7 @@ a {
 
 .analytics-context {
   display: grid;
-  gap: 4px;
+  gap: 8px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -423,6 +423,121 @@ a {
 
 .analytics-context strong {
   font-size: 14px;
+}
+
+.analytics-context small.geo-inline {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.analytics-context small.geo-inline.found {
+  color: #2868bf;
+}
+
+.analytics-context small.geo-inline.manual,
+.analytics-context small.geo-inline.empty {
+  color: #8d5d09;
+}
+
+.similar-base-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.clear-base-button {
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(201, 29, 50, 0.22);
+  border-radius: 8px;
+  background: #fff1f3;
+  color: var(--red-dark);
+  font-size: 12px;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.station-autocomplete {
+  position: relative;
+  min-width: 0;
+}
+
+.station-autocomplete-field {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.station-autocomplete-field input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.station-autocomplete.disabled {
+  opacity: 0.58;
+}
+
+.station-suggest-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 18;
+  max-height: 276px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 16px 34px rgba(21, 27, 36, 0.16);
+}
+
+.station-suggest-panel button,
+.station-suggest-empty {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.station-suggest-panel button {
+  cursor: pointer;
+}
+
+.station-suggest-panel button:active {
+  background: var(--surface-2);
+}
+
+.station-suggest-panel strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.station-suggest-panel span,
+.station-suggest-empty {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .analytics-message {
@@ -617,8 +732,9 @@ a {
   cursor: pointer;
 }
 
-.compare-picker .select-chip {
-  min-width: 180px;
+.compare-picker .station-autocomplete {
+  min-width: min(360px, 100%);
+  width: 100%;
 }
 
 .compare-picker > span {
@@ -1985,9 +2101,17 @@ a {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .compare-picker .select-chip {
-    min-width: 0;
+  .similar-base-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .clear-base-button {
     width: 100%;
+    min-height: 40px;
+  }
+
+  .compare-picker .station-autocomplete {
+    min-width: 0;
   }
 
   .compare-table th,

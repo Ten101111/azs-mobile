@@ -438,6 +438,17 @@ function metricDisplay(metrics, id) {
   return metric ? formatKpiValue(metric.value, metric.unit) : "—";
 }
 
+function stationOptionText(station) {
+  return [station.ksss, station.stationNumber, station.name, station.subject, station.city, station.address]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function stationTitle(station) {
+  return station ? `${station.ksss} · ${station.name || `АЗС № ${station.stationNumber}`}` : "";
+}
+
 function formatShortDate(value) {
   const date = new Date(value);
   return date.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
@@ -708,13 +719,65 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
   const [overviewState, setOverviewState] = useState({ status: "idle", data: null, error: "" });
   const [similarState, setSimilarState] = useState({ status: "idle", data: null, error: "" });
   const [compareState, setCompareState] = useState({ status: "idle", data: null, error: "" });
+  const [similarBaseId, setSimilarBaseId] = useState("");
+  const [similarGeo, setSimilarGeo] = useState({ status: "idle", message: "" });
+  const [similarAutoTried, setSimilarAutoTried] = useState(false);
   const [compareIds, setCompareIds] = useState(() => (selected?.ksss ? [selected.ksss] : []));
   const [compareNotice, setCompareNotice] = useState("");
+  const similarBase = stations.find((station) => station.ksss === similarBaseId);
 
   useEffect(() => {
     if (!selected?.ksss || compareIds.length) return;
     setCompareIds([selected.ksss]);
   }, [selected?.ksss, compareIds.length]);
+
+  useEffect(() => {
+    if (!similarBaseId) return;
+    if (!stations.some((station) => station.ksss === similarBaseId)) {
+      setSimilarBaseId("");
+      setSimilarState({ status: "no-data", data: null, error: "" });
+    }
+  }, [stations, similarBaseId]);
+
+  useEffect(() => {
+    if (view !== "similar" || similarBaseId || similarAutoTried) return undefined;
+    let cancelled = false;
+    setSimilarAutoTried(true);
+    setSimilarGeo({ status: "locating", message: "Определяем ближайшую АЗС..." });
+
+    async function detectNearest() {
+      try {
+        let location;
+        try {
+          if (!YANDEX_MAPS_API_KEY) throw new Error("YANDEX_MAPS_API_KEY_MISSING");
+          const { version, api } = await loadYandexMaps(YANDEX_MAPS_API_KEY);
+          location = await getYandexLocation(api, version);
+        } catch (yandexError) {
+          location = await getBrowserLocation();
+        }
+
+        if (cancelled) return;
+        const nearest = nearestStation(location, stations);
+        if (nearest.station) {
+          setSimilarBaseId(nearest.station.ksss);
+          setSimilarGeo({
+            status: "found",
+            message: `Ближайшая АЗС: ${nearest.station.name || nearest.station.stationNumber} · ${formatDistance(nearest.distance)}`,
+          });
+        } else {
+          setSimilarGeo({ status: "empty", message: "Не нашли АЗС с координатами в текущей выборке." });
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setSimilarGeo({ status: "manual", message: "Геолокация недоступна. Начните вводить КССС, номер или адрес." });
+      }
+    }
+
+    detectNearest();
+    return () => {
+      cancelled = true;
+    };
+  }, [view, similarBaseId, similarAutoTried, stations]);
 
   useEffect(() => {
     if (view !== "slices") return undefined;
@@ -739,7 +802,7 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
 
   useEffect(() => {
     if (view !== "similar") return undefined;
-    if (!selected?.ksss) {
+    if (!similarBaseId) {
       setSimilarState({ status: "no-data", data: null, error: "" });
       return undefined;
     }
@@ -747,7 +810,7 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
     const controller = new AbortController();
     setSimilarState({ status: "loading", data: null, error: "" });
 
-    fetchJson(`/api/stations/${encodeURIComponent(selected.ksss)}/similar?period=${period}&limit=10`, controller.signal)
+    fetchJson(`/api/stations/${encodeURIComponent(similarBaseId)}/similar?period=${period}&limit=10`, controller.signal)
       .then((data) => {
         if (!data || !Array.isArray(data.items) || !data.items.length) {
           setSimilarState({ status: "no-data", data: null, error: "" });
@@ -761,7 +824,7 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
       });
 
     return () => controller.abort();
-  }, [view, selected?.ksss, period]);
+  }, [view, similarBaseId, period]);
 
   useEffect(() => {
     if (view !== "compare") return undefined;
@@ -798,6 +861,22 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
     }
     setCompareNotice("");
     setCompareIds((current) => [...current, ksss]);
+  }
+
+  function addCompareMany(ksssValues) {
+    setCompareIds((current) => {
+      const next = [...current];
+      for (const ksss of ksssValues) {
+        if (!ksss || next.includes(ksss)) continue;
+        if (next.length >= 5) {
+          setCompareNotice("Можно сравнить до 5 АЗС одновременно.");
+          return next;
+        }
+        next.push(ksss);
+      }
+      setCompareNotice("");
+      return next;
+    });
   }
 
   function removeCompare(ksss) {
@@ -860,11 +939,22 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
       )}
       {view === "similar" && (
         <AnalyticsSimilar
-          selected={selected}
+          stations={stations}
+          selected={similarBase}
+          geo={similarGeo}
           state={similarState}
+          onSelectBase={(station) => {
+            setSimilarBaseId(station.ksss);
+            setSimilarGeo({ status: "manual", message: "АЗС выбрана вручную." });
+          }}
+          onClearBase={() => {
+            setSimilarBaseId("");
+            setSimilarState({ status: "no-data", data: null, error: "" });
+            setSimilarGeo({ status: "manual", message: "Начните вводить КССС, номер или адрес." });
+          }}
           onOpenStation={onOpenStation}
           onCompare={(ksss) => {
-            addCompare(ksss);
+            addCompareMany([similarBaseId, ksss]);
             setView("compare");
           }}
         />
@@ -872,7 +962,6 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
       {view === "compare" && (
         <AnalyticsCompare
           stations={stations}
-          selected={selected}
           state={compareState}
           compareIds={compareIds}
           notice={compareNotice}
@@ -1034,12 +1123,83 @@ function AnalyticsSlices({ state, groupBy, setGroupBy }) {
   );
 }
 
-function AnalyticsSimilar({ selected, state, onOpenStation, onCompare }) {
+function StationAutocomplete({ stations, excludedIds = [], selectedStation, placeholder, emptyHint, disabled = false, onPick }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const excluded = useMemo(() => new Set(excludedIds), [excludedIds]);
+  const needle = query.trim().toLowerCase();
+  const suggestions = useMemo(() => {
+    if (!needle) return [];
+    return stations
+      .filter((station) => station.ksss && !excluded.has(station.ksss))
+      .filter((station) => stationOptionText(station).includes(needle))
+      .slice(0, 8);
+  }, [stations, excluded, needle]);
+
+  const showPanel = open && !disabled;
+
+  function choose(station) {
+    onPick(station);
+    setQuery("");
+    setOpen(false);
+  }
+
+  return (
+    <div className={`station-autocomplete ${disabled ? "disabled" : ""}`}>
+      <div className="station-autocomplete-field">
+        <Search size={16} />
+        <input
+          value={open ? query : query || stationTitle(selectedStation)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => {
+            setQuery("");
+            setOpen(true);
+          }}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          placeholder={placeholder}
+          disabled={disabled}
+        />
+      </div>
+      {showPanel && (
+        <div className="station-suggest-panel">
+          {!needle && <div className="station-suggest-empty">{emptyHint || "Начните вводить КССС, номер или адрес"}</div>}
+          {needle && suggestions.length === 0 && <div className="station-suggest-empty">Ничего не найдено</div>}
+          {suggestions.map((station) => (
+            <button type="button" key={station.ksss} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(station)}>
+              <strong>{station.ksss} · {station.name}</strong>
+              <span>{station.subject || station.address || "Регион не заполнен"}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnalyticsSimilar({ stations, selected, geo, state, onSelectBase, onClearBase, onOpenStation, onCompare }) {
   return (
     <div className="analytics-api-block">
       <div className="analytics-context">
         <span>База подбора</span>
         <strong>{selected ? `${selected.name} · ${selected.ksss}` : "АЗС не выбрана"}</strong>
+        {geo.message && <small className={`geo-inline ${geo.status}`}>{geo.message}</small>}
+        <div className="similar-base-tools">
+          <StationAutocomplete
+            stations={stations}
+            selectedStation={selected}
+            placeholder="КССС, номер, адрес"
+            emptyHint="Начните вводить АЗС для подбора похожих"
+            onPick={onSelectBase}
+          />
+          {selected && (
+            <button className="clear-base-button" type="button" onClick={onClearBase}>
+              Очистить
+            </button>
+          )}
+        </div>
       </div>
 
       <AnalyticsStateMessage
@@ -1082,7 +1242,7 @@ function AnalyticsSimilar({ selected, state, onOpenStation, onCompare }) {
   );
 }
 
-function AnalyticsCompare({ stations, selected, state, compareIds, notice, onAdd, onRemove }) {
+function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove }) {
   const availableStations = stations.filter((station) => station.ksss && !compareIds.includes(station.ksss));
   const rows = [
     ["Регион", (item) => item.subject || "—"],
@@ -1102,26 +1262,14 @@ function AnalyticsCompare({ stations, selected, state, compareIds, notice, onAdd
   return (
     <div className="analytics-api-block">
       <div className="compare-picker">
-        <label className="select-chip">
-          <span>{compareIds.length >= 5 ? "Лимит 5 АЗС" : "Добавить АЗС"}</span>
-          <ChevronDown size={14} />
-          <select
-            value=""
-            onChange={(event) => {
-              onAdd(event.target.value);
-              event.target.value = "";
-            }}
-            disabled={compareIds.length >= 5}
-            aria-label="Добавить АЗС в сравнение"
-          >
-            <option value="">{selected ? `Текущая: ${selected.ksss}` : "Выберите АЗС"}</option>
-            {availableStations.map((station) => (
-              <option value={station.ksss} key={station.ksss}>
-                {station.ksss} · {station.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <StationAutocomplete
+          stations={availableStations}
+          excludedIds={compareIds}
+          placeholder={compareIds.length >= 5 ? "Лимит 5 АЗС" : "Введите КССС или адрес"}
+          emptyHint="Начните вводить, появятся подсказки АЗС"
+          disabled={compareIds.length >= 5}
+          onPick={(station) => onAdd(station.ksss)}
+        />
         <span>{compareIds.length} / 5</span>
       </div>
 
