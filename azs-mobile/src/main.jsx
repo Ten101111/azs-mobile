@@ -362,6 +362,44 @@ function pct(value, total) {
   return Math.round((value / total) * 100);
 }
 
+function currentMonthPeriod() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatPeriod(period) {
+  const [year, month] = period.split("-");
+  const date = new Date(Number(year), Number(month) - 1, 1);
+  return date.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+}
+
+function formatKpiValue(value, unit) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "—";
+
+  if (unit === "₽" && Math.abs(numeric) >= 1_000_000) {
+    return `${(numeric / 1_000_000).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} млн ₽`;
+  }
+
+  if (unit === "л" && Math.abs(numeric) >= 1000) {
+    return `${(numeric / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 0 })} тыс. л`;
+  }
+
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}${unit ? ` ${unit}` : ""}`;
+}
+
+function formatDelta(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "—";
+  return `${numeric > 0 ? "+" : ""}${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
+}
+
+function deltaTone(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric === 0) return "";
+  return numeric > 0 ? "positive" : "negative";
+}
+
 function groupTop(stations, getter, limit = 6) {
   const counts = new Map();
   stations.forEach((station) => {
@@ -1354,6 +1392,8 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
         </a>
       </div>
 
+      <StationKpis ksss={station.ksss} />
+
       <DetailGroup title="Основное" defaultOpen>
         <div className="fact-grid">
           <Fact label="КССС" value={station.ksss} />
@@ -1433,6 +1473,101 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
         </DetailGroup>
       )}
     </aside>
+  );
+}
+
+function StationKpis({ ksss }) {
+  const period = useMemo(() => currentMonthPeriod(), []);
+  const [kpiState, setKpiState] = useState({ status: "idle", data: null, error: "" });
+
+  useEffect(() => {
+    if (!ksss) {
+      setKpiState({ status: "no-data", data: null, error: "" });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setKpiState({ status: "loading", data: null, error: "" });
+
+    fetch(`/api/stations/${encodeURIComponent(ksss)}/kpis?period=${period}`, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    })
+      .then((response) => {
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error(`KPI_REQUEST_FAILED_${response.status}`);
+        return response.json();
+      })
+      .then((data) => {
+        if (!data || !Array.isArray(data.metrics) || data.metrics.length === 0) {
+          setKpiState({ status: "no-data", data: null, error: "" });
+          return;
+        }
+        setKpiState({ status: "ready", data, error: "" });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setKpiState({ status: "error", data: null, error: error.message });
+      });
+
+    return () => controller.abort();
+  }, [ksss, period]);
+
+  return (
+    <section className="detail-section kpi-section">
+      <div className="kpi-head">
+        <h3>
+          <BarChart3 size={16} /> Показатели месяца
+        </h3>
+        <span>{formatPeriod(period)}</span>
+      </div>
+
+      {kpiState.status === "loading" && (
+        <div className="kpi-grid" aria-label="Загрузка показателей">
+          {["revenue", "fuelVolume", "checks", "avgCheck"].map((id) => (
+            <div className="kpi-card loading" key={id}>
+              <i />
+              <b />
+              <small />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {kpiState.status === "error" && (
+        <div className="kpi-message warning">
+          <AlertTriangle size={16} />
+          <span>Показатели временно недоступны</span>
+        </div>
+      )}
+
+      {kpiState.status === "no-data" && (
+        <div className="kpi-message">
+          <CircleDot size={16} />
+          <span>По этой АЗС пока нет данных за месяц</span>
+        </div>
+      )}
+
+      {kpiState.status === "ready" && (
+        <>
+          <div className="kpi-source">
+            {kpiState.data.source === "mock" ? "Демо-данные до подключения SQL" : "Данные из БД"}
+          </div>
+          <div className="kpi-grid">
+            {kpiState.data.metrics.map((metric) => (
+              <article className="kpi-card" key={metric.id}>
+                <span>{metric.label}</span>
+                <strong>{formatKpiValue(metric.value, metric.unit)}</strong>
+                <div className="kpi-deltas">
+                  <small className={deltaTone(metric.momPct)}>MoM {formatDelta(metric.momPct)}</small>
+                  <small className={deltaTone(metric.yoyPct)}>YoY {formatDelta(metric.yoyPct)}</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 
