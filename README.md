@@ -13,9 +13,27 @@
 
 ## Запуск
 
+Одной командой из корня проекта:
+
+```bash
+./start_app.command
+```
+
+Или из папки приложения:
+
 ```bash
 cd azs-mobile
 npm install
+npm start
+```
+
+После установки зависимостей одна команда `npm start` поднимет backend API и frontend Vite. Остановить оба сервера можно через `Ctrl+C`.
+
+Раздельный запуск, если нужен:
+
+```bash
+cd azs-mobile
+npm run backend
 npm run dev -- --port 5173
 ```
 
@@ -78,6 +96,32 @@ azs-mobile/scripts/update_data.command
 ```
 
 Он выполнит ту же подготовку данных и обновит `public/stations.json`.
+
+## Подготовка рекомендаций по персоналу
+
+Положи месячные Excel-файлы с листом `По дням` в папку:
+
+```text
+azs-mobile/data/staff/
+```
+
+Скрипт берёт месяц и год из имени файла, например `04.2026.xlsx`, и считает рекомендации:
+
+- дневная смена: `Совокупная сумма часов для дневной смены / 12`;
+- ночная смена: `Совокупная сумма часов для ночной смены / 12`.
+
+```bash
+cd azs-mobile
+npm run prepare-staff
+```
+
+Скрипт создаст локальный файл:
+
+```text
+azs-mobile/public/staff_recommendations.json
+```
+
+Backend автоматически использует этот файл для `/api/stations/{ksss}/staff?period=YYYY-MM`; если данных за период нет, в mock-режиме останутся демо-рекомендации.
 
 ## Offline/PWA
 

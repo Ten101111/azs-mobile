@@ -4,6 +4,7 @@
 data.csv
 cls_2026_05_AZS.xlsx
 azs-mobile/public/stations.json
+azs-mobile/public/staff_recommendations.json
 
 # Generated and local artifacts
 azs-mobile/dist/

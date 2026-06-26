@@ -1,18 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { max } from "d3-array";
+import { scaleLinear } from "d3-scale";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   AlertTriangle,
   BarChart3,
+  CheckCircle2,
   ChevronDown,
   CircleDot,
   Coffee,
   Filter,
   Heart,
+  Home,
   List,
   LocateFixed,
   Map as MapIcon,
+  MessageSquare,
   Navigation,
   Phone,
+  Send,
   Users,
   Search,
   ShieldCheck,
@@ -43,8 +50,15 @@ const defaultFilters = {
   quality: "",
 };
 
+const viewItems = [
+  { id: "list", label: "Реестр", mobileLabel: "Реестр", Icon: List },
+  { id: "map", label: "Карта", mobileLabel: "Карта", Icon: MapIcon },
+  { id: "home", label: "Главная", mobileLabel: "Главная", Icon: Home },
+  { id: "analytics", label: "Аналитика", mobileLabel: "Аналитика", Icon: BarChart3 },
+  { id: "quality", label: "Контроль", mobileLabel: "Контроль", Icon: ShieldCheck },
+];
+
 const YANDEX_MAPS_API_KEY = import.meta.env.VITE_YANDEX_MAPS_API_KEY || "";
-const YANDEX_MAPS_MARKER_LIMIT = 900;
 const UPDATE_DATA_COMMAND = "cd /Users/artmanoking/Downloads/Projects/azs-mobile/azs-mobile && npm run prepare-data";
 let yandexMapsPromise;
 
@@ -62,6 +76,22 @@ function shortStatus(status) {
   if (!status) return "Без статуса";
   if (status.length > 24) return status.slice(0, 22) + "...";
   return status;
+}
+
+function statusTone(status) {
+  if (status === "Действующая" || status === "CODO") return "green";
+  if (status === "Реконструкция" || status === "Строительство") return "blue";
+  if (status === "Консервация") return "amber";
+  if (status === "Оптимизация" || status === "Продана") return "red";
+  return "gray";
+}
+
+function formatMetaDate(meta) {
+  const value = meta?.updatedAt || meta?.generatedAt || meta?.createdAt || meta?.date || meta?.sourceDate;
+  if (!value) return "сегодня";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString("ru-RU", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function hasValidPoint(station) {
@@ -389,6 +419,12 @@ function formatKpiValue(value, unit) {
   return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}${unit ? ` ${unit}` : ""}`;
 }
 
+function formatStaffValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "—";
+  return numeric.toLocaleString("ru-RU", { maximumFractionDigits: Number.isInteger(numeric) ? 0 : 1 });
+}
+
 function formatDelta(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "—";
@@ -436,6 +472,100 @@ function metricById(metrics, id) {
 function metricDisplay(metrics, id) {
   const metric = metricById(metrics, id);
   return metric ? formatKpiValue(metric.value, metric.unit) : "—";
+}
+
+function stableNumber(seed, minimum, maximum) {
+  const text = String(seed);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const normalized = Math.abs(hash >>> 0);
+  return minimum + (normalized % (maximum - minimum + 1));
+}
+
+function demoPct(ksss, period, metricId, salt) {
+  return stableNumber(`${ksss}:${period}:${metricId}:${salt}`, -120, 180) / 10;
+}
+
+function demoKpiMetrics(ksss, period) {
+  const revenue = stableNumber(`${ksss}:${period}:revenue`, 4_000_000, 28_000_000);
+  const fuelVolume = stableNumber(`${ksss}:${period}:fuelVolume`, 120_000, 850_000);
+  const checks = stableNumber(`${ksss}:${period}:checks`, 8_000, 62_000);
+  const avgCheck = Math.round(revenue / Math.max(checks, 1));
+  return [
+    ["revenue", "Выручка", revenue, "₽"],
+    ["fuelVolume", "Объем топлива", fuelVolume, "л"],
+    ["checks", "Чеки", checks, "шт"],
+    ["avgCheck", "Средний чек", avgCheck, "₽"],
+  ].map(([id, label, value, unit]) => ({
+    id,
+    label,
+    value,
+    unit,
+    momPct: demoPct(ksss, period, id, "mom"),
+    yoyPct: demoPct(ksss, period, id, "yoy"),
+  }));
+}
+
+function demoKpiPayload(ksss, period, reason = "fallback") {
+  return {
+    ksss,
+    period,
+    source: "placeholder",
+    fallbackReason: reason,
+    updatedAt: new Date().toISOString(),
+    metrics: demoKpiMetrics(ksss, period),
+  };
+}
+
+function monthDates(period) {
+  const [year, month] = period.split("-").map(Number);
+  const days = new Date(year, month, 0).getDate();
+  return Array.from({ length: days }, (_, index) => new Date(year, month - 1, index + 1));
+}
+
+function demoStaffPayload(ksss, period, reason = "fallback") {
+  const staffTotal = stableNumber(`${ksss}:${period}:staffTotal`, 9, 24);
+  const days = monthDates(period).map((date) => {
+    const weekday = date.getDay();
+    const dayMin = Math.max(2, Math.round(staffTotal * 0.34));
+    const dayMax = Math.max(dayMin, Math.round(staffTotal * 0.58));
+    const nightMin = Math.max(1, Math.round(staffTotal * 0.18));
+    const nightMax = Math.max(nightMin, Math.round(staffTotal * 0.34));
+    const dateIso = date.toISOString().slice(0, 10);
+    const weekendOffset = weekday === 0 || weekday === 6 ? 1 : 0;
+    return {
+      date: dateIso,
+      label: formatWeekday(dateIso),
+      day: Math.max(dayMin, stableNumber(`${ksss}:${dateIso}:day`, dayMin, dayMax) - weekendOffset),
+      night: stableNumber(`${ksss}:${dateIso}:night`, nightMin, nightMax),
+    };
+  });
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const today = days.find((day) => day.date === todayIso) || days[0];
+  return {
+    ksss,
+    period,
+    source: "placeholder",
+    fallbackReason: reason,
+    updatedAt: new Date().toISOString(),
+    staffTotal,
+    today,
+    days,
+  };
+}
+
+function motionPreset(reduceMotion) {
+  return reduceMotion
+    ? { initial: false, animate: {}, exit: {}, transition: { duration: 0 } }
+    : {
+        initial: { opacity: 0, y: 14, scale: 0.99 },
+        animate: { opacity: 1, y: 0, scale: 1 },
+        exit: { opacity: 0, y: -10, scale: 0.992 },
+        transition: { type: "spring", stiffness: 260, damping: 30, mass: 0.85 },
+      };
 }
 
 function stationOptionText(station) {
@@ -488,12 +618,15 @@ function missingContactPhone(station) {
 }
 
 function App() {
+  const reduceMotion = useReducedMotion();
   const [payload, setPayload] = useState({ meta: null, stations: [] });
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState(defaultFilters);
-  const [mode, setMode] = useState("list");
+  const [mode, setMode] = useState("home");
   const [selectedId, setSelectedId] = useState("");
   const [selectionMode, setSelectionMode] = useState("auto");
+  const [registryCompact, setRegistryCompact] = useState(false);
+  const [registryDensity, setRegistryDensity] = useState("comfortable");
   const [favorites, setFavorites] = useState(() => JSON.parse(localStorage.getItem("azs:favorites") || "[]"));
   const [showFilters, setShowFilters] = useState(false);
   const [detailSheet, setDetailSheet] = useState("half");
@@ -504,7 +637,6 @@ function App() {
       .then((response) => response.json())
       .then((data) => {
         setPayload(data);
-        setSelectedId(data.stations.find(hasValidPoint)?.id || "");
       });
   }, []);
 
@@ -515,6 +647,7 @@ function App() {
   useEffect(() => {
     setSelectionMode("auto");
     setSelectedId("");
+    setRegistryCompact(false);
   }, [query, filters.npo, filters.subject, filters.status, filters.type, filters.location, filters.service, filters.quality]);
 
   const stations = useMemo(() => payload.stations.filter(hasValidPoint), [payload.stations]);
@@ -548,7 +681,8 @@ function App() {
     });
   }, [stations, query, filters]);
 
-  const selected = filtered.find((station) => station.id === selectedId) || filtered[0] || stations[0];
+  const selected = filtered.find((station) => station.id === selectedId) || null;
+  const detailVisible = Boolean(selected && detailSheet !== "closed");
 
   const metrics = useMemo(() => {
     const active = stations.filter((station) => station.flags.active).length;
@@ -556,6 +690,8 @@ function App() {
     const toilet = stations.filter((station) => station.flags.hasToilet).length;
     return { active, cafe, toilet };
   }, [stations]);
+  const issueCount = useMemo(() => filtered.filter((station) => station.qualityIssues.length > 0).length, [filtered]);
+  const viewMotion = motionPreset(reduceMotion);
 
   function setFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -571,122 +707,161 @@ function App() {
     setDetailSheet("half");
   }
 
-  function changeMode(nextMode) {
+  function changeMode(nextMode, { closeDetail = true } = {}) {
     setMode(nextMode);
-    if (nextMode === "map") setDetailSheet("peek");
-    if (nextMode === "list") setDetailSheet("half");
+    setRegistryCompact(false);
+    if (closeDetail && selectedId) setDetailSheet("closed");
+  }
+
+  function handleRegistryScroll(scrollTop) {
+    setRegistryCompact(scrollTop > 28);
   }
 
   return (
-    <main className={`app-shell ${mode}-mode`}>
+    <main className={`app-shell ${mode}-mode ${detailVisible ? "" : "no-detail"} ${mode === "list" && registryCompact ? "registry-compact" : ""}`}>
       <section className="workspace">
-        <header className="topbar">
-          <div>
-            <h1>АЗС</h1>
-            <p>
-              {payload.meta
-                ? `${asInt(stations.length)} на карте${excludedNoCoords ? ` · скрыто ${asInt(excludedNoCoords)}` : ""}`
-                : "Загрузка данных"}
-            </p>
-          </div>
-          <button className="icon-button" type="button" onClick={() => setShowFilters(true)} aria-label="Фильтры">
-            <SlidersHorizontal size={20} />
-          </button>
-        </header>
-
-        <div className="search-row">
-          <Search size={18} />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="КССС, номер, адрес, регион"
-          />
-          {query && (
-            <button className="clear-button" onClick={() => setQuery("")} aria-label="Очистить поиск">
-              <X size={16} />
-            </button>
-          )}
-        </div>
-
-        <div className="mode-row">
-          <button className={mode === "list" ? "active" : ""} onClick={() => changeMode("list")} type="button">
-            <List size={16} /> Список
-          </button>
-          <button className={mode === "map" ? "active" : ""} onClick={() => changeMode("map")} type="button">
-            <MapIcon size={16} /> Карта
-          </button>
-          <button className={mode === "analytics" ? "active" : ""} onClick={() => changeMode("analytics")} type="button">
-            <BarChart3 size={16} /> Аналитика
-          </button>
-          <button className={mode === "quality" ? "active" : ""} onClick={() => changeMode("quality")} type="button">
-            <ShieldCheck size={16} /> Контроль
-          </button>
-        </div>
-
-        <MetricStrip count={filtered.length} metrics={metrics} />
-
-        <FilterRail filters={filters} options={options} setFilter={setFilter} />
-
-        {mode === "analytics" ? (
-          <AnalyticsDashboard
-            stations={filtered}
-            totalStations={stations}
-            selected={selected}
-            onFilter={setFilter}
-            onOpenList={() => changeMode("list")}
-            onOpenStation={(id) => {
-              selectStation(id);
-              changeMode("list");
-            }}
-          />
-        ) : mode === "quality" ? (
-          <ControlDashboard
-            stations={filtered}
-            totalStations={stations}
-            onFilter={setFilter}
-            onOpenList={() => changeMode("list")}
-            onOpenStation={(id) => {
-              selectStation(id);
-              changeMode("list");
-            }}
-          />
-        ) : (
-          <div className="content-grid">
-            <section className={`list-pane ${mode === "map" ? "mobile-hidden" : ""}`}>
-              <div className="pane-title">
-                <span>{asInt(filtered.length)} найдено</span>
-                <button type="button" onClick={() => setFilters(defaultFilters)}>Сбросить</button>
+        {mode !== "home" && (
+          <>
+            <header className="topbar">
+              <div>
+                <h1>АЗС</h1>
+                <p>
+                  {payload.meta
+                    ? `${asInt(stations.length)} на карте${excludedNoCoords ? ` · скрыто ${asInt(excludedNoCoords)}` : ""}`
+                    : "Загрузка данных"}
+                </p>
               </div>
-              <StationList
-                stations={filtered}
-                selectedId={selected?.id}
-                favorites={favorites}
-                onSelect={selectStation}
-                onFavorite={toggleFavorite}
-              />
-            </section>
+              <button className="icon-button" type="button" onClick={() => setShowFilters(true)} aria-label="Фильтры">
+                <SlidersHorizontal size={20} />
+              </button>
+            </header>
 
-            <section className={`map-pane ${mode === "list" ? "mobile-hidden" : ""}`}>
-              <StationMap
-                stations={filtered}
-                selected={selected}
-                focusSelected={selectionMode === "manual"}
-                onSelect={selectStation}
+            <div className="search-row">
+              <Search size={18} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="КССС, номер, адрес, регион"
               />
-            </section>
-          </div>
+              {query && (
+                <button className="clear-button" onClick={() => setQuery("")} aria-label="Очистить поиск">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+
+            <ModeSwitcher items={viewItems} mode={mode} onChange={changeMode} />
+
+            <MetricStrip count={filtered.length} metrics={metrics} />
+
+            <FilterRail filters={filters} options={options} setFilter={setFilter} />
+          </>
         )}
+
+        <AnimatePresence mode="popLayout" initial={false}>
+          {mode === "home" ? (
+            <motion.div className="view-stage" key="home" {...viewMotion}>
+              <HomeDashboard
+                count={filtered.length}
+                total={stations.length}
+                metrics={metrics}
+                issueCount={issueCount}
+                meta={payload.meta}
+                regionCount={options.subject.length}
+                excludedNoCoords={excludedNoCoords}
+                onOpenList={() => changeMode("list")}
+                onOpenMap={() => changeMode("map")}
+                onOpenAnalytics={() => changeMode("analytics")}
+                onOpenControl={() => changeMode("quality")}
+              />
+            </motion.div>
+          ) : mode === "analytics" ? (
+            <motion.div className="view-stage" key="analytics" {...viewMotion}>
+              <AnalyticsDashboard
+                stations={filtered}
+                totalStations={stations}
+                selected={selected}
+                onFilter={setFilter}
+                onOpenList={() => changeMode("list")}
+                onOpenStation={(id) => {
+                  changeMode("list", { closeDetail: false });
+                  selectStation(id);
+                }}
+              />
+            </motion.div>
+          ) : mode === "quality" ? (
+            <motion.div className="view-stage" key="quality" {...viewMotion}>
+              <ControlDashboard
+                stations={filtered}
+                totalStations={stations}
+                onFilter={setFilter}
+                onOpenList={() => changeMode("list")}
+                onOpenStation={(id) => {
+                  changeMode("list", { closeDetail: false });
+                  selectStation(id);
+                }}
+              />
+            </motion.div>
+          ) : (
+            <motion.div className="view-stage content-grid" key={mode} {...viewMotion}>
+              <section className={`list-pane ${mode === "map" ? "mobile-hidden" : ""}`}>
+                <div className="pane-title">
+                  <span>{asInt(filtered.length)} найдено</span>
+                  <div className="pane-title-actions">
+                    <div className="density-toggle" role="group" aria-label="Плотность реестра">
+                      <button
+                        className={registryDensity === "comfortable" ? "active" : ""}
+                        type="button"
+                        onClick={() => setRegistryDensity("comfortable")}
+                      >
+                        Подробно
+                      </button>
+                      <button
+                        className={registryDensity === "compact" ? "active" : ""}
+                        type="button"
+                        onClick={() => setRegistryDensity("compact")}
+                      >
+                        Компактно
+                      </button>
+                    </div>
+                    <button type="button" onClick={() => setFilters(defaultFilters)}>Сбросить</button>
+                  </div>
+                </div>
+                <StationList
+                  stations={filtered}
+                  selectedId={selected?.id}
+                  favorites={favorites}
+                  density={registryDensity}
+                  onSelect={selectStation}
+                  onFavorite={toggleFavorite}
+                  onScroll={handleRegistryScroll}
+                />
+              </section>
+
+              <section className={`map-pane ${mode === "list" ? "mobile-hidden" : ""}`}>
+                <StationMap
+                  stations={filtered}
+                  selected={selected}
+                  focusSelected={selectionMode === "manual"}
+                  onSelect={selectStation}
+                />
+              </section>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </section>
 
-      {selected && (
-        <StationDetail
-          station={selected}
-          favorite={favorites.includes(selected.id)}
-          onFavorite={() => toggleFavorite(selected.id)}
-          sheetState={detailSheet}
-          onSheetState={setDetailSheet}
-        />
-      )}
+      <AnimatePresence>
+        {detailVisible && (
+          <StationDetail
+            station={selected}
+            favorite={favorites.includes(selected.id)}
+            onFavorite={() => toggleFavorite(selected.id)}
+            sheetState={detailSheet}
+            onSheetState={setDetailSheet}
+          />
+        )}
+      </AnimatePresence>
 
       {showFilters && (
         <FilterSheet
@@ -697,7 +872,180 @@ function App() {
           onReset={() => setFilters(defaultFilters)}
         />
       )}
+
+      <BottomStrip
+        items={viewItems}
+        mode={mode}
+        count={filtered.length}
+        issueCount={issueCount}
+        onChange={changeMode}
+      />
     </main>
+  );
+}
+
+function ModeSwitcher({ items, mode, onChange }) {
+  return (
+    <div className="mode-row" role="tablist" aria-label="Разделы классификатора">
+      {items.map(({ id, label, Icon }) => (
+        <motion.button
+          className={mode === id ? "active" : ""}
+          key={id}
+          type="button"
+          role="tab"
+          aria-selected={mode === id}
+          onClick={() => onChange(id)}
+          transition={{ type: "spring", stiffness: 260, damping: 24 }}
+          whileTap={{ scale: 0.965 }}
+        >
+          {mode === id && <motion.span className="mode-active-bg" layoutId="mode-active-bg" />}
+          <Icon size={16} />
+          <span>{label}</span>
+        </motion.button>
+      ))}
+    </div>
+  );
+}
+
+function BottomStrip({ items, mode, count, issueCount, onChange }) {
+  const badges = {
+    home: "",
+    list: asInt(count),
+    map: asInt(count),
+    analytics: "KPI",
+    quality: issueCount ? asInt(issueCount) : "OK",
+  };
+
+  return (
+    <nav className="bottom-strip" aria-label="Основная навигация">
+      {items.map(({ id, mobileLabel, Icon }) => {
+        const active = mode === id;
+        return (
+          <motion.button
+            className={active ? "active" : ""}
+            key={id}
+            type="button"
+            aria-current={active ? "page" : undefined}
+            aria-label={mobileLabel}
+            onClick={() => onChange(id)}
+            transition={{ type: "spring", stiffness: 260, damping: 24 }}
+            whileTap={{ scale: 0.955 }}
+          >
+            {active && <motion.span className="bottom-nav-active" layoutId="bottom-nav-active" />}
+            <span className="bottom-nav-icon">
+              <Icon size={19} />
+            </span>
+            <span className="bottom-nav-label">{mobileLabel}</span>
+            {badges[id] && <span className={`bottom-nav-meta ${id === "quality" && issueCount ? "warning" : ""}`}>{badges[id]}</span>}
+          </motion.button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function HomeDashboard({
+  count,
+  total,
+  metrics,
+  issueCount,
+  meta,
+  regionCount,
+  excludedNoCoords,
+  onOpenList,
+  onOpenMap,
+  onOpenAnalytics,
+  onOpenControl,
+}) {
+  const activeShare = total ? Math.round((metrics.active / total) * 100) : 0;
+  const homeLinks = [
+    { label: "Реестр", Icon: List, onClick: onOpenList },
+    { label: "Карта", Icon: MapIcon, onClick: onOpenMap },
+    { label: "Аналитика", Icon: BarChart3, onClick: onOpenAnalytics },
+    { label: "Контроль", Icon: ShieldCheck, onClick: onOpenControl },
+  ];
+  const passportItems = [
+    { label: "Объектов", value: asInt(total), helper: `в текущем срезе ${asInt(count)}` },
+    { label: "Активная сеть", value: `${activeShare}%`, helper: `${asInt(metrics.active)} действующих` },
+    { label: "Регионов", value: asInt(regionCount), helper: "география присутствия" },
+    { label: "Источник", value: formatMetaDate(meta), helper: excludedNoCoords ? `без координат ${asInt(excludedNoCoords)}` : "координаты готовы" },
+  ];
+
+  return (
+    <section className="home-pane dala-home" aria-labelledby="home-title">
+      <div className="home-hero">
+        <div className="home-copy">
+          <span>Классификатор АЗС</span>
+          <h2 id="home-title">Операционный контур АЗС</h2>
+          <p>
+            Инструмент собирает реестр АЗС, координаты, сервисы, классификацию, контакты, показатели месяца и рекомендации по персоналу в одном рабочем контуре.
+          </p>
+          <div className="home-passport" aria-label="Паспорт данных">
+            {passportItems.map((item, index) => (
+              <motion.div
+                className="home-passport-item"
+                key={item.label}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.24, delay: 0.04 + index * 0.035 }}
+              >
+                <small>{item.label}</small>
+                <strong>{item.value}</strong>
+                <em>{item.helper}</em>
+              </motion.div>
+            ))}
+          </div>
+          <nav className="home-section-nav" aria-label="Переходы с главной">
+            {homeLinks.map(({ label, Icon, onClick }, index) => (
+              <motion.button
+                type="button"
+                key={label}
+                onClick={onClick}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.22, delay: 0.08 + index * 0.04 }}
+                whileTap={{ scale: 0.97 }}
+              >
+                <Icon size={16} />
+                <span>{label}</span>
+              </motion.button>
+            ))}
+          </nav>
+        </div>
+      </div>
+
+      <div className="home-grid">
+        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
+          <BarChart3 size={18} />
+          <h3>Аналитика и сравнение</h3>
+          <p>Показывает распределения по статусам, НПО, регионам, форматам, а также подбор похожих АЗС и сравнение показателей.</p>
+        </motion.article>
+        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
+          <ShieldCheck size={18} />
+          <h3>Контроль качества</h3>
+          <p>Помогает найти карточки с замечаниями: отсутствующие контакты, ответственные, координаты или неполные сервисные признаки.</p>
+        </motion.article>
+        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
+          <Users size={18} />
+          <h3>Персонал и KPI</h3>
+          <p>Показатели месяца и персонал находятся внутри карточки конкретной АЗС. Откройте объект из реестра или карты, чтобы увидеть эти блоки.</p>
+        </motion.article>
+        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
+          <MessageSquare size={18} />
+          <h3>Обратная связь</h3>
+          <p>Если в карточке обнаружена неправильная информация, перейдите в “Контроль” и оставьте уточнение в форме обратной связи.</p>
+        </motion.article>
+      </div>
+
+      <div className="home-summary">
+        <span><CircleDot size={15} /><strong>{asInt(count)}</strong> в текущем срезе</span>
+        <span><CheckCircle2 size={15} /><strong>{asInt(metrics.active)}</strong> действующих</span>
+        <span><Coffee size={15} /><strong>{asInt(metrics.cafe)}</strong> с кафе</span>
+        <button type="button" onClick={onOpenControl}>
+          {issueCount ? `${asInt(issueCount)} замечаний` : "Замечаний нет"}
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -902,16 +1250,6 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
               : `Период: ${formatPeriod(period)} · источник API /api`}
           </p>
         </div>
-        <button
-          className="quality-button"
-          type="button"
-          onClick={() => {
-            onFilter("quality", "issues");
-            onOpenList();
-          }}
-        >
-          <AlertTriangle size={16} /> Объекты с замечаниями
-        </button>
       </div>
 
       <div className="analytics-tabs" role="tablist" aria-label="Режим аналитики">
@@ -1322,6 +1660,8 @@ function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove
 
 function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpenStation }) {
   const [copied, setCopied] = useState(false);
+  const [feedback, setFeedback] = useState({ station: "", field: "", message: "" });
+  const [feedbackSent, setFeedbackSent] = useState(false);
   const total = stations.length;
   const issueStations = stations.filter((station) => station.qualityIssues.length > 0);
   const noResponsible = stations.filter(missingResponsible);
@@ -1341,6 +1681,22 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
     });
   }
 
+  function submitFeedback(event) {
+    event.preventDefault();
+    const text = feedback.message.trim();
+    if (!text) return;
+    const entry = {
+      ...feedback,
+      message: text,
+      createdAt: new Date().toISOString(),
+    };
+    const current = JSON.parse(localStorage.getItem("azs:feedback") || "[]");
+    localStorage.setItem("azs:feedback", JSON.stringify([entry, ...current].slice(0, 100)));
+    setFeedback({ station: "", field: "", message: "" });
+    setFeedbackSent(true);
+    window.setTimeout(() => setFeedbackSent(false), 2600);
+  }
+
   return (
     <section className="analytics-pane control-pane">
       <div className="analytics-head">
@@ -1350,16 +1706,6 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
             Рабочий срез для выезда: карточка, контакты, координаты, сервисы и готовность данных по текущей выборке.
           </p>
         </div>
-        <button
-          className="quality-button"
-          type="button"
-          onClick={() => {
-            onFilter("quality", "issues");
-            onOpenList();
-          }}
-        >
-          <AlertTriangle size={16} /> Открыть проблемные
-        </button>
       </div>
 
       <div className="analytics-kpis">
@@ -1413,6 +1759,13 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
           <code>{UPDATE_DATA_COMMAND}</code>
           <button type="button" onClick={copyUpdateCommand}>{copied ? "Скопировано" : "Скопировать команду"}</button>
         </div>
+
+        <FeedbackCard
+          feedback={feedback}
+          sent={feedbackSent}
+          onChange={setFeedback}
+          onSubmit={submitFeedback}
+        />
       </div>
 
       <div className="analytics-card issue-table-card">
@@ -1432,6 +1785,51 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
         </div>
       </div>
     </section>
+  );
+}
+
+function FeedbackCard({ feedback, sent, onChange, onSubmit }) {
+  const disabled = !feedback.message.trim();
+  return (
+    <form className="analytics-card feedback-card" onSubmit={onSubmit}>
+      <div className="feedback-head">
+        <MessageSquare size={18} />
+        <div>
+          <h3>Обратная связь по данным</h3>
+          <p>Сообщите, если в карточке АЗС нашли неверную информацию.</p>
+        </div>
+      </div>
+      <label>
+        <span>АЗС или КССС</span>
+        <input
+          value={feedback.station}
+          onChange={(event) => onChange((current) => ({ ...current, station: event.target.value }))}
+          placeholder="Например: 2707 или АЗС №02003"
+        />
+      </label>
+      <label>
+        <span>Что исправить</span>
+        <input
+          value={feedback.field}
+          onChange={(event) => onChange((current) => ({ ...current, field: event.target.value }))}
+          placeholder="Телефон, адрес, персонал, сервисы..."
+        />
+      </label>
+      <label>
+        <span>Комментарий</span>
+        <textarea
+          value={feedback.message}
+          onChange={(event) => onChange((current) => ({ ...current, message: event.target.value }))}
+          placeholder="Опишите, какая информация неправильная и что должно быть указано."
+          rows={4}
+          required
+        />
+      </label>
+      <button type="submit" disabled={disabled}>
+        {sent ? <CheckCircle2 size={16} /> : <Send size={16} />}
+        {sent ? "Сохранено локально" : "Отправить замечание"}
+      </button>
+    </form>
   );
 }
 
@@ -1462,19 +1860,25 @@ function Kpi({ title, value, share, tone = "" }) {
 }
 
 function ChartCard({ title, items, total, compact = false }) {
-  const max = Math.max(...items.map((item) => item.value), 1);
+  const reduceMotion = useReducedMotion();
+  const maxValue = max(items, (item) => item.value) || 1;
+  const widthScale = scaleLinear().domain([0, maxValue]).range([4, 100]).clamp(true);
   return (
     <div className={`analytics-card ${compact ? "compact" : ""}`}>
       <h3>{title}</h3>
       <div className="bar-list">
-        {items.map((item) => (
+        {items.map((item, index) => (
           <div className="bar-row" key={item.name}>
             <div className="bar-label">
               <span>{item.name}</span>
               <strong>{asInt(item.value)}</strong>
             </div>
             <div className="bar-track">
-              <i style={{ width: `${Math.max(4, (item.value / max) * 100)}%` }} />
+              <motion.i
+                initial={reduceMotion ? false : { width: "4%" }}
+                animate={{ width: `${widthScale(item.value)}%` }}
+                transition={{ duration: reduceMotion ? 0 : 0.42, delay: reduceMotion ? 0 : index * 0.035, ease: "easeOut" }}
+              />
             </div>
             <small>{pct(item.value, total)}%</small>
           </div>
@@ -1528,7 +1932,8 @@ function SelectChip({ label, value, options, onChange }) {
   );
 }
 
-function StationList({ stations, selectedId, favorites, onSelect, onFavorite }) {
+function StationList({ stations, selectedId, favorites, density = "comfortable", onSelect, onFavorite, onScroll }) {
+  const reduceMotion = useReducedMotion();
   if (!stations.length) {
     return (
       <div className="empty">
@@ -1540,15 +1945,22 @@ function StationList({ stations, selectedId, favorites, onSelect, onFavorite }) 
   }
 
   return (
-    <div className="station-list">
-      {stations.slice(0, 350).map((station) => (
-        <button
+    <div className={`station-list ${density === "compact" ? "compact" : ""}`} onScroll={(event) => onScroll?.(event.currentTarget.scrollTop)}>
+      {stations.slice(0, 350).map((station, index) => (
+        <motion.button
           className={`station-row ${selectedId === station.id ? "selected" : ""}`}
           key={station.id}
           type="button"
           onClick={() => onSelect(station.id)}
+          initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: reduceMotion ? 0 : undefined, type: "spring", stiffness: 230, damping: 30, delay: reduceMotion ? 0 : Math.min(index, 12) * 0.014 }}
+          whileTap={reduceMotion ? undefined : { scale: 0.99 }}
         >
-          <span className="status-dot" style={{ background: statusColors[station.status] || "#8f99a8" }} />
+          <span
+            className={`status-dot tone-${statusTone(station.status)}`}
+            style={{ "--status-color": statusColors[station.status] || "#8f99a8" }}
+          />
           <span className="row-main">
             <span className="row-title">
               {station.name || `АЗС № ${station.stationNumber}`}
@@ -1556,7 +1968,7 @@ function StationList({ stations, selectedId, favorites, onSelect, onFavorite }) 
             </span>
             <span className="row-address">{station.address || station.subject}</span>
             <span className="badges">
-              <Badge>{shortStatus(station.status)}</Badge>
+              <Badge tone={`status ${statusTone(station.status)}`}>{shortStatus(station.status)}</Badge>
               {station.flags.hasShop && <Badge icon={<Store size={12} />}>Магазин</Badge>}
               {station.flags.hasCafe && <Badge icon={<Coffee size={12} />}>Кафе</Badge>}
               {station.flags.hasToilet && <Badge icon={<Toilet size={12} />}>Санузел</Badge>}
@@ -1572,7 +1984,7 @@ function StationList({ stations, selectedId, favorites, onSelect, onFavorite }) 
           >
             <Heart size={15} fill="currentColor" />
           </span>
-        </button>
+        </motion.button>
       ))}
     </div>
   );
@@ -1588,6 +2000,7 @@ function Badge({ children, icon, tone = "" }) {
 }
 
 function StationMap({ stations, selected, focusSelected, onSelect }) {
+  const reduceMotion = useReducedMotion();
   const mapNodeRef = useRef(null);
   const mapRef = useRef(null);
   const ymapsRef = useRef(null);
@@ -1603,8 +2016,6 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
   const [userLocation, setUserLocation] = useState(null);
 
   const points = useMemo(() => stations.filter(hasValidPoint), [stations]);
-  const visiblePoints = useMemo(() => points.slice(0, YANDEX_MAPS_MARKER_LIMIT), [points]);
-  const hiddenPointCount = Math.max(points.length - visiblePoints.length, 0);
 
   useEffect(() => {
     onSelectRef.current = onSelect;
@@ -1705,7 +2116,7 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
 
     if (apiVersionRef.current === "v3") {
       markerRefs.current.forEach((marker) => mapRef.current.removeChild(marker));
-      markerRefs.current = visiblePoints.map((station) => createStationMarker(ymapsRef.current, station, selected?.id, onSelectRef.current));
+      markerRefs.current = points.map((station) => createStationMarker(ymapsRef.current, station, selected?.id, onSelectRef.current));
       markerRefs.current.forEach((marker) => mapRef.current.addChild(marker));
       return;
     }
@@ -1714,9 +2125,9 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
     objectManagerRef.current.removeAll();
     objectManagerRef.current.add({
       type: "FeatureCollection",
-      features: visiblePoints.map((station) => stationFeature(station, selected?.id)),
+      features: points.map((station) => stationFeature(station, selected?.id)),
     });
-  }, [visiblePoints, selected?.id, mapStatus]);
+  }, [points, selected?.id, mapStatus]);
 
   useEffect(() => {
     if (!mapRef.current || !ymapsRef.current || !userLocation) return;
@@ -1814,15 +2225,16 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
   }
 
   return (
-    <div className="map-surface">
+    <motion.div
+      className="map-surface"
+      initial={reduceMotion ? false : { opacity: 0, y: 12, scale: 0.992 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: "spring", stiffness: 220, damping: 28, mass: 0.9 }}
+    >
       <div className="map-header">
         <div>
           <strong>{asInt(points.length)} точек на карте</strong>
-          <span>
-            {hiddenPointCount > 0
-              ? `Показано ${asInt(visiblePoints.length)} из ${asInt(points.length)}`
-              : "Все объекты с координатами"}
-          </span>
+          <span>Все объекты с координатами</span>
         </div>
         <button
           className={`map-locate-button ${geoStatus === "found" ? "active" : ""}`}
@@ -1869,7 +2281,7 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
           </div>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -1949,9 +2361,13 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
   }
 
   return (
-    <aside
+    <motion.aside
       className={`detail sheet-${sheetState} ${dragOffset ? "dragging" : ""}`}
       style={{ "--sheet-drag": `${dragOffset}px` }}
+      initial={{ opacity: sheetState === "closed" ? 0 : 1 }}
+      animate={{ opacity: sheetState === "closed" ? 0 : 1 }}
+      exit={{ opacity: 0, y: 80 }}
+      transition={{ opacity: { duration: 0.18 }, y: { duration: 0.2, ease: "easeOut" } }}
       onTouchStart={(event) => {
         if (event.target.closest("a, button, summary, select, input")) return;
         beginSheetDrag(event.touches[0]?.clientY ?? 0);
@@ -1995,10 +2411,23 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
         aria-label="Развернуть карточку"
       />
       <div className="detail-head">
-        <div>
-          <span className="eyeless">{station.ksss}</span>
+        <div className="detail-title-block">
+          <div className="detail-meta-line">
+            <span className="eyeless">{station.ksss}</span>
+            <span className={`status-chip tone-${statusTone(station.status)}`}>
+              <i />
+              {shortStatus(station.status)}
+            </span>
+          </div>
           <h2>{station.name}</h2>
           <p>{station.address || station.subject}</p>
+          <div className="detail-quick-facts" aria-label="Краткая информация">
+            <span>{station.subject || "Регион не указан"}</span>
+            <span>{station.npo || "НПО не указан"}</span>
+            <span className={station.qualityIssues.length ? "warn" : "ok"}>
+              {station.qualityIssues.length ? `${station.qualityIssues.length} замеч.` : "Данные без критичных замечаний"}
+            </span>
+          </div>
         </div>
         <button className={`icon-button favorite ${favorite ? "on" : ""}`} type="button" onClick={onFavorite} aria-label="Избранное">
           <Heart size={19} fill="currentColor" />
@@ -2095,7 +2524,7 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
           ))}
         </DetailGroup>
       )}
-    </aside>
+    </motion.aside>
   );
 }
 
@@ -2123,14 +2552,14 @@ function StationKpis({ ksss }) {
       })
       .then((data) => {
         if (!data || !Array.isArray(data.metrics) || data.metrics.length === 0) {
-          setKpiState({ status: "no-data", data: null, error: "" });
+          setKpiState({ status: "ready", data: demoKpiPayload(ksss, period, "no-data"), error: "" });
           return;
         }
         setKpiState({ status: "ready", data, error: "" });
       })
       .catch((error) => {
         if (error.name === "AbortError") return;
-        setKpiState({ status: "error", data: null, error: error.message });
+        setKpiState({ status: "ready", data: demoKpiPayload(ksss, period, error.message), error: "" });
       });
 
     return () => controller.abort();
@@ -2174,7 +2603,11 @@ function StationKpis({ ksss }) {
       {kpiState.status === "ready" && (
         <>
           <div className="kpi-source">
-            {kpiState.data.source === "mock" ? "Демо-данные до подключения SQL" : "Данные из БД"}
+            {kpiState.data.source === "placeholder"
+              ? "Заглушка показателей до подключения API"
+              : kpiState.data.source === "mock"
+                ? "Демо-данные API до подключения SQL"
+                : "Данные из БД"}
           </div>
           <div className="kpi-grid">
             {kpiState.data.metrics.map((metric) => (
@@ -2195,8 +2628,26 @@ function StationKpis({ ksss }) {
 }
 
 function StationStaff({ ksss }) {
-  const period = useMemo(() => currentMonthPeriod(), []);
+  const [period, setPeriod] = useState(() => currentMonthPeriod());
+  const [periods, setPeriods] = useState([]);
   const [staffState, setStaffState] = useState({ status: "idle", data: null, error: "" });
+  const calendarRef = useRef(null);
+  const activeDayRef = useRef(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchJson("/api/staff/periods", controller.signal)
+      .then((data) => {
+        const available = Array.isArray(data?.periods) ? data.periods : [];
+        setPeriods(available);
+        if (available.length && !available.includes(period)) {
+          setPeriod(available[available.length - 1]);
+        }
+      })
+      .catch(() => {});
+
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!ksss) {
@@ -2210,18 +2661,35 @@ function StationStaff({ ksss }) {
     fetchJson(`/api/stations/${encodeURIComponent(ksss)}/staff?period=${period}`, controller.signal)
       .then((data) => {
         if (!data || !Array.isArray(data.days) || !data.days.length) {
-          setStaffState({ status: "no-data", data: null, error: "" });
+          setStaffState({ status: "ready", data: demoStaffPayload(ksss, period, "no-data"), error: "" });
           return;
         }
         setStaffState({ status: "ready", data, error: "" });
       })
       .catch((error) => {
         if (error.name === "AbortError") return;
-        setStaffState({ status: "error", data: null, error: error.message });
+        setStaffState({ status: "ready", data: demoStaffPayload(ksss, period, error.message), error: "" });
       });
 
     return () => controller.abort();
   }, [ksss, period]);
+
+  useEffect(() => {
+    if (staffState.status !== "ready") return undefined;
+
+    const frame = window.requestAnimationFrame(() => {
+      const calendar = calendarRef.current;
+      const activeDay = activeDayRef.current;
+      if (!calendar || !activeDay) return;
+
+      calendar.scrollTo({
+        left: activeDay.offsetLeft - calendar.offsetLeft,
+        behavior: "auto",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [staffState.status, staffState.data?.ksss, staffState.data?.period, staffState.data?.today?.date]);
 
   return (
     <section className="detail-section staff-section">
@@ -2229,7 +2697,17 @@ function StationStaff({ ksss }) {
         <h3>
           <Users size={16} /> Персонал
         </h3>
-        <span>{formatPeriod(period)}</span>
+        {periods.length > 1 ? (
+          <select className="period-select" value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Период рекомендаций">
+            {periods.map((item) => (
+              <option key={item} value={item}>
+                {formatPeriod(item)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span>{formatPeriod(period)}</span>
+        )}
       </div>
 
       {staffState.status === "loading" && (
@@ -2264,27 +2742,33 @@ function StationStaff({ ksss }) {
       {staffState.status === "ready" && (
         <>
           <div className="kpi-source">
-            {staffState.data.source === "mock" ? "Демо-рекомендации до подключения SQL" : "Данные из БД"}
+            {staffState.data.source === "placeholder"
+              ? "Заглушка персонала до подключения API"
+              : staffState.data.source === "mock"
+              ? "Демо-рекомендации до подключения SQL"
+              : staffState.data.source === "file"
+                ? "Рекомендации из Excel"
+                : "Данные из БД"}
           </div>
           <div className="staff-summary">
             <article>
-              <span>Штатная численность</span>
-              <strong>{asInt(staffState.data.staffTotal)} чел.</strong>
+              <span>Максимум за сутки</span>
+              <strong>{formatStaffValue(staffState.data.staffTotal)} чел.</strong>
             </article>
             <article>
-              <span>Сегодня</span>
-              <strong>{staffState.data.today.day} днем · {staffState.data.today.night} ночью</strong>
+              <span>Выбранный день</span>
+              <strong>{formatStaffValue(staffState.data.today.day)} днем · {formatStaffValue(staffState.data.today.night)} ночью</strong>
             </article>
           </div>
-          <div className="staff-calendar" aria-label="Рекомендации по сменам на месяц">
+          <div className="staff-calendar" ref={calendarRef} aria-label="Рекомендации по сменам на месяц">
             {staffState.data.days.map((day) => {
               const active = day.date === staffState.data.today.date;
               return (
-                <article className={`staff-day ${active ? "active" : ""}`} key={day.date}>
+                <article className={`staff-day ${active ? "active" : ""}`} ref={active ? activeDayRef : null} key={day.date}>
                   <span>{formatShortDate(day.date)}</span>
                   <small>{formatWeekday(day.date)}</small>
-                  <b>{day.day}</b>
-                  <em>{day.night}</em>
+                  <b>{formatStaffValue(day.day)}</b>
+                  <em>{formatStaffValue(day.night)}</em>
                 </article>
               );
             })}

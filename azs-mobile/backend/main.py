@@ -23,6 +23,7 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 STATIONS_PATH = PROJECT_DIR / "public" / "stations.json"
 STATIONS_SAMPLE_PATH = PROJECT_DIR / "public" / "stations.sample.json"
+STAFF_RECOMMENDATIONS_PATH = PROJECT_DIR / "public" / "staff_recommendations.json"
 SQL_TEMPLATE = APP_DIR / "sql" / "station_kpis.sql"
 STAFF_SQL_TEMPLATE = APP_DIR / "sql" / "station_staff.sql"
 ANALYTICS_SQL_TEMPLATE = APP_DIR / "sql" / "analytics_overview.sql"
@@ -50,8 +51,8 @@ class StationKpiResponse(BaseModel):
 class StaffDay(BaseModel):
     date: str
     label: str
-    day: int
-    night: int
+    day: float
+    night: float
 
 
 class StationStaffResponse(BaseModel):
@@ -59,7 +60,7 @@ class StationStaffResponse(BaseModel):
     period: str = Field(pattern=r"^\d{4}-\d{2}$")
     source: str
     updatedAt: str
-    staffTotal: int
+    staffTotal: float
     today: StaffDay
     days: list[StaffDay]
 
@@ -108,7 +109,7 @@ class CompareStation(BaseModel):
     location: str
     trkCount: Optional[float] = None
     postsCount: Optional[float] = None
-    staffTotal: int
+    staffTotal: float
     metrics: list[KpiMetric]
 
 
@@ -176,6 +177,60 @@ def load_stations() -> list[dict]:
 
 def station_by_ksss(ksss: str) -> Optional[dict]:
     return next((station for station in load_stations() if str(station.get("ksss")) == str(ksss)), None)
+
+
+@lru_cache(maxsize=1)
+def load_staff_database() -> dict:
+    if not STAFF_RECOMMENDATIONS_PATH.exists():
+        return {}
+    return json.loads(STAFF_RECOMMENDATIONS_PATH.read_text(encoding="utf-8"))
+
+
+def staff_periods() -> list[str]:
+    payload = load_staff_database()
+    return sorted((payload.get("periods") or {}).keys())
+
+
+def staff_updated_at() -> str:
+    payload = load_staff_database()
+    return payload.get("meta", {}).get("generatedAt") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def file_staff(ksss: str, period: str) -> Optional[StationStaffResponse]:
+    payload = load_staff_database()
+    period_data = (payload.get("periods") or {}).get(period)
+    if not period_data:
+        return None
+
+    station = (period_data.get("stations") or {}).get(str(ksss))
+    if not station:
+        return None
+
+    days = [
+        StaffDay(
+            date=str(item.get("date") or ""),
+            label=str(item.get("label") or ""),
+            day=float(item.get("day") or 0),
+            night=float(item.get("night") or 0),
+        )
+        for item in station.get("days", [])
+    ]
+    days.sort(key=lambda item: item.date)
+    if not days:
+        return None
+
+    today_iso = datetime.now().date().isoformat()
+    today = next((item for item in days if item.date == today_iso), days[0])
+
+    return StationStaffResponse(
+        ksss=ksss,
+        period=period,
+        source="file",
+        updatedAt=staff_updated_at(),
+        staffTotal=float(station.get("staffTotal") or 0),
+        today=today,
+        days=days,
+    )
 
 
 def station_name(station: dict) -> str:
@@ -509,6 +564,16 @@ def health():
     return {"status": "ok", "mode": data_mode()}
 
 
+@app.get("/api/staff/periods")
+def available_staff_periods():
+    periods = staff_periods()
+    return {
+        "source": "file" if periods else "none",
+        "updatedAt": staff_updated_at(),
+        "periods": periods,
+    }
+
+
 @app.get("/api/stations/{ksss}/kpis", response_model=StationKpiResponse)
 def station_kpis(ksss: str, period: str = Query(default_factory=current_period, pattern=r"^\d{4}-\d{2}$")):
     period = validate_period(period)
@@ -527,7 +592,12 @@ def station_staff(ksss: str, period: str = Query(default_factory=current_period,
     period = validate_period(period)
     mode = data_mode().lower()
 
-    if mode == "mock":
+    if mode in {"mock", "file", "local"}:
+        staff = file_staff(ksss, period)
+        if staff:
+            return staff
+        if mode in {"file", "local"}:
+            raise HTTPException(status_code=404, detail="Staff data not found")
         return mock_staff(ksss, period)
     if mode == "db":
         db_extension_not_ready(STAFF_SQL_TEMPLATE)

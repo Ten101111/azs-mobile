@@ -4,14 +4,20 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "python3 scripts/run_app.py",
+    "app": "python3 scripts/run_app.py",
     "dev": "vite --host 0.0.0.0",
     "backend": "python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "prepare-data": "python3 scripts/prepare_data.py"
+    "prepare-data": "python3 scripts/prepare_data.py",
+    "prepare-staff": "python3 scripts/prepare_staff_data.py"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",
+    "d3-array": "^3.2.4",
+    "d3-scale": "^4.0.2",
+    "framer-motion": "^12.42.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
