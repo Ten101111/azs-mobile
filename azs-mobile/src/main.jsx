@@ -10,6 +10,7 @@ import {
   ChevronDown,
   CircleDot,
   Coffee,
+  Download,
   Filter,
   Heart,
   Home,
@@ -57,9 +58,9 @@ const viewItems = [
   { id: "analytics", label: "Аналитика", mobileLabel: "Аналитика", Icon: BarChart3 },
   { id: "quality", label: "Контроль", mobileLabel: "Контроль", Icon: ShieldCheck },
 ];
+const viewIds = new Set(viewItems.map((item) => item.id));
 
 const YANDEX_MAPS_API_KEY = import.meta.env.VITE_YANDEX_MAPS_API_KEY || "";
-const UPDATE_DATA_COMMAND = "cd /Users/artmanoking/Downloads/Projects/azs-mobile/azs-mobile && npm run prepare-data";
 let yandexMapsPromise;
 
 function uniqueOptions(stations, key) {
@@ -589,12 +590,59 @@ function formatWeekday(value) {
   return date.toLocaleDateString("ru-RU", { weekday: "short" }).replace(".", "");
 }
 
+function emitAuthRequired() {
+  window.dispatchEvent(new CustomEvent("azs:auth-required"));
+}
+
+async function purgePrivateCaches() {
+  if (!("caches" in window)) return;
+  const names = await caches.keys();
+  await Promise.all(names.filter((name) => name === "azs-api" || name === "azs-data").map((name) => caches.delete(name)));
+}
+
 function fetchJson(url, signal) {
-  return fetch(url, { signal, headers: { Accept: "application/json" } }).then((response) => {
+  return fetch(url, { signal, credentials: "include", headers: { Accept: "application/json" } }).then((response) => {
+    if (response.status === 401) {
+      emitAuthRequired();
+      throw new Error("AUTH_REQUIRED");
+    }
     if (response.status === 404) return null;
     if (!response.ok) throw new Error(`REQUEST_FAILED_${response.status}`);
     return response.json();
   });
+}
+
+async function authJson(url, options = {}) {
+  const response = await fetch(url, {
+    credentials: "include",
+    ...options,
+    headers: {
+      Accept: "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.detail || `REQUEST_FAILED_${response.status}`);
+    error.status = response.status;
+    error.payload = data;
+    throw error;
+  }
+  return data;
+}
+
+function isStandaloneApp() {
+  return Boolean(
+    window.matchMedia?.("(display-mode: standalone)").matches ||
+      window.matchMedia?.("(display-mode: window-controls-overlay)").matches ||
+      window.navigator.standalone,
+  );
+}
+
+function initialViewMode() {
+  const view = new URL(window.location.href).searchParams.get("view");
+  return viewIds.has(view) ? view : "home";
 }
 
 function groupTop(stations, getter, limit = 6) {
@@ -619,10 +667,11 @@ function missingContactPhone(station) {
 
 function App() {
   const reduceMotion = useReducedMotion();
+  const [auth, setAuth] = useState({ status: "checking", user: null, error: "" });
   const [payload, setPayload] = useState({ meta: null, stations: [] });
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState(defaultFilters);
-  const [mode, setMode] = useState("home");
+  const [mode, setMode] = useState(() => initialViewMode());
   const [selectedId, setSelectedId] = useState("");
   const [selectionMode, setSelectionMode] = useState("auto");
   const [registryCompact, setRegistryCompact] = useState(false);
@@ -630,19 +679,95 @@ function App() {
   const [favorites, setFavorites] = useState(() => JSON.parse(localStorage.getItem("azs:favorites") || "[]"));
   const [showFilters, setShowFilters] = useState(false);
   const [detailSheet, setDetailSheet] = useState("half");
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [standaloneApp, setStandaloneApp] = useState(() => isStandaloneApp());
 
   useEffect(() => {
-    fetch("/stations.json")
-      .then((response) => (response.ok ? response : fetch("/stations.sample.json")))
-      .then((response) => response.json())
+    let alive = true;
+    authJson("/api/auth/me")
+      .then((data) => {
+        if (alive) setAuth({ status: "ready", user: data.user, error: "" });
+      })
+      .catch(() => {
+        purgePrivateCaches();
+        if (alive) setAuth({ status: "guest", user: null, error: "" });
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleAuthRequired() {
+      purgePrivateCaches();
+      setAuth({ status: "guest", user: null, error: "Сессия истекла. Войдите снова." });
+      setPayload({ meta: null, stations: [] });
+      setSelectedId("");
+      setDetailSheet("closed");
+    }
+
+    window.addEventListener("azs:auth-required", handleAuthRequired);
+    return () => window.removeEventListener("azs:auth-required", handleAuthRequired);
+  }, []);
+
+  useEffect(() => {
+    if (!auth.user) {
+      setPayload({ meta: null, stations: [] });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    fetchJson("/api/stations", controller.signal)
       .then((data) => {
         setPayload(data);
+      })
+      .catch((error) => {
+        if (error.name === "AbortError" || error.message === "AUTH_REQUIRED") return;
+        setPayload({ meta: { count: 0, error: error.message }, stations: [] });
       });
-  }, []);
+
+    return () => controller.abort();
+  }, [auth.user]);
 
   useEffect(() => {
     localStorage.setItem("azs:favorites", JSON.stringify(favorites));
   }, [favorites]);
+
+  useEffect(() => {
+    const standaloneQuery = window.matchMedia?.("(display-mode: standalone)");
+    const overlayQuery = window.matchMedia?.("(display-mode: window-controls-overlay)");
+
+    function refreshStandalone() {
+      setStandaloneApp(isStandaloneApp());
+    }
+
+    function handleBeforeInstallPrompt(event) {
+      event.preventDefault();
+      setInstallPrompt(event);
+    }
+
+    function handleInstalled() {
+      setInstallPrompt(null);
+      setStandaloneApp(true);
+    }
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleInstalled);
+    standaloneQuery?.addEventListener?.("change", refreshStandalone);
+    overlayQuery?.addEventListener?.("change", refreshStandalone);
+    standaloneQuery?.addListener?.(refreshStandalone);
+    overlayQuery?.addListener?.(refreshStandalone);
+    refreshStandalone();
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleInstalled);
+      standaloneQuery?.removeEventListener?.("change", refreshStandalone);
+      overlayQuery?.removeEventListener?.("change", refreshStandalone);
+      standaloneQuery?.removeListener?.(refreshStandalone);
+      overlayQuery?.removeListener?.(refreshStandalone);
+    };
+  }, []);
 
   useEffect(() => {
     setSelectionMode("auto");
@@ -717,6 +842,47 @@ function App() {
     setRegistryCompact(scrollTop > 28);
   }
 
+  async function installApp() {
+    if (!installPrompt) return;
+    const prompt = installPrompt;
+    setInstallPrompt(null);
+    try {
+      await prompt.prompt();
+      const choice = await prompt.userChoice;
+      if (choice?.outcome === "accepted") setStandaloneApp(true);
+    } catch (error) {
+      setInstallPrompt(prompt);
+    }
+  }
+
+  function handleAuthenticated(user) {
+    setAuth({ status: "ready", user, error: "" });
+  }
+
+  async function handleLogout() {
+    try {
+      await authJson("/api/auth/logout", { method: "POST" });
+    } catch (error) {
+      // Local logout still clears the UI and private caches if the network request fails.
+    }
+    await purgePrivateCaches();
+    setAuth({ status: "guest", user: null, error: "" });
+    setPayload({ meta: null, stations: [] });
+    setSelectedId("");
+    setDetailSheet("closed");
+  }
+
+  const canInstallApp = Boolean(installPrompt && !standaloneApp);
+  const isControlMode = mode === "quality";
+
+  if (auth.status === "checking") {
+    return <AuthLoading />;
+  }
+
+  if (!auth.user) {
+    return <AuthScreen initialError={auth.error} onAuthenticated={handleAuthenticated} />;
+  }
+
   return (
     <main className={`app-shell ${mode}-mode ${detailVisible ? "" : "no-detail"} ${mode === "list" && registryCompact ? "registry-compact" : ""}`}>
       <section className="workspace">
@@ -724,37 +890,48 @@ function App() {
           <>
             <header className="topbar">
               <div>
-                <h1>АЗС</h1>
+                <h1>{isControlMode ? "Контроль АЗС" : "АЗС"}</h1>
                 <p>
-                  {payload.meta
+                  {isControlMode
+                    ? `${asInt(stations.length)} объектов в контуре контроля`
+                    : payload.meta
                     ? `${asInt(stations.length)} на карте${excludedNoCoords ? ` · скрыто ${asInt(excludedNoCoords)}` : ""}`
                     : "Загрузка данных"}
                 </p>
               </div>
-              <button className="icon-button" type="button" onClick={() => setShowFilters(true)} aria-label="Фильтры">
-                <SlidersHorizontal size={20} />
-              </button>
+              <div className="topbar-actions">
+                <InstallAppControl canInstall={canInstallApp} standalone={standaloneApp} onInstall={installApp} compact />
+                {!isControlMode && (
+                  <button className="icon-button" type="button" onClick={() => setShowFilters(true)} aria-label="Фильтры">
+                    <SlidersHorizontal size={20} />
+                  </button>
+                )}
+              </div>
             </header>
 
-            <div className="search-row">
-              <Search size={18} />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="КССС, номер, адрес, регион"
-              />
-              {query && (
-                <button className="clear-button" onClick={() => setQuery("")} aria-label="Очистить поиск">
-                  <X size={16} />
-                </button>
+            {!isControlMode && (
+              <>
+                <div className="search-row">
+                  <Search size={18} />
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="КССС, номер, адрес, регион"
+                  />
+                  {query && (
+                    <button className="clear-button" onClick={() => setQuery("")} aria-label="Очистить поиск">
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+
+                <MetricStrip count={filtered.length} metrics={metrics} />
+
+                <FilterRail filters={filters} options={options} setFilter={setFilter} />
+              </>
               )}
-            </div>
 
             <ModeSwitcher items={viewItems} mode={mode} onChange={changeMode} />
-
-            <MetricStrip count={filtered.length} metrics={metrics} />
-
-            <FilterRail filters={filters} options={options} setFilter={setFilter} />
           </>
         )}
 
@@ -769,10 +946,15 @@ function App() {
                 meta={payload.meta}
                 regionCount={options.subject.length}
                 excludedNoCoords={excludedNoCoords}
+                canInstall={canInstallApp}
+                standalone={standaloneApp}
+                user={auth.user}
+                onInstallApp={installApp}
                 onOpenList={() => changeMode("list")}
                 onOpenMap={() => changeMode("map")}
                 onOpenAnalytics={() => changeMode("analytics")}
                 onOpenControl={() => changeMode("quality")}
+                onLogout={handleLogout}
               />
             </motion.div>
           ) : mode === "analytics" ? (
@@ -792,10 +974,7 @@ function App() {
           ) : mode === "quality" ? (
             <motion.div className="view-stage" key="quality" {...viewMotion}>
               <ControlDashboard
-                stations={filtered}
-                totalStations={stations}
-                onFilter={setFilter}
-                onOpenList={() => changeMode("list")}
+                stations={stations}
                 onOpenStation={(id) => {
                   changeMode("list", { closeDetail: false });
                   selectStation(id);
@@ -944,6 +1123,483 @@ function BottomStrip({ items, mode, count, issueCount, onChange }) {
   );
 }
 
+function InstallAppControl({ canInstall, standalone, onInstall, compact = false }) {
+  if (!canInstall && !standalone) return null;
+
+  if (standalone) {
+    return (
+      <div className={`install-control installed ${compact ? "compact" : ""}`}>
+        <CheckCircle2 size={compact ? 16 : 18} />
+        {!compact && <span>Открыто как приложение</span>}
+      </div>
+    );
+  }
+
+  return (
+    <motion.button
+      className={`install-control ${compact ? "compact" : ""}`}
+      type="button"
+      onClick={onInstall}
+      whileTap={{ scale: 0.97 }}
+    >
+      <Download size={compact ? 16 : 18} />
+      <span>{compact ? "Установить" : "Установить приложение"}</span>
+    </motion.button>
+  );
+}
+
+function AuthLoading() {
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel auth-panel-loading" aria-live="polite">
+        <ShieldCheck size={28} />
+        <h1>Классификатор АЗС</h1>
+        <p>Проверяем сессию...</p>
+      </section>
+    </main>
+  );
+}
+
+function AuthScreen({ initialError = "", onAuthenticated }) {
+  const [mode, setMode] = useState("login");
+  const [form, setForm] = useState({ email: "", password: "", name: "" });
+  const [verification, setVerification] = useState({ required: false, email: "", message: "", devCode: "" });
+  const [passwordReset, setPasswordReset] = useState({ active: false, email: "", message: "", devCode: "" });
+  const [code, setCode] = useState("");
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState(initialError);
+  const [policy, setPolicy] = useState({ allowedDomains: [], allowlistEnabled: false, emailVerificationRequired: true });
+
+  useEffect(() => {
+    purgePrivateCaches();
+    authJson("/api/auth/policy")
+      .then((data) => {
+        setPolicy({
+          allowedDomains: Array.isArray(data.allowedDomains) ? data.allowedDomains : [],
+          allowlistEnabled: Boolean(data.allowlistEnabled),
+          emailVerificationRequired: Boolean(data.emailVerificationRequired),
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setError(initialError);
+  }, [initialError]);
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    setStatus("submitting");
+    setError("");
+
+    try {
+      const payload = {
+        email: form.email.trim(),
+        password: form.password,
+        name: mode === "register" ? form.name.trim() : "",
+      };
+      const data = await authJson(`/api/auth/${mode === "register" ? "register" : "login"}`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      if (data.user) {
+        onAuthenticated(data.user);
+        return;
+      }
+      if (data.verificationRequired) {
+        setVerification({
+          required: true,
+          email: data.email || payload.email,
+          message: data.message || "Код подтверждения отправлен на корпоративную почту.",
+          devCode: data.devCode || "",
+        });
+        setCode("");
+        setStatus("idle");
+        return;
+      }
+      setError("Не удалось завершить вход");
+      setStatus("idle");
+    } catch (authError) {
+      setError(authError.message || "Не удалось выполнить вход");
+      setStatus("idle");
+    }
+  }
+
+  async function submitVerification(event) {
+    event.preventDefault();
+    setStatus("submitting");
+    setError("");
+
+    try {
+      const data = await authJson("/api/auth/verify-email", {
+        method: "POST",
+        body: JSON.stringify({ email: verification.email, code }),
+      });
+      if (data.user) {
+        onAuthenticated(data.user);
+        return;
+      }
+      setError("Не удалось подтвердить email");
+      setStatus("idle");
+    } catch (authError) {
+      setError(authError.message || "Неверный код подтверждения");
+      setStatus("idle");
+    }
+  }
+
+  async function resendVerificationCode() {
+    setStatus("submitting");
+    setError("");
+    try {
+      const data = await authJson("/api/auth/resend-code", {
+        method: "POST",
+        body: JSON.stringify({ email: verification.email }),
+      });
+      setVerification((current) => ({
+        ...current,
+        message: data.message || "Новый код отправлен на корпоративную почту.",
+        devCode: data.devCode || "",
+      }));
+      setCode("");
+    } catch (authError) {
+      setError(authError.message || "Не удалось отправить код повторно");
+    } finally {
+      setStatus("idle");
+    }
+  }
+
+  function resetVerification() {
+    setVerification({ required: false, email: "", message: "", devCode: "" });
+    setCode("");
+    setError("");
+    setStatus("idle");
+  }
+
+  function startPasswordReset() {
+    setPasswordReset({ active: true, email: "", message: "", devCode: "" });
+    setVerification({ required: false, email: "", message: "", devCode: "" });
+    setCode("");
+    setForm((current) => ({ ...current, password: "" }));
+    setError("");
+    setStatus("idle");
+  }
+
+  function cancelPasswordReset() {
+    setPasswordReset({ active: false, email: "", message: "", devCode: "" });
+    setCode("");
+    setForm((current) => ({ ...current, password: "" }));
+    setError("");
+    setStatus("idle");
+  }
+
+  async function submitPasswordResetRequest(event) {
+    event.preventDefault();
+    setStatus("submitting");
+    setError("");
+
+    const email = form.email.trim();
+    try {
+      const data = await authJson("/api/auth/request-password-reset", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+      setPasswordReset({
+        active: true,
+        email: data.email || email,
+        message:
+          data.message ||
+          "Если адрес зарегистрирован и допущен к системе, мы отправили код восстановления на корпоративную почту.",
+        devCode: data.devCode || "",
+      });
+      setCode("");
+      setForm((current) => ({ ...current, password: "" }));
+    } catch (authError) {
+      setError(authError.message || "Не удалось отправить код восстановления");
+    } finally {
+      setStatus("idle");
+    }
+  }
+
+  async function resendPasswordResetCode() {
+    setStatus("submitting");
+    setError("");
+    try {
+      const data = await authJson("/api/auth/request-password-reset", {
+        method: "POST",
+        body: JSON.stringify({ email: passwordReset.email }),
+      });
+      setPasswordReset((current) => ({
+        ...current,
+        message: data.message || current.message,
+        devCode: data.devCode || "",
+      }));
+      setCode("");
+    } catch (authError) {
+      setError(authError.message || "Не удалось отправить код повторно");
+    } finally {
+      setStatus("idle");
+    }
+  }
+
+  async function submitPasswordReset(event) {
+    event.preventDefault();
+    setStatus("submitting");
+    setError("");
+
+    try {
+      const data = await authJson("/api/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ email: passwordReset.email, code, password: form.password }),
+      });
+      if (data.user) {
+        onAuthenticated(data.user);
+        return;
+      }
+      setError("Пароль обновлен. Войдите с новым паролем.");
+      setMode("login");
+      cancelPasswordReset();
+    } catch (authError) {
+      setError(authError.message || "Не удалось обновить пароль");
+      setStatus("idle");
+    }
+  }
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel" aria-labelledby="auth-title">
+        <div className="auth-brand">
+          <ShieldCheck size={30} />
+          <div>
+            <span>Корпоративный доступ</span>
+            <h1 id="auth-title">Классификатор АЗС</h1>
+          </div>
+        </div>
+
+        {passwordReset.active ? (
+          <form className="auth-form auth-code-form" onSubmit={passwordReset.email ? submitPasswordReset : submitPasswordResetRequest}>
+            <div className="auth-code-head">
+              <strong>{passwordReset.email ? "Задайте новый пароль" : "Восстановление пароля"}</strong>
+              <span>
+                {passwordReset.email
+                  ? passwordReset.message
+                  : "Укажите корпоративный email. Если адрес есть в системе, на него придет код восстановления."}
+              </span>
+              {passwordReset.email && <small>{passwordReset.email}</small>}
+            </div>
+
+            {!passwordReset.email ? (
+              <label>
+                <span>Email</span>
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={form.email}
+                  onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
+                  placeholder={policy.allowedDomains[0] ? `name@${policy.allowedDomains[0]}` : "name@company.ru"}
+                  required
+                />
+              </label>
+            ) : (
+              <>
+                <label>
+                  <span>Код из письма</span>
+                  <input
+                    autoComplete="one-time-code"
+                    inputMode="numeric"
+                    value={code}
+                    onChange={(event) => setCode(event.target.value.replace(/[^\d]/g, "").slice(0, 12))}
+                    placeholder="Например: 493821"
+                    required
+                  />
+                </label>
+
+                <label>
+                  <span>Новый пароль</span>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={form.password}
+                    onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+                    placeholder="Минимум 8 символов"
+                    minLength={8}
+                    required
+                  />
+                </label>
+              </>
+            )}
+
+            {passwordReset.devCode && (
+              <p className="auth-dev-code">
+                Локальный код: <strong>{passwordReset.devCode}</strong>
+              </p>
+            )}
+
+            {error && (
+              <p className="auth-error" role="alert">
+                {error}
+              </p>
+            )}
+
+            <button className="auth-submit" type="submit" disabled={status === "submitting"}>
+              {status === "submitting" ? "Проверяем..." : passwordReset.email ? "Сохранить новый пароль" : "Отправить код"}
+            </button>
+            <div className="auth-inline-actions">
+              {passwordReset.email && (
+                <button type="button" onClick={resendPasswordResetCode} disabled={status === "submitting"}>
+                  Отправить код ещё раз
+                </button>
+              )}
+              {passwordReset.email && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPasswordReset({ active: true, email: "", message: "", devCode: "" });
+                    setCode("");
+                    setForm((current) => ({ ...current, password: "" }));
+                    setError("");
+                  }}
+                  disabled={status === "submitting"}
+                >
+                  Изменить email
+                </button>
+              )}
+              <button type="button" onClick={cancelPasswordReset} disabled={status === "submitting"}>
+                Вернуться ко входу
+              </button>
+            </div>
+          </form>
+        ) : verification.required ? (
+          <form className="auth-form auth-code-form" onSubmit={submitVerification}>
+            <div className="auth-code-head">
+              <strong>Подтвердите email</strong>
+              <span>{verification.message}</span>
+              <small>{verification.email}</small>
+            </div>
+
+            <label>
+              <span>Код из письма</span>
+              <input
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                value={code}
+                onChange={(event) => setCode(event.target.value.replace(/[^\d]/g, "").slice(0, 12))}
+                placeholder="Например: 493821"
+                required
+              />
+            </label>
+
+            {verification.devCode && (
+              <p className="auth-dev-code">
+                Локальный код: <strong>{verification.devCode}</strong>
+              </p>
+            )}
+
+            {error && (
+              <p className="auth-error" role="alert">
+                {error}
+              </p>
+            )}
+
+            <button className="auth-submit" type="submit" disabled={status === "submitting"}>
+              {status === "submitting" ? "Проверяем..." : "Подтвердить и войти"}
+            </button>
+            <div className="auth-inline-actions">
+              <button type="button" onClick={resendVerificationCode} disabled={status === "submitting"}>
+                Отправить код ещё раз
+              </button>
+              <button type="button" onClick={resetVerification} disabled={status === "submitting"}>
+                Изменить email
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <div className="auth-switch" role="tablist" aria-label="Режим авторизации">
+              <button className={mode === "login" ? "active" : ""} type="button" onClick={() => setMode("login")}>
+                Вход
+              </button>
+              <button className={mode === "register" ? "active" : ""} type="button" onClick={() => setMode("register")}>
+                Регистрация
+              </button>
+            </div>
+
+            <form className="auth-form" onSubmit={submitAuth}>
+              {mode === "register" && (
+                <label>
+                  <span>Имя</span>
+                  <input
+                    autoComplete="name"
+                    value={form.name}
+                    onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                    placeholder="Например: Иван Петров"
+                  />
+                </label>
+              )}
+
+              <label>
+                <span>Email</span>
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={form.email}
+                  onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
+                  placeholder={policy.allowedDomains[0] ? `name@${policy.allowedDomains[0]}` : "name@company.ru"}
+                  required
+                />
+              </label>
+
+              <label>
+                <span>Пароль</span>
+                <input
+                  type="password"
+                  autoComplete={mode === "register" ? "new-password" : "current-password"}
+                  value={form.password}
+                  onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+                  placeholder="Минимум 8 символов"
+                  minLength={8}
+                  required
+                />
+              </label>
+
+              {mode === "login" && (
+                <div className="auth-forgot-row">
+                  <button type="button" onClick={startPasswordReset}>
+                    Забыли пароль?
+                  </button>
+                </div>
+              )}
+
+              {error && (
+                <p className="auth-error" role="alert">
+                  {error}
+                </p>
+              )}
+
+              <button className="auth-submit" type="submit" disabled={status === "submitting"}>
+                {status === "submitting" ? "Проверяем..." : mode === "register" ? "Создать доступ" : "Войти"}
+              </button>
+            </form>
+          </>
+        )}
+
+        <div className="auth-policy">
+          <strong>Только для сотрудников компании</strong>
+          <span>
+            {policy.allowedDomains.length
+              ? `Вход разрешен для доменов: ${policy.allowedDomains.join(", ")}${policy.allowlistEnabled ? " и адресов из allowlist" : ""}.`
+              : "Вход разрешен только для адресов из корпоративного allowlist."}
+            {policy.emailVerificationRequired ? " При первой авторизации потребуется код из письма." : ""}
+          </span>
+        </div>
+
+        <p className="auth-note">
+          Внешние email не проходят регистрацию и вход. Доступ к реестру, карте, аналитике, контролю и API открывается только после авторизации.
+        </p>
+      </section>
+    </main>
+  );
+}
+
 function HomeDashboard({
   count,
   total,
@@ -952,10 +1608,15 @@ function HomeDashboard({
   meta,
   regionCount,
   excludedNoCoords,
+  canInstall,
+  standalone,
+  user,
+  onInstallApp,
   onOpenList,
   onOpenMap,
   onOpenAnalytics,
   onOpenControl,
+  onLogout,
 }) {
   const activeShare = total ? Math.round((metrics.active / total) * 100) : 0;
   const homeLinks = [
@@ -980,6 +1641,7 @@ function HomeDashboard({
           <p>
             Инструмент собирает реестр АЗС, координаты, сервисы, классификацию, контакты, показатели месяца и рекомендации по персоналу в одном рабочем контуре.
           </p>
+          <InstallAppControl canInstall={canInstall} standalone={standalone} onInstall={onInstallApp} />
           <div className="home-passport" aria-label="Паспорт данных">
             {passportItems.map((item, index) => (
               <motion.div
@@ -1043,6 +1705,21 @@ function HomeDashboard({
         <span><Coffee size={15} /><strong>{asInt(metrics.cafe)}</strong> с кафе</span>
         <button type="button" onClick={onOpenControl}>
           {issueCount ? `${asInt(issueCount)} замечаний` : "Замечаний нет"}
+        </button>
+      </div>
+
+      <div className="home-user-panel" aria-label="Текущий пользователь">
+        {user && (
+          <div>
+            <ShieldCheck size={15} />
+            <span>
+              <strong>Пользователь: {user.name || "без ФИО"}</strong>
+              <small>{user.email}</small>
+            </span>
+          </div>
+        )}
+        <button className="home-logout-button" type="button" onClick={onLogout}>
+          Выйти
         </button>
       </div>
     </section>
@@ -1658,28 +2335,15 @@ function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove
   );
 }
 
-function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpenStation }) {
-  const [copied, setCopied] = useState(false);
+function ControlDashboard({ stations, onOpenStation }) {
   const [feedback, setFeedback] = useState({ station: "", field: "", message: "" });
   const [feedbackSent, setFeedbackSent] = useState(false);
-  const total = stations.length;
   const issueStations = stations.filter((station) => station.qualityIssues.length > 0);
-  const noResponsible = stations.filter(missingResponsible);
-  const noPhone = stations.filter(missingContactPhone);
   const issueCounts = groupTop(
     stations.flatMap((station) => station.qualityIssues).map((issue) => ({ issue })),
     (item) => item.issue,
     8,
   );
-  const contactReady = stations.filter((station) => !missingResponsible(station) && !missingContactPhone(station)).length;
-  const serviceReady = stations.filter((station) => station.flags.hasShop || station.flags.hasCafe || station.flags.hasToilet).length;
-
-  function copyUpdateCommand() {
-    navigator.clipboard?.writeText(UPDATE_DATA_COMMAND).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    });
-  }
 
   function submitFeedback(event) {
     event.preventDefault();
@@ -1701,42 +2365,14 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
     <section className="analytics-pane control-pane">
       <div className="analytics-head">
         <div>
-          <h2>Контроль объектов</h2>
+          <h2>Контроль АЗС</h2>
           <p>
             Рабочий срез для выезда: карточка, контакты, координаты, сервисы и готовность данных по текущей выборке.
           </p>
         </div>
       </div>
 
-      <div className="analytics-kpis">
-        <Kpi title="Карточек в срезе" value={total} share={pct(total, totalStations.length)} />
-        <Kpi title="С замечаниями" value={issueStations.length} share={pct(issueStations.length, total)} tone="amber" />
-        <Kpi title="Без телефона" value={noPhone.length} share={pct(noPhone.length, total)} tone="red" />
-        <Kpi title="Без ответственного" value={noResponsible.length} share={pct(noResponsible.length, total)} tone="amber" />
-      </div>
-
       <div className="control-grid">
-        <div className="analytics-card readiness-card">
-          <h3>Операционная готовность</h3>
-          <ReadinessRow title="Карта и маршрут" value={total} total={total} />
-          <ReadinessRow title="Контакты" value={Math.max(contactReady, 0)} total={total} />
-          <ReadinessRow title="Сервисный профиль" value={serviceReady} total={total} />
-        </div>
-
-        <div className="analytics-card quality-list-card">
-          <h3>Основные разрывы</h3>
-          <button type="button" onClick={() => onFilter("quality", "issues")}>
-            <AlertTriangle size={16} />
-            <span>Любые замечания</span>
-            <strong>{asInt(issueStations.length)}</strong>
-          </button>
-          <button type="button" onClick={onOpenList}>
-            <Phone size={16} />
-            <span>Проверить контакты</span>
-            <strong>{asInt(noPhone.length)}</strong>
-          </button>
-        </div>
-
         <div className="analytics-card issue-card">
           <h3>Типы замечаний</h3>
           <div className="issue-stack">
@@ -1751,13 +2387,6 @@ function ControlDashboard({ stations, totalStations, onFilter, onOpenList, onOpe
               <p>В текущей выборке замечаний нет.</p>
             )}
           </div>
-        </div>
-
-        <div className="analytics-card update-card">
-          <h3>Обновление классификатора</h3>
-          <p>Источник: `cls_2026_05_AZS.xlsx`. Локальная подготовка пересобирает `public/stations.json` для приложения.</p>
-          <code>{UPDATE_DATA_COMMAND}</code>
-          <button type="button" onClick={copyUpdateCommand}>{copied ? "Скопировано" : "Скопировать команду"}</button>
         </div>
 
         <FeedbackCard
@@ -1830,22 +2459,6 @@ function FeedbackCard({ feedback, sent, onChange, onSubmit }) {
         {sent ? "Сохранено локально" : "Отправить замечание"}
       </button>
     </form>
-  );
-}
-
-function ReadinessRow({ title, value, total }) {
-  const share = pct(value, total);
-  return (
-    <div className="readiness-row">
-      <div>
-        <span>{title}</span>
-        <strong>{asInt(value)} / {asInt(total)}</strong>
-      </div>
-      <div className="bar-track">
-        <i style={{ width: `${Math.max(4, share)}%` }} />
-      </div>
-      <small>{share}%</small>
-    </div>
   );
 }
 
@@ -2543,9 +3156,14 @@ function StationKpis({ ksss }) {
 
     fetch(`/api/stations/${encodeURIComponent(ksss)}/kpis?period=${period}`, {
       signal: controller.signal,
+      credentials: "include",
       headers: { Accept: "application/json" },
     })
       .then((response) => {
+        if (response.status === 401) {
+          emitAuthRequired();
+          throw new Error("AUTH_REQUIRED");
+        }
         if (response.status === 404) return null;
         if (!response.ok) throw new Error(`KPI_REQUEST_FAILED_${response.status}`);
         return response.json();
@@ -2559,6 +3177,7 @@ function StationKpis({ ksss }) {
       })
       .catch((error) => {
         if (error.name === "AbortError") return;
+        if (error.message === "AUTH_REQUIRED") return;
         setKpiState({ status: "ready", data: demoKpiPayload(ksss, period, error.message), error: "" });
       });
 
@@ -2859,9 +3478,3 @@ function FilterSheet({ filters, options, setFilter, onClose, onReset }) {
 }
 
 createRoot(document.getElementById("root")).render(<App />);
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
-  });
-}

@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "python3 scripts/run_app.py",
-    "app": "python3 scripts/run_app.py",
-    "dev": "vite --host 0.0.0.0",
+    "start": "python3 scripts/run_app.py --mode pwa",
+    "app": "python3 scripts/run_app.py --mode pwa",
+    "dev:full": "python3 scripts/run_app.py --mode dev",
+    "dev": "vite --host 0.0.0.0 --port 5174 --strictPort",
     "backend": "python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0",
+    "preview": "vite preview --host 0.0.0.0 --port 5174 --strictPort",
+    "test:e2e:auth": "node tests/auth-access.e2e.mjs",
     "prepare-data": "python3 scripts/prepare_data.py",
     "prepare-staff": "python3 scripts/prepare_staff_data.py"
   },
@@ -22,9 +24,10 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.5.4",
-    "vite": "^7.0.0"
+    "vite": "^8.1.0"
   },
   "devDependencies": {
-    "playwright": "^1.60.0"
+    "playwright": "^1.60.0",
+    "vite-plugin-pwa": "^1.3.0"
   }
 }

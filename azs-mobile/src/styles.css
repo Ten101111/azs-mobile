@@ -44,6 +44,260 @@ a {
   touch-action: manipulation;
 }
 
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid rgba(48, 119, 216, 0.34);
+  outline-offset: 2px;
+}
+
+.auth-shell {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background:
+    linear-gradient(135deg, rgba(201, 29, 50, 0.08), rgba(48, 119, 216, 0.08)),
+    var(--bg);
+}
+
+.auth-panel {
+  width: min(100%, 430px);
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.auth-panel-loading {
+  place-items: center;
+  text-align: center;
+}
+
+.auth-panel-loading svg,
+.auth-brand svg {
+  color: var(--red-dark);
+}
+
+.auth-panel h1 {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.05;
+}
+
+.auth-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.auth-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.auth-brand span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--red-dark);
+  font-size: 12px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.auth-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.auth-switch button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.auth-switch button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(21, 27, 36, 0.08);
+}
+
+.auth-form {
+  display: grid;
+  gap: 11px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 5px;
+}
+
+.auth-form label span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.auth-form input {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: var(--bg);
+  color: var(--text);
+  outline: 0;
+}
+
+.auth-form input:focus {
+  border-color: rgba(48, 119, 216, 0.42);
+  background: var(--surface);
+}
+
+.auth-error {
+  padding: 10px 11px;
+  border: 1px solid rgba(201, 29, 50, 0.22);
+  border-radius: 8px;
+  background: #fff1f3;
+  color: var(--red-dark) !important;
+  font-weight: 700;
+}
+
+.auth-policy {
+  display: grid;
+  gap: 4px;
+  padding: 10px 11px;
+  border: 1px solid rgba(48, 119, 216, 0.22);
+  border-radius: 8px;
+  background: #eef5ff;
+}
+
+.auth-policy strong {
+  color: #1f5fae;
+  font-size: 12px;
+}
+
+.auth-policy span {
+  color: #526071;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.auth-submit {
+  min-height: 46px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--red);
+  color: white;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.auth-submit:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.auth-forgot-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -3px;
+}
+
+.auth-forgot-row button {
+  min-height: 42px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: transparent;
+  color: #1f5fae;
+  font-size: 12px;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.auth-forgot-row button:hover,
+.auth-forgot-row button:focus-visible {
+  background: #eef5ff;
+  outline: 0;
+}
+
+.auth-code-form {
+  gap: 13px;
+}
+
+.auth-code-head {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid rgba(48, 119, 216, 0.22);
+  border-radius: 8px;
+  background: #eef5ff;
+}
+
+.auth-code-head strong {
+  color: #1f5fae;
+  font-size: 14px;
+}
+
+.auth-code-head span,
+.auth-code-head small {
+  color: #526071;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.auth-code-head small {
+  font-weight: 760;
+}
+
+.auth-dev-code {
+  padding: 10px 11px;
+  border: 1px dashed rgba(201, 29, 50, 0.32);
+  border-radius: 8px;
+  background: #fff8f9;
+  color: var(--red-dark) !important;
+  font-weight: 720;
+}
+
+.auth-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.auth-inline-actions button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 11px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 740;
+  cursor: pointer;
+}
+
+.auth-inline-actions button:disabled {
+  opacity: 0.58;
+  cursor: wait;
+}
+
+.auth-note {
+  padding-top: 2px;
+}
+
 .app-shell {
   height: 100dvh;
   min-height: 0;
@@ -88,9 +342,15 @@ a {
   font-size: 13px;
 }
 
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .icon-button {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -100,6 +360,39 @@ a {
   color: var(--text);
   cursor: pointer;
   transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.install-control {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0 14px;
+  border: 1px solid rgba(201, 29, 50, 0.24);
+  border-radius: 8px;
+  background: var(--red);
+  color: white;
+  font-weight: 780;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(201, 29, 50, 0.18);
+}
+
+.install-control.compact {
+  min-height: 44px;
+  padding: 0 12px;
+  box-shadow: none;
+}
+
+.install-control.installed {
+  cursor: default;
+  border-color: rgba(20, 148, 95, 0.18);
+  background: #eaf8f1;
+  color: var(--green);
+  box-shadow: none;
 }
 
 .icon-button:active,
@@ -144,8 +437,8 @@ a {
   border: 0;
   background: var(--surface-2);
   color: var(--muted);
-  width: 26px;
-  height: 26px;
+  width: 36px;
+  height: 36px;
   border-radius: 8px;
   display: inline-flex;
   align-items: center;
@@ -510,7 +803,7 @@ a {
 }
 
 .home-summary button {
-  min-height: 42px;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -522,6 +815,74 @@ a {
   color: #18579f;
   font-weight: 760;
   cursor: pointer;
+}
+
+.home-user-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.home-user-panel div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.home-user-panel svg {
+  flex: 0 0 auto;
+  color: var(--home-red-dark);
+}
+
+.home-user-panel span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.home-user-panel strong,
+.home-user-panel small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-user-panel strong {
+  color: var(--home-ink);
+  font-size: 13px;
+}
+
+.home-user-panel small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.home-logout-button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-color: rgba(201, 29, 50, 0.24);
+  border-radius: 8px;
+  border-style: solid;
+  border-width: 1px;
+  background: #fff1f3;
+  color: var(--red-dark);
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.home-logout-button:hover {
+  background: #ffe8ec;
 }
 
 .analytics-pane {
@@ -725,7 +1086,7 @@ a {
 }
 
 .clear-base-button {
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 12px;
   border: 1px solid rgba(201, 29, 50, 0.22);
   border-radius: 8px;
@@ -742,7 +1103,7 @@ a {
 }
 
 .station-autocomplete-field {
-  min-height: 42px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -1184,7 +1545,7 @@ a {
 }
 
 .quality-list-card button {
-  min-height: 42px;
+  min-height: 44px;
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   gap: 9px;
@@ -1276,7 +1637,7 @@ a {
 }
 
 .feedback-card input {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 10px;
 }
 
@@ -1294,7 +1655,7 @@ a {
 }
 
 .feedback-card button {
-  min-height: 40px;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1312,38 +1673,7 @@ a {
   opacity: 0.52;
 }
 
-.readiness-card {
-  display: grid;
-  align-content: start;
-  gap: 12px;
-}
-
-.readiness-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 92px;
-  gap: 8px 12px;
-  align-items: center;
-}
-
-.readiness-row div:first-child {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  grid-column: 1 / -1;
-  font-size: 12px;
-}
-
-.readiness-row span,
-.readiness-row small {
-  color: var(--muted);
-}
-
-.readiness-row strong {
-  font-size: 12px;
-}
-
 .issue-card p,
-.update-card p,
 .issue-table p {
   margin: 0;
   color: var(--muted);
@@ -1372,36 +1702,6 @@ a {
 
 .issue-row strong {
   color: var(--red-dark);
-}
-
-.update-card {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-}
-
-.update-card code {
-  display: block;
-  overflow-x: auto;
-  padding: 10px;
-  border-radius: 8px;
-  background: #202733;
-  color: #eef4ff;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.update-card button {
-  width: fit-content;
-  min-height: 36px;
-  padding: 0 12px;
-  border: 1px solid rgba(201, 29, 50, 0.22);
-  border-radius: 8px;
-  background: #fff1f3;
-  color: var(--red-dark);
-  font-size: 12px;
-  font-weight: 720;
-  cursor: pointer;
 }
 
 .issue-table-card {
@@ -2580,6 +2880,16 @@ a {
     height: 46px;
   }
 
+  .install-control.compact {
+    width: 46px;
+    min-width: 46px;
+    padding: 0;
+  }
+
+  .install-control.compact span {
+    display: none;
+  }
+
   .search-row {
     flex: 0 0 auto;
     height: 52px;
@@ -2785,7 +3095,7 @@ a {
   }
 
   .home-summary button {
-    min-height: 40px;
+    min-height: 44px;
   }
 
   .home-section-nav {
@@ -2802,6 +3112,15 @@ a {
 
   .home-summary span,
   .home-summary button {
+    width: 100%;
+  }
+
+  .home-user-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .home-user-panel .home-logout-button {
     width: 100%;
   }
 
@@ -2860,7 +3179,7 @@ a {
   }
 
   .similar-actions button {
-    min-height: 40px;
+    min-height: 44px;
   }
 
   .compare-picker {
@@ -2874,7 +3193,7 @@ a {
 
   .clear-base-button {
     width: 100%;
-    min-height: 40px;
+    min-height: 44px;
   }
 
   .compare-picker .station-autocomplete {

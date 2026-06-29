@@ -11,7 +11,7 @@ from xml.etree import ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 APP = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = APP / "data" / "staff"
-OUT = APP / "public" / "staff_recommendations.json"
+OUT = APP / "data" / "staff_recommendations.json"
 
 DAILY_SHEET = "По дням"
 KSSS_COLUMN = "КССС"

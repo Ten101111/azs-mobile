@@ -4,10 +4,16 @@
 data.csv
 cls_2026_05_AZS.xlsx
 azs-mobile/public/stations.json
+azs-mobile/data/stations.json
 azs-mobile/public/staff_recommendations.json
+azs-mobile/data/staff_recommendations.json
+azs-mobile/data/auth_allowlist.json
+azs-mobile/data/auth.sqlite3
+azs-mobile/data/auth.sqlite3-*
 
 # Generated and local artifacts
 azs-mobile/dist/
+azs-mobile/dev-dist/
 azs-mobile/qa/
 azs-mobile/node_modules/
 

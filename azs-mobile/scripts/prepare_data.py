@@ -9,7 +9,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 APP = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "cls_2026_05_AZS.xlsx"
-OUT = APP / "public" / "stations.json"
+OUT = APP / "data" / "stations.json"
 
 
 def clean(value):

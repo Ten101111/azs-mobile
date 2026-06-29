@@ -1,4 +1,5 @@
 import importlib.util
+import argparse
 import signal
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parents[1]
 REQUIREMENTS = APP / "backend" / "requirements.txt"
+FRONTEND_PORT = 5174
 
 
 def missing_backend_modules():
@@ -68,12 +70,37 @@ def start_process(name, command):
     return process
 
 
+def build_frontend():
+    print("Building frontend for PWA precache...")
+    subprocess.run(["npm", "run", "build"], cwd=APP, check=True)
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Run AZS app with API and frontend.")
+    parser.add_argument(
+        "--mode",
+        choices=("pwa", "dev"),
+        default="pwa",
+        help="pwa runs production preview with generated service worker; dev runs Vite dev server with HMR.",
+    )
+    args = parser.parse_args()
+
     ensure_backend_dependencies()
+    if args.mode == "pwa":
+        build_frontend()
 
     commands = [
-        ("api", [sys.executable, "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]),
-        ("web", ["npm", "run", "dev", "--", "--host", "0.0.0.0"]),
+        (
+            "api",
+            [sys.executable, "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+            + (["--reload"] if args.mode == "dev" else []),
+        ),
+        (
+            "web",
+            ["npm", "run", "dev"]
+            if args.mode == "dev"
+            else ["npm", "run", "preview"],
+        ),
     ]
     processes = [start_process(name, command) for name, command in commands]
 
@@ -84,8 +111,8 @@ def main():
     signal.signal(signal.SIGINT, handle_stop)
     signal.signal(signal.SIGTERM, handle_stop)
 
-    print("\nApp is starting.")
-    print("Frontend: http://localhost:5173/")
+    print(f"\nApp is starting in {args.mode.upper()} mode.")
+    print(f"Frontend: http://localhost:{FRONTEND_PORT}/")
     print("Backend:  http://localhost:8000/api/health")
     print("Press Ctrl+C to stop both servers.\n")
 
