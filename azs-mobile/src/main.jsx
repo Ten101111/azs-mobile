@@ -8,6 +8,8 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleDot,
   Coffee,
   Download,
@@ -451,6 +453,49 @@ function formatPeriod(period) {
   return date.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
 }
 
+function PeriodNavigator({ periods, period, onChange, label = "Период KPI" }) {
+  const orderedPeriods = [...periods].sort();
+  const currentIndex = orderedPeriods.indexOf(period);
+  const previous = currentIndex > 0 ? orderedPeriods[currentIndex - 1] : "";
+  const next = currentIndex >= 0 && currentIndex < orderedPeriods.length - 1 ? orderedPeriods[currentIndex + 1] : "";
+
+  if (orderedPeriods.length <= 1) {
+    return <span>{formatPeriod(period)}</span>;
+  }
+
+  return (
+    <div className="period-navigator">
+      <button
+        className="period-nav-button"
+        type="button"
+        disabled={!previous}
+        onClick={() => previous && onChange(previous)}
+        aria-label={previous ? `Предыдущий месяц: ${formatPeriod(previous)}` : "Предыдущего месяца нет"}
+        title="Предыдущий месяц"
+      >
+        <ChevronLeft size={17} />
+      </button>
+      <select className="period-select" value={period} onChange={(event) => onChange(event.target.value)} aria-label={label}>
+        {orderedPeriods.map((item) => (
+          <option key={item} value={item}>
+            {formatPeriod(item)}
+          </option>
+        ))}
+      </select>
+      <button
+        className="period-nav-button"
+        type="button"
+        disabled={!next}
+        onClick={() => next && onChange(next)}
+        aria-label={next ? `Следующий месяц: ${formatPeriod(next)}` : "Следующего месяца нет"}
+        title="Следующий месяц"
+      >
+        <ChevronRight size={17} />
+      </button>
+    </div>
+  );
+}
+
 function formatKpiValue(value, unit) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "—";
@@ -473,12 +518,14 @@ function formatStaffValue(value) {
 }
 
 function formatDelta(value) {
+  if (value === null || value === undefined || value === "") return "—";
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "—";
   return `${numeric > 0 ? "+" : ""}${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
 function deltaTone(value) {
+  if (value === null || value === undefined || value === "") return "";
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric === 0) return "";
   return numeric > 0 ? "positive" : "negative";
@@ -1985,15 +2032,7 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
               : `Период: ${formatPeriod(period)} · источник API /api`}
           </p>
         </div>
-        {periods.length > 1 && (
-          <select className="period-select" value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Период KPI">
-            {periods.map((item) => (
-              <option key={item} value={item}>
-                {formatPeriod(item)}
-              </option>
-            ))}
-          </select>
-        )}
+        {periods.length > 1 && <PeriodNavigator periods={periods} period={period} onChange={setPeriod} />}
       </div>
 
       <div className="analytics-tabs" role="tablist" aria-label="Режим аналитики">
@@ -3340,17 +3379,7 @@ function StationKpis({ ksss }) {
         <h3>
           <BarChart3 size={16} /> Показатели месяца
         </h3>
-        {periods.length > 1 ? (
-          <select className="period-select" value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Период KPI">
-            {periods.map((item) => (
-              <option key={item} value={item}>
-                {formatPeriod(item)}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span>{formatPeriod(period)}</span>
-        )}
+        <PeriodNavigator periods={periods} period={period} onChange={setPeriod} />
       </div>
 
       {kpiState.status === "loading" && (
@@ -3504,17 +3533,7 @@ function StationStaff({ ksss }) {
         <h3>
           <Users size={16} /> Персонал
         </h3>
-        {periods.length > 1 ? (
-          <select className="period-select" value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Период рекомендаций">
-            {periods.map((item) => (
-              <option key={item} value={item}>
-                {formatPeriod(item)}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span>{formatPeriod(period)}</span>
-        )}
+        <PeriodNavigator periods={periods} period={period} onChange={setPeriod} label="Период рекомендаций" />
       </div>
 
       {(periodsStatus === "loading" || staffState.status === "loading") && (

@@ -935,9 +935,9 @@ a {
   font-size: 13px;
 }
 
-.analytics-head .period-select {
+.analytics-head .period-navigator {
   flex: 0 0 auto;
-  max-width: 220px;
+  width: min(100%, 300px);
 }
 
 .quality-button {
@@ -2525,6 +2525,43 @@ a {
   padding: 6px 30px 6px 10px;
 }
 
+.period-navigator {
+  width: min(100%, 300px);
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 6px;
+}
+
+.period-navigator .period-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.period-nav-button {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.period-nav-button:hover:not(:disabled) {
+  border-color: #d4a4a4;
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.period-nav-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .staff-loading {
   display: grid;
   gap: 8px;
@@ -3389,7 +3426,7 @@ a {
     display: block;
   }
 
-  .analytics-head .period-select {
+  .analytics-head .period-navigator {
     width: 100%;
     max-width: none;
     margin-top: 10px;

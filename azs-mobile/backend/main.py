@@ -77,8 +77,8 @@ class KpiMetric(BaseModel):
     label: str
     value: float
     unit: str
-    momPct: float
-    yoyPct: float
+    momPct: Optional[float] = None
+    yoyPct: Optional[float] = None
 
 
 class StationKpiResponse(BaseModel):
@@ -219,16 +219,16 @@ class KpiPeriodsResponse(BaseModel):
 class KpiImportRecord(BaseModel):
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     ksss: str = Field(min_length=1, max_length=32)
-    revenue: float = Field(ge=0)
-    revenueNtu: Optional[float] = Field(default=None, ge=0)
-    revenue_ntu: Optional[float] = Field(default=None, ge=0)
-    fuelVolume: Optional[float] = Field(default=None, ge=0)
-    fuel_volume: Optional[float] = Field(default=None, ge=0)
-    checks: float = Field(ge=0)
-    checksNtu: Optional[float] = Field(default=None, ge=0)
-    checks_ntu: Optional[float] = Field(default=None, ge=0)
-    avgCheck: Optional[float] = Field(default=None, ge=0)
-    avg_check: Optional[float] = Field(default=None, ge=0)
+    revenue: float
+    revenueNtu: Optional[float] = None
+    revenue_ntu: Optional[float] = None
+    fuelVolume: Optional[float] = None
+    fuel_volume: Optional[float] = None
+    checks: float
+    checksNtu: Optional[float] = None
+    checks_ntu: Optional[float] = None
+    avgCheck: Optional[float] = None
+    avg_check: Optional[float] = None
     updatedAt: Optional[str] = Field(default=None, max_length=80)
 
 
@@ -1210,7 +1210,12 @@ def empty_kpi_values(has_data: bool = False) -> dict[str, object]:
     return {"revenue": 0, "fuelVolume": 0, "checks": 0, "avgCheck": 0, "hasData": has_data}
 
 
-def period_metric_values(conn: sqlite3.Connection, period: str, ksss_values: Optional[list[str]] = None) -> dict[str, object]:
+def period_metric_values(
+    conn: sqlite3.Connection,
+    period: str,
+    ksss_values: Optional[list[str]] = None,
+    through_day: Optional[int] = None,
+) -> dict[str, object]:
     validate_period(period)
     params: list[str] = [period]
     clauses = ["period = ?"]
@@ -1221,6 +1226,11 @@ def period_metric_values(conn: sqlite3.Connection, period: str, ksss_values: Opt
         placeholders = ",".join("?" for _ in normalized)
         clauses.append(f"ksss IN ({placeholders})")
         params.extend(normalized)
+    if through_day is not None:
+        year, month = (int(part) for part in period.split("-"))
+        cutoff_day = min(max(int(through_day), 1), monthrange(year, month)[1])
+        clauses.append("metric_date <= ?")
+        params.append(f"{period}-{cutoff_day:02d}")
 
     row = conn.execute(
         f"""
@@ -1232,7 +1242,8 @@ def period_metric_values(conn: sqlite3.Connection, period: str, ksss_values: Opt
             SUM(checks) AS checks,
             SUM(checks_ntu) AS checks_ntu,
             COUNT(checks_ntu) AS ntu_row_count,
-            AVG(avg_check) AS imported_avg_check
+            AVG(avg_check) AS imported_avg_check,
+            MAX(metric_date) AS max_date
         FROM station_kpi_daily
         WHERE {' AND '.join(clauses)}
         """,
@@ -1258,29 +1269,49 @@ def period_metric_values(conn: sqlite3.Connection, period: str, ksss_values: Opt
         "checks": checks,
         "avgCheck": avg_check,
         "hasData": True,
+        "maxDate": str(row["max_date"] or ""),
     }
 
 
-def pct_delta(current: float, baseline: float) -> float:
-    if not baseline:
-        return 0
+def pct_delta(current: float, baseline: float, baseline_has_data: bool) -> Optional[float]:
+    if not baseline_has_data or not baseline:
+        return None
     return round(((current - baseline) / abs(baseline)) * 100, 1)
 
 
-def kpi_deltas(current: dict[str, object], previous: dict[str, object], year: dict[str, object]) -> dict[str, float]:
+def kpi_deltas(current: dict[str, object], previous: dict[str, object], year: dict[str, object]) -> dict[str, Optional[float]]:
     return {
-        f"{metric_id}_mom_pct": pct_delta(float(current.get(metric_id, 0)), float(previous.get(metric_id, 0)))
+        f"{metric_id}_mom_pct": pct_delta(
+            float(current.get(metric_id, 0)),
+            float(previous.get(metric_id, 0)),
+            bool(previous.get("hasData")),
+        )
         for metric_id in ("revenue", "fuelVolume", "checks", "avgCheck")
     } | {
-        f"{metric_id}_yoy_pct": pct_delta(float(current.get(metric_id, 0)), float(year.get(metric_id, 0)))
+        f"{metric_id}_yoy_pct": pct_delta(
+            float(current.get(metric_id, 0)),
+            float(year.get(metric_id, 0)),
+            bool(year.get("hasData")),
+        )
         for metric_id in ("revenue", "fuelVolume", "checks", "avgCheck")
     }
 
 
-def local_metric_set(conn: sqlite3.Connection, period: str, ksss_values: list[str]) -> tuple[dict[str, object], dict[str, float]]:
+def local_metric_set(
+    conn: sqlite3.Connection,
+    period: str,
+    ksss_values: list[str],
+) -> tuple[dict[str, object], dict[str, Optional[float]]]:
     current = period_metric_values(conn, period, ksss_values)
-    previous = period_metric_values(conn, previous_period(period), ksss_values)
-    year = period_metric_values(conn, previous_year_period(period), ksss_values)
+    max_date = str(current.get("maxDate") or "")
+    through_day: Optional[int] = None
+    if max_date:
+        period_year, period_month = (int(part) for part in period.split("-"))
+        loaded_day = int(max_date[-2:])
+        if loaded_day < monthrange(period_year, period_month)[1]:
+            through_day = loaded_day
+    previous = period_metric_values(conn, previous_period(period), ksss_values, through_day)
+    year = period_metric_values(conn, previous_year_period(period), ksss_values, through_day)
     return current, kpi_deltas(current, previous, year)
 
 
@@ -1384,22 +1415,28 @@ def mock_metric_values(ksss: str, period: str) -> dict[str, float]:
     }
 
 
-def make_metrics(values: dict[str, float], period: str, seed_key: str, deltas: Optional[dict[str, float]] = None) -> list[KpiMetric]:
+def make_metrics(
+    values: dict[str, float],
+    period: str,
+    seed_key: str,
+    deltas: Optional[dict[str, Optional[float]]] = None,
+) -> list[KpiMetric]:
     metrics = [
         ("revenue", "Выручка", values.get("revenue", 0), "₽"),
         ("fuelVolume", "Объем топлива", values.get("fuelVolume", 0), "л"),
         ("checks", "Чеки", values.get("checks", 0), "шт"),
         ("avgCheck", "Средний чек", values.get("avgCheck", 0), "₽"),
     ]
-    deltas = deltas or {}
+    use_mock_deltas = deltas is None
+    resolved_deltas = deltas or {}
     return [
         KpiMetric(
             id=metric_id,
             label=label,
             value=value,
             unit=unit,
-            momPct=deltas.get(f"{metric_id}_mom_pct", mock_pct(seed_key, period, metric_id, "mom")),
-            yoyPct=deltas.get(f"{metric_id}_yoy_pct", mock_pct(seed_key, period, metric_id, "yoy")),
+            momPct=(mock_pct(seed_key, period, metric_id, "mom") if use_mock_deltas else resolved_deltas.get(f"{metric_id}_mom_pct")),
+            yoyPct=(mock_pct(seed_key, period, metric_id, "yoy") if use_mock_deltas else resolved_deltas.get(f"{metric_id}_yoy_pct")),
         )
         for metric_id, label, value, unit in metrics
     ]
