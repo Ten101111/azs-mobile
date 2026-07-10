@@ -240,7 +240,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sql", default=str(DEFAULT_SQL_PATH), help="Path to KPI export SQL.")
     parser.add_argument("--api-url", default=api_url_from_env(), help="Import API URL.")
     parser.add_argument("--token", default=env("KPI_IMPORT_TOKEN"), help="Import API bearer token.")
-    parser.add_argument("--chunk-size", type=int, default=int(env("KPI_IMPORT_CHUNK_SIZE", "1000")))
+    parser.add_argument("--chunk-size", type=int, default=int(env("KPI_IMPORT_CHUNK_SIZE", "3000")))
     parser.add_argument("--limit", type=int, default=0, help="Read only first N rows for testing.")
     parser.add_argument("--dry-run", action="store_true", help="Read and normalize data, but do not upload.")
     parser.add_argument("--no-replace-period", action="store_true", help="Do not delete existing rows for the period first.")
