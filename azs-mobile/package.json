@@ -13,7 +13,8 @@
     "preview": "vite preview --host 0.0.0.0 --port 5174 --strictPort",
     "test:e2e:auth": "node tests/auth-access.e2e.mjs",
     "prepare-data": "python3 scripts/prepare_data.py",
-    "prepare-staff": "python3 scripts/prepare_staff_data.py"
+    "prepare-staff": "python3 scripts/prepare_staff_data.py",
+    "sync-kpi": "python3 scripts/sync_kpi_metrics.py"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",

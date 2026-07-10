@@ -63,6 +63,31 @@ const viewIds = new Set(viewItems.map((item) => item.id));
 const YANDEX_MAPS_API_KEY = import.meta.env.VITE_YANDEX_MAPS_API_KEY || "";
 let yandexMapsPromise;
 
+function useCountUp(target, duration = 680) {
+  const reduceMotion = useReducedMotion();
+  const fmt = (n) => new Intl.NumberFormat("ru-RU").format(Math.round(n));
+  const [display, setDisplay] = useState(() => fmt(reduceMotion ? target : 0));
+
+  useEffect(() => {
+    if (reduceMotion || !Number.isFinite(target) || target === 0) {
+      setDisplay(fmt(target));
+      return;
+    }
+    const start = performance.now();
+    let raf;
+    function tick(now) {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(fmt(target * eased));
+      if (t < 1) raf = requestAnimationFrame(tick);
+    }
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration, reduceMotion]);
+
+  return display;
+}
+
 function uniqueOptions(stations, key) {
   return [...new Set(stations.map((item) => item[key]).filter(Boolean))].sort((a, b) =>
     String(a).localeCompare(String(b), "ru"),
@@ -153,6 +178,27 @@ function mapLocationForYmaps2(points, selected, focusSelected = true) {
   }
 
   return { center: [55.7558, 37.6176], zoom: 4 };
+}
+
+async function checkYandexApiKey(apiKey) {
+  try {
+    const res = await fetch(
+      `https://api-maps.yandex.ru/v3/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`,
+      { method: "HEAD", referrerPolicy: "no-referrer" }
+    );
+    if (res.status === 403) {
+      let msg = "YANDEX_MAPS_KEY_FORBIDDEN";
+      try {
+        const body = await fetch(
+          `https://api-maps.yandex.ru/v3/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`,
+          { referrerPolicy: "no-referrer" }
+        ).then((r) => r.json());
+        if (body?.message) msg = `YANDEX_MAPS_KEY_FORBIDDEN: ${body.message}`;
+      } catch (_) {}
+      return msg;
+    }
+  } catch (_) {}
+  return null;
 }
 
 function loadYandexMaps(apiKey) {
@@ -475,6 +521,15 @@ function metricDisplay(metrics, id) {
   return metric ? formatKpiValue(metric.value, metric.unit) : "—";
 }
 
+function dataSourceLabel(source) {
+  if (source === "local") return "агрегаты DWH";
+  if (source === "mock") return "mock";
+  if (source === "file") return "файл";
+  if (source === "placeholder") return "заглушка";
+  if (source === "db") return "db";
+  return source || "";
+}
+
 function stableNumber(seed, minimum, maximum) {
   const text = String(seed);
   let hash = 2166136261;
@@ -486,40 +541,19 @@ function stableNumber(seed, minimum, maximum) {
   return minimum + (normalized % (maximum - minimum + 1));
 }
 
-function demoPct(ksss, period, metricId, salt) {
-  return stableNumber(`${ksss}:${period}:${metricId}:${salt}`, -120, 180) / 10;
-}
-
-function demoKpiMetrics(ksss, period) {
-  const revenue = stableNumber(`${ksss}:${period}:revenue`, 4_000_000, 28_000_000);
-  const fuelVolume = stableNumber(`${ksss}:${period}:fuelVolume`, 120_000, 850_000);
-  const checks = stableNumber(`${ksss}:${period}:checks`, 8_000, 62_000);
-  const avgCheck = Math.round(revenue / Math.max(checks, 1));
-  return [
-    ["revenue", "Выручка", revenue, "₽"],
-    ["fuelVolume", "Объем топлива", fuelVolume, "л"],
-    ["checks", "Чеки", checks, "шт"],
-    ["avgCheck", "Средний чек", avgCheck, "₽"],
-  ].map(([id, label, value, unit]) => ({
-    id,
-    label,
-    value,
-    unit,
-    momPct: demoPct(ksss, period, id, "mom"),
-    yoyPct: demoPct(ksss, period, id, "yoy"),
-  }));
-}
-
-function demoKpiPayload(ksss, period, reason = "fallback") {
-  return {
-    ksss,
-    period,
-    source: "placeholder",
-    fallbackReason: reason,
-    updatedAt: new Date().toISOString(),
-    metrics: demoKpiMetrics(ksss, period),
-  };
-}
+const noInfoKpiMetrics = [
+  ["revenue", "Выручка", "₽"],
+  ["fuelVolume", "Объем топлива", "л"],
+  ["checks", "Чеки", "шт"],
+  ["avgCheck", "Средний чек", "₽"],
+].map(([id, label, unit]) => ({
+  id,
+  label,
+  value: undefined,
+  unit,
+  momPct: undefined,
+  yoyPct: undefined,
+}));
 
 function monthDates(period) {
   const [year, month] = period.split("-").map(Number);
@@ -527,21 +561,14 @@ function monthDates(period) {
   return Array.from({ length: days }, (_, index) => new Date(year, month - 1, index + 1));
 }
 
-function demoStaffPayload(ksss, period, reason = "fallback") {
-  const staffTotal = stableNumber(`${ksss}:${period}:staffTotal`, 9, 24);
+function noInfoStaffPayload(ksss, period) {
   const days = monthDates(period).map((date) => {
-    const weekday = date.getDay();
-    const dayMin = Math.max(2, Math.round(staffTotal * 0.34));
-    const dayMax = Math.max(dayMin, Math.round(staffTotal * 0.58));
-    const nightMin = Math.max(1, Math.round(staffTotal * 0.18));
-    const nightMax = Math.max(nightMin, Math.round(staffTotal * 0.34));
     const dateIso = date.toISOString().slice(0, 10);
-    const weekendOffset = weekday === 0 || weekday === 6 ? 1 : 0;
     return {
       date: dateIso,
       label: formatWeekday(dateIso),
-      day: Math.max(dayMin, stableNumber(`${ksss}:${dateIso}:day`, dayMin, dayMax) - weekendOffset),
-      night: stableNumber(`${ksss}:${dateIso}:night`, nightMin, nightMax),
+      day: undefined,
+      night: undefined,
     };
   });
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -549,10 +576,9 @@ function demoStaffPayload(ksss, period, reason = "fallback") {
   return {
     ksss,
     period,
-    source: "placeholder",
-    fallbackReason: reason,
+    source: "no-info",
     updatedAt: new Date().toISOString(),
-    staffTotal,
+    staffTotal: undefined,
     today,
     days,
   };
@@ -816,6 +842,7 @@ function App() {
     return { active, cafe, toilet };
   }, [stations]);
   const issueCount = useMemo(() => filtered.filter((station) => station.qualityIssues.length > 0).length, [filtered]);
+  const loading = Boolean(auth.user) && payload.meta === null;
   const viewMotion = motionPreset(reduceMotion);
 
   function setFilter(key, value) {
@@ -884,7 +911,9 @@ function App() {
   }
 
   return (
-    <main className={`app-shell ${mode}-mode ${detailVisible ? "" : "no-detail"} ${mode === "list" && registryCompact ? "registry-compact" : ""}`}>
+    <>
+      <a href="#main-content" className="skip-link">Перейти к содержимому</a>
+      <main id="main-content" className={`app-shell ${mode}-mode ${detailVisible ? "" : "no-detail"} ${mode === "list" && registryCompact ? "registry-compact" : ""}`}>
       <section className="workspace">
         {mode !== "home" && (
           <>
@@ -917,6 +946,7 @@ function App() {
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder="КССС, номер, адрес, регион"
+                    aria-label="Поиск по КССС, номеру, адресу или региону"
                   />
                   {query && (
                     <button className="clear-button" onClick={() => setQuery("")} aria-label="Очистить поиск">
@@ -1014,6 +1044,7 @@ function App() {
                   onSelect={selectStation}
                   onFavorite={toggleFavorite}
                   onScroll={handleRegistryScroll}
+                  loading={loading}
                 />
               </section>
 
@@ -1060,6 +1091,7 @@ function App() {
         onChange={changeMode}
       />
     </main>
+    </>
   );
 }
 
@@ -1388,9 +1420,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
             </div>
 
             {!passwordReset.email ? (
-              <label>
+              <label htmlFor="reset-email">
                 <span>Email</span>
                 <input
+                  id="reset-email"
                   type="email"
                   autoComplete="email"
                   value={form.email}
@@ -1401,9 +1434,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
               </label>
             ) : (
               <>
-                <label>
+                <label htmlFor="reset-code">
                   <span>Код из письма</span>
                   <input
+                    id="reset-code"
                     autoComplete="one-time-code"
                     inputMode="numeric"
                     value={code}
@@ -1413,9 +1447,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
                   />
                 </label>
 
-                <label>
+                <label htmlFor="reset-new-password">
                   <span>Новый пароль</span>
                   <input
+                    id="reset-new-password"
                     type="password"
                     autoComplete="new-password"
                     value={form.password}
@@ -1476,9 +1511,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
               <small>{verification.email}</small>
             </div>
 
-            <label>
+            <label htmlFor="verify-code">
               <span>Код из письма</span>
               <input
+                id="verify-code"
                 autoComplete="one-time-code"
                 inputMode="numeric"
                 value={code}
@@ -1515,19 +1551,20 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
         ) : (
           <>
             <div className="auth-switch" role="tablist" aria-label="Режим авторизации">
-              <button className={mode === "login" ? "active" : ""} type="button" onClick={() => setMode("login")}>
+              <button className={mode === "login" ? "active" : ""} type="button" role="tab" aria-selected={mode === "login"} onClick={() => setMode("login")}>
                 Вход
               </button>
-              <button className={mode === "register" ? "active" : ""} type="button" onClick={() => setMode("register")}>
+              <button className={mode === "register" ? "active" : ""} type="button" role="tab" aria-selected={mode === "register"} onClick={() => setMode("register")}>
                 Регистрация
               </button>
             </div>
 
             <form className="auth-form" onSubmit={submitAuth}>
               {mode === "register" && (
-                <label>
+                <label htmlFor="auth-name">
                   <span>Имя</span>
                   <input
+                    id="auth-name"
                     autoComplete="name"
                     value={form.name}
                     onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
@@ -1536,9 +1573,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
                 </label>
               )}
 
-              <label>
+              <label htmlFor="auth-email">
                 <span>Email</span>
                 <input
+                  id="auth-email"
                   type="email"
                   autoComplete="email"
                   value={form.email}
@@ -1548,9 +1586,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
                 />
               </label>
 
-              <label>
+              <label htmlFor="auth-password">
                 <span>Пароль</span>
                 <input
+                  id="auth-password"
                   type="password"
                   autoComplete={mode === "register" ? "new-password" : "current-password"}
                   value={form.password}
@@ -1635,6 +1674,9 @@ function HomeDashboard({
   return (
     <section className="home-pane dala-home" aria-labelledby="home-title">
       <div className="home-hero">
+        <div className="hero-orb hero-orb-1" aria-hidden="true" />
+        <div className="hero-orb hero-orb-2" aria-hidden="true" />
+        <div className="hero-orb hero-orb-3" aria-hidden="true" />
         <div className="home-copy">
           <span>Классификатор АЗС</span>
           <h2 id="home-title">Операционный контур АЗС</h2>
@@ -1677,24 +1719,24 @@ function HomeDashboard({
       </div>
 
       <div className="home-grid">
-        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
-          <BarChart3 size={18} />
-          <h3>Аналитика и сравнение</h3>
+        <motion.article className="home-card" aria-labelledby="home-card-analytics" whileHover={{ y: -4, boxShadow: "0 18px 40px rgba(21,27,36,0.11)" }} transition={{ duration: 0.18 }}>
+          <BarChart3 size={18} aria-hidden="true" />
+          <h3 id="home-card-analytics">Аналитика и сравнение</h3>
           <p>Показывает распределения по статусам, НПО, регионам, форматам, а также подбор похожих АЗС и сравнение показателей.</p>
         </motion.article>
-        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
-          <ShieldCheck size={18} />
-          <h3>Контроль качества</h3>
+        <motion.article className="home-card" aria-labelledby="home-card-control" whileHover={{ y: -4, boxShadow: "0 18px 40px rgba(21,27,36,0.11)" }} transition={{ duration: 0.18 }}>
+          <ShieldCheck size={18} aria-hidden="true" />
+          <h3 id="home-card-control">Контроль качества</h3>
           <p>Помогает найти карточки с замечаниями: отсутствующие контакты, ответственные, координаты или неполные сервисные признаки.</p>
         </motion.article>
-        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
-          <Users size={18} />
-          <h3>Персонал и KPI</h3>
+        <motion.article className="home-card" aria-labelledby="home-card-staff" whileHover={{ y: -4, boxShadow: "0 18px 40px rgba(21,27,36,0.11)" }} transition={{ duration: 0.18 }}>
+          <Users size={18} aria-hidden="true" />
+          <h3 id="home-card-staff">Персонал и KPI</h3>
           <p>Показатели месяца и персонал находятся внутри карточки конкретной АЗС. Откройте объект из реестра или карты, чтобы увидеть эти блоки.</p>
         </motion.article>
-        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
-          <MessageSquare size={18} />
-          <h3>Обратная связь</h3>
+        <motion.article className="home-card" aria-labelledby="home-card-feedback" whileHover={{ y: -4, boxShadow: "0 18px 40px rgba(21,27,36,0.11)" }} transition={{ duration: 0.18 }}>
+          <MessageSquare size={18} aria-hidden="true" />
+          <h3 id="home-card-feedback">Обратная связь</h3>
           <p>Если в карточке обнаружена неправильная информация, перейдите в “Контроль” и оставьте уточнение в форме обратной связи.</p>
         </motion.article>
       </div>
@@ -1738,7 +1780,8 @@ function MetricStrip({ count, metrics }) {
 }
 
 function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpenList, onOpenStation }) {
-  const period = useMemo(() => currentMonthPeriod(), []);
+  const [period, setPeriod] = useState(() => currentMonthPeriod());
+  const [periods, setPeriods] = useState([]);
   const [view, setView] = useState("overview");
   const [groupBy, setGroupBy] = useState("territoryManager");
   const [overviewState, setOverviewState] = useState({ status: "idle", data: null, error: "" });
@@ -1750,6 +1793,21 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
   const [compareIds, setCompareIds] = useState(() => (selected?.ksss ? [selected.ksss] : []));
   const [compareNotice, setCompareNotice] = useState("");
   const similarBase = stations.find((station) => station.ksss === similarBaseId);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchJson("/api/kpis/periods", controller.signal)
+      .then((data) => {
+        const available = Array.isArray(data?.periods) ? data.periods : [];
+        setPeriods(available);
+        if (available.length && !available.includes(period)) {
+          setPeriod(available[available.length - 1]);
+        }
+      })
+      .catch(() => {});
+
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!selected?.ksss || compareIds.length) return;
@@ -1927,11 +1985,20 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
               : `Период: ${formatPeriod(period)} · источник API /api`}
           </p>
         </div>
+        {periods.length > 1 && (
+          <select className="period-select" value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Период KPI">
+            {periods.map((item) => (
+              <option key={item} value={item}>
+                {formatPeriod(item)}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       <div className="analytics-tabs" role="tablist" aria-label="Режим аналитики">
         {tabs.map(([id, label]) => (
-          <button className={view === id ? "active" : ""} type="button" key={id} onClick={() => setView(id)}>
+          <button className={view === id ? "active" : ""} type="button" key={id} role="tab" aria-selected={view === id} onClick={() => setView(id)}>
             {label}
           </button>
         ))}
@@ -2093,7 +2160,7 @@ function AnalyticsSlices({ state, groupBy, setGroupBy }) {
             </button>
           ))}
         </div>
-        {state.data?.source && <span className="source-pill">{state.data.source === "mock" ? "mock" : "db"}</span>}
+        {state.data?.source && <span className="source-pill">{dataSourceLabel(state.data.source)}</span>}
       </div>
 
       <AnalyticsStateMessage
@@ -2226,13 +2293,13 @@ function AnalyticsSimilar({ stations, selected, geo, state, onSelectBase, onClea
       {state.status === "ready" && (
         <div className="similar-list">
           {state.data.items.map((item) => (
-            <article className="analytics-card similar-card" key={item.ksss}>
+            <article className="analytics-card similar-card" key={item.ksss} aria-labelledby={`similar-${item.ksss}`}>
               <div className="similar-score">
                 <strong>{item.score}</strong>
                 <span>score</span>
               </div>
               <div className="similar-main">
-                <h3>{item.name}</h3>
+                <h3 id={`similar-${item.ksss}`}>{item.name}</h3>
                 <p>{item.ksss} · {item.subject || "Регион не заполнен"}</p>
                 <div className="similar-reasons">
                   {item.reasons.map((reason) => (
@@ -2309,9 +2376,9 @@ function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove
           <table className="compare-table">
             <thead>
               <tr>
-                <th>Показатель</th>
+                <th scope="col">Показатель</th>
                 {state.data.items.map((item) => (
-                  <th key={item.ksss}>
+                  <th key={item.ksss} scope="col">
                     <strong>{item.name}</strong>
                     <span>{item.ksss}</span>
                   </th>
@@ -2321,7 +2388,7 @@ function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove
             <tbody>
               {rows.map(([label, getter]) => (
                 <tr key={label}>
-                  <th>{label}</th>
+                  <th scope="row">{label}</th>
                   {state.data.items.map((item) => (
                     <td key={`${item.ksss}-${label}`}>{getter(item)}</td>
                   ))}
@@ -2402,7 +2469,7 @@ function ControlDashboard({ stations, onOpenStation }) {
         <div className="issue-table">
           {issueStations.slice(0, 28).map((station) => (
             <button type="button" key={station.id} onClick={() => onOpenStation(station.id)}>
-              <span className="status-dot" style={{ background: statusColors[station.status] || "#8f99a8" }} />
+              <span className="status-dot" style={{ background: statusColors[station.status] || "#8f99a8" }} aria-hidden="true" />
               <span>
                 <strong>{station.name}</strong>
                 <small>{station.ksss} · {station.subject || station.address || "Регион не заполнен"}</small>
@@ -2428,25 +2495,28 @@ function FeedbackCard({ feedback, sent, onChange, onSubmit }) {
           <p>Сообщите, если в карточке АЗС нашли неверную информацию.</p>
         </div>
       </div>
-      <label>
+      <label htmlFor="feedback-station">
         <span>АЗС или КССС</span>
         <input
+          id="feedback-station"
           value={feedback.station}
           onChange={(event) => onChange((current) => ({ ...current, station: event.target.value }))}
           placeholder="Например: 2707 или АЗС №02003"
         />
       </label>
-      <label>
+      <label htmlFor="feedback-field">
         <span>Что исправить</span>
         <input
+          id="feedback-field"
           value={feedback.field}
           onChange={(event) => onChange((current) => ({ ...current, field: event.target.value }))}
           placeholder="Телефон, адрес, персонал, сервисы..."
         />
       </label>
-      <label>
+      <label htmlFor="feedback-message">
         <span>Комментарий</span>
         <textarea
+          id="feedback-message"
           value={feedback.message}
           onChange={(event) => onChange((current) => ({ ...current, message: event.target.value }))}
           placeholder="Опишите, какая информация неправильная и что должно быть указано."
@@ -2462,17 +2532,18 @@ function FeedbackCard({ feedback, sent, onChange, onSubmit }) {
   );
 }
 
-function Kpi({ title, value, share, tone = "" }) {
+const Kpi = React.memo(function Kpi({ title, value, share, tone = "" }) {
+  const displayValue = useCountUp(value);
   return (
     <div className={`analytics-kpi ${tone}`}>
       <span>{title}</span>
-      <strong>{asInt(value)}</strong>
+      <strong>{displayValue}</strong>
       <small>{share}% выборки</small>
     </div>
   );
-}
+});
 
-function ChartCard({ title, items, total, compact = false }) {
+const ChartCard = React.memo(function ChartCard({ title, items, total, compact = false }) {
   const reduceMotion = useReducedMotion();
   const maxValue = max(items, (item) => item.value) || 1;
   const widthScale = scaleLinear().domain([0, maxValue]).range([4, 100]).clamp(true);
@@ -2499,16 +2570,17 @@ function ChartCard({ title, items, total, compact = false }) {
       </div>
     </div>
   );
-}
+});
 
-function Metric({ label, value, tone = "" }) {
+const Metric = React.memo(function Metric({ label, value, tone = "" }) {
+  const displayValue = useCountUp(value);
   return (
     <div className={`metric ${tone}`}>
       <span>{label}</span>
-      <strong>{asInt(value)}</strong>
+      <strong>{displayValue}</strong>
     </div>
   );
-}
+});
 
 function FilterRail({ filters, options, setFilter }) {
   return (
@@ -2545,8 +2617,20 @@ function SelectChip({ label, value, options, onChange }) {
   );
 }
 
-function StationList({ stations, selectedId, favorites, density = "comfortable", onSelect, onFavorite, onScroll }) {
+function StationList({ stations, selectedId, favorites, density = "comfortable", onSelect, onFavorite, onScroll, loading = false }) {
   const reduceMotion = useReducedMotion();
+
+  if (!stations.length && loading) {
+    const skeletonCount = density === "compact" ? 8 : 6;
+    return (
+      <div className={`station-list ${density === "compact" ? "compact" : ""}`} aria-busy="true" aria-label="Загружаем список АЗС">
+        {Array.from({ length: skeletonCount }, (_, i) => (
+          <div key={i} className="station-row skeleton" aria-hidden="true" />
+        ))}
+      </div>
+    );
+  }
+
   if (!stations.length) {
     return (
       <div className="empty">
@@ -2573,6 +2657,7 @@ function StationList({ stations, selectedId, favorites, density = "comfortable",
           <span
             className={`status-dot tone-${statusTone(station.status)}`}
             style={{ "--status-color": statusColors[station.status] || "#8f99a8" }}
+            aria-hidden="true"
           />
           <span className="row-main">
             <span className="row-title">
@@ -2590,9 +2675,20 @@ function StationList({ stations, selectedId, favorites, density = "comfortable",
           </span>
           <span
             className={`favorite-dot ${favorites.includes(station.id) ? "on" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-label={favorites.includes(station.id) ? "Убрать из избранного" : "Добавить в избранное"}
+            aria-pressed={favorites.includes(station.id)}
             onClick={(event) => {
               event.stopPropagation();
               onFavorite(station.id);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.stopPropagation();
+                event.preventDefault();
+                onFavorite(station.id);
+              }
             }}
           >
             <Heart size={15} fill="currentColor" />
@@ -2643,7 +2739,19 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
     }
 
     setMapStatus("loading");
-    loadYandexMaps(YANDEX_MAPS_API_KEY)
+
+    let loadPromise = loadYandexMaps(YANDEX_MAPS_API_KEY);
+
+    // Быстрая диагностика ключа параллельно с загрузкой скрипта
+    checkYandexApiKey(YANDEX_MAPS_API_KEY).then((keyError) => {
+      if (keyError && !cancelled) {
+        setMapError(keyError);
+        setMapStatus("error");
+        yandexMapsPromise = null; // сбрасываем кэш промиса чтобы не блокировать повтор
+      }
+    });
+
+    loadPromise
       .then(({ version, api }) => {
         if (cancelled || !mapNodeRef.current) return;
 
@@ -2880,10 +2988,23 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
               <>
                 <strong>Карта не загрузилась</strong>
                 <span>
-                  {mapError.includes("YANDEX_MAPS")
-                    ? "Яндекс не отдал JS API. Проверь, что ключ активен для JavaScript API и разрешает текущий адрес приложения."
+                  {mapError.includes("FORBIDDEN") || mapError.includes("Invalid api key")
+                    ? "Ключ Yandex Maps API не разрешает этот адрес. Добавь localhost:5174 в HTTP Referer в кабинете developer.tech.yandex.ru → Ключ → Ограничения."
+                    : mapError.includes("limited")
+                    ? "Ключ Yandex Maps требует HTTP Referer. Добавь localhost:5174 в разрешённые домены ключа."
+                    : mapError.includes("YANDEX_MAPS")
+                    ? "Яндекс не отдал JS API. Проверь, что ключ активен и домен приложения добавлен в разрешения."
                     : mapError || "Проверь API-ключ и ограничения HTTP Referer."}
                 </span>
+                <a
+                  href="https://developer.tech.yandex.ru/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="action-button primary"
+                  style={{ marginTop: 12, display: "inline-flex", fontSize: 13 }}
+                >
+                  Открыть кабинет Яндекса
+                </a>
               </>
             ) : (
               <>
@@ -2906,6 +3027,14 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
   const [dragOffset, setDragOffset] = useState(0);
   const dragStartRef = useRef(null);
   const suppressGrabberClickRef = useRef(false);
+  const panelRef = useRef(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      panelRef.current?.querySelector('button, [href], input')?.focus();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [station.id]);
 
   function cycleSheet() {
     if (suppressGrabberClickRef.current) {
@@ -2975,6 +3104,10 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
 
   return (
     <motion.aside
+      ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="detail-station-title"
       className={`detail sheet-${sheetState} ${dragOffset ? "dragging" : ""}`}
       style={{ "--sheet-drag": `${dragOffset}px` }}
       initial={{ opacity: sheetState === "closed" ? 0 : 1 }}
@@ -3028,11 +3161,11 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
           <div className="detail-meta-line">
             <span className="eyeless">{station.ksss}</span>
             <span className={`status-chip tone-${statusTone(station.status)}`}>
-              <i />
+              <i aria-hidden="true" />
               {shortStatus(station.status)}
             </span>
           </div>
-          <h2>{station.name}</h2>
+          <h2 id="detail-station-title">{station.name}</h2>
           <p>{station.address || station.subject}</p>
           <div className="detail-quick-facts" aria-label="Краткая информация">
             <span>{station.subject || "Регион не указан"}</span>
@@ -3042,7 +3175,7 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
             </span>
           </div>
         </div>
-        <button className={`icon-button favorite ${favorite ? "on" : ""}`} type="button" onClick={onFavorite} aria-label="Избранное">
+        <button className={`icon-button favorite ${favorite ? "on" : ""}`} type="button" onClick={onFavorite} aria-label={favorite ? "Убрать из избранного" : "Добавить в избранное"} aria-pressed={favorite}>
           <Heart size={19} fill="currentColor" />
         </button>
       </div>
@@ -3142,8 +3275,25 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
 }
 
 function StationKpis({ ksss }) {
-  const period = useMemo(() => currentMonthPeriod(), []);
+  const reduceMotion = useReducedMotion();
+  const [period, setPeriod] = useState(() => currentMonthPeriod());
+  const [periods, setPeriods] = useState([]);
   const [kpiState, setKpiState] = useState({ status: "idle", data: null, error: "" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchJson("/api/kpis/periods", controller.signal)
+      .then((data) => {
+        const available = Array.isArray(data?.periods) ? data.periods : [];
+        setPeriods(available);
+        if (available.length && !available.includes(period)) {
+          setPeriod(available[available.length - 1]);
+        }
+      })
+      .catch(() => {});
+
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!ksss) {
@@ -3170,7 +3320,7 @@ function StationKpis({ ksss }) {
       })
       .then((data) => {
         if (!data || !Array.isArray(data.metrics) || data.metrics.length === 0) {
-          setKpiState({ status: "ready", data: demoKpiPayload(ksss, period, "no-data"), error: "" });
+          setKpiState({ status: "no-data", data: null, error: "" });
           return;
         }
         setKpiState({ status: "ready", data, error: "" });
@@ -3178,7 +3328,7 @@ function StationKpis({ ksss }) {
       .catch((error) => {
         if (error.name === "AbortError") return;
         if (error.message === "AUTH_REQUIRED") return;
-        setKpiState({ status: "ready", data: demoKpiPayload(ksss, period, error.message), error: "" });
+        setKpiState({ status: "error", data: null, error: error.message });
       });
 
     return () => controller.abort();
@@ -3190,7 +3340,17 @@ function StationKpis({ ksss }) {
         <h3>
           <BarChart3 size={16} /> Показатели месяца
         </h3>
-        <span>{formatPeriod(period)}</span>
+        {periods.length > 1 ? (
+          <select className="period-select" value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Период KPI">
+            {periods.map((item) => (
+              <option key={item} value={item}>
+                {formatPeriod(item)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span>{formatPeriod(period)}</span>
+        )}
       </div>
 
       {kpiState.status === "loading" && (
@@ -3213,31 +3373,46 @@ function StationKpis({ ksss }) {
       )}
 
       {kpiState.status === "no-data" && (
-        <div className="kpi-message">
-          <CircleDot size={16} />
-          <span>По этой АЗС пока нет данных за месяц</span>
-        </div>
+        <>
+          <div className="kpi-source">Нет информации по этой АЗС за выбранный месяц</div>
+          <div className="kpi-grid">
+            {noInfoKpiMetrics.map((metric) => (
+              <article className="kpi-card no-info" key={metric.id}>
+                <span>{metric.label}</span>
+                <strong>{formatKpiValue(metric.value, metric.unit)}</strong>
+                <small>нет инфы</small>
+              </article>
+            ))}
+          </div>
+        </>
       )}
 
       {kpiState.status === "ready" && (
         <>
           <div className="kpi-source">
-            {kpiState.data.source === "placeholder"
-              ? "Заглушка показателей до подключения API"
-              : kpiState.data.source === "mock"
-                ? "Демо-данные API до подключения SQL"
+            {kpiState.data.source === "mock"
+              ? "Демо-данные API до подключения SQL"
+              : kpiState.data.source === "local"
+                ? `Агрегаты DWH · обновлено ${formatMetaDate(kpiState.data)}`
                 : "Данные из БД"}
           </div>
           <div className="kpi-grid">
-            {kpiState.data.metrics.map((metric) => (
-              <article className="kpi-card" key={metric.id}>
+            {kpiState.data.metrics.map((metric, index) => (
+              <motion.article
+                className="kpi-card"
+                key={metric.id}
+                initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ type: "spring", stiffness: 240, damping: 28, delay: reduceMotion ? 0 : index * 0.065 }}
+                whileHover={reduceMotion ? undefined : { y: -2, transition: { duration: 0.15 } }}
+              >
                 <span>{metric.label}</span>
                 <strong>{formatKpiValue(metric.value, metric.unit)}</strong>
                 <div className="kpi-deltas">
                   <small className={deltaTone(metric.momPct)}>MoM {formatDelta(metric.momPct)}</small>
                   <small className={deltaTone(metric.yoyPct)}>YoY {formatDelta(metric.yoyPct)}</small>
                 </div>
-              </article>
+              </motion.article>
             ))}
           </div>
         </>
@@ -3249,6 +3424,7 @@ function StationKpis({ ksss }) {
 function StationStaff({ ksss }) {
   const [period, setPeriod] = useState(() => currentMonthPeriod());
   const [periods, setPeriods] = useState([]);
+  const [periodsStatus, setPeriodsStatus] = useState("loading");
   const [staffState, setStaffState] = useState({ status: "idle", data: null, error: "" });
   const calendarRef = useRef(null);
   const activeDayRef = useRef(null);
@@ -3262,13 +3438,21 @@ function StationStaff({ ksss }) {
         if (available.length && !available.includes(period)) {
           setPeriod(available[available.length - 1]);
         }
+        setPeriodsStatus("ready");
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setPeriodsStatus("error");
+      });
 
     return () => controller.abort();
   }, []);
 
   useEffect(() => {
+    if (periodsStatus !== "ready" || periods.length === 0) {
+      return undefined;
+    }
+
     if (!ksss) {
       setStaffState({ status: "no-data", data: null, error: "" });
       return undefined;
@@ -3280,21 +3464,21 @@ function StationStaff({ ksss }) {
     fetchJson(`/api/stations/${encodeURIComponent(ksss)}/staff?period=${period}`, controller.signal)
       .then((data) => {
         if (!data || !Array.isArray(data.days) || !data.days.length) {
-          setStaffState({ status: "ready", data: demoStaffPayload(ksss, period, "no-data"), error: "" });
+          setStaffState({ status: "no-data", data: noInfoStaffPayload(ksss, period), error: "" });
           return;
         }
         setStaffState({ status: "ready", data, error: "" });
       })
       .catch((error) => {
         if (error.name === "AbortError") return;
-        setStaffState({ status: "ready", data: demoStaffPayload(ksss, period, error.message), error: "" });
+        setStaffState({ status: "error", data: null, error: error.message });
       });
 
     return () => controller.abort();
-  }, [ksss, period]);
+  }, [ksss, period, periodsStatus, periods.length]);
 
   useEffect(() => {
-    if (staffState.status !== "ready") return undefined;
+    if (!["ready", "no-data"].includes(staffState.status)) return undefined;
 
     const frame = window.requestAnimationFrame(() => {
       const calendar = calendarRef.current;
@@ -3309,6 +3493,10 @@ function StationStaff({ ksss }) {
 
     return () => window.cancelAnimationFrame(frame);
   }, [staffState.status, staffState.data?.ksss, staffState.data?.period, staffState.data?.today?.date]);
+
+  if (periodsStatus === "ready" && periods.length === 0) {
+    return null;
+  }
 
   return (
     <section className="detail-section staff-section">
@@ -3329,7 +3517,7 @@ function StationStaff({ ksss }) {
         )}
       </div>
 
-      {staffState.status === "loading" && (
+      {(periodsStatus === "loading" || staffState.status === "loading") && (
         <div className="staff-loading">
           <div className="kpi-card loading">
             <i />
@@ -3344,7 +3532,7 @@ function StationStaff({ ksss }) {
         </div>
       )}
 
-      {staffState.status === "error" && (
+      {(periodsStatus === "error" || staffState.status === "error") && (
         <div className="kpi-message warning">
           <AlertTriangle size={16} />
           <span>Данные по персоналу временно недоступны</span>
@@ -3352,18 +3540,38 @@ function StationStaff({ ksss }) {
       )}
 
       {staffState.status === "no-data" && (
-        <div className="kpi-message">
-          <CircleDot size={16} />
-          <span>По этой АЗС пока нет данных по персоналу</span>
-        </div>
+        <>
+          <div className="kpi-source">Нет рекомендаций по этой АЗС за выбранный месяц</div>
+          <div className="staff-summary no-info">
+            <article>
+              <span>Максимум за сутки</span>
+              <strong>{formatStaffValue(staffState.data?.staffTotal)} чел.</strong>
+            </article>
+            <article>
+              <span>Выбранный день</span>
+              <strong>{formatStaffValue(staffState.data?.today?.day)} днем · {formatStaffValue(staffState.data?.today?.night)} ночью</strong>
+            </article>
+          </div>
+          <div className="staff-calendar" ref={calendarRef} aria-label="Рекомендации по сменам на месяц">
+            {(staffState.data?.days || []).map((day) => {
+              const active = day.date === staffState.data?.today?.date;
+              return (
+                <article className={`staff-day no-info ${active ? "active" : ""}`} ref={active ? activeDayRef : null} key={day.date}>
+                  <span>{formatShortDate(day.date)}</span>
+                  <small>{formatWeekday(day.date)}</small>
+                  <b>{formatStaffValue(day.day)}</b>
+                  <em>{formatStaffValue(day.night)}</em>
+                </article>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {staffState.status === "ready" && (
         <>
           <div className="kpi-source">
-            {staffState.data.source === "placeholder"
-              ? "Заглушка персонала до подключения API"
-              : staffState.data.source === "mock"
+            {staffState.data.source === "mock"
               ? "Демо-рекомендации до подключения SQL"
               : staffState.data.source === "file"
                 ? "Рекомендации из Excel"
@@ -3456,6 +3664,9 @@ function FilterSheet({ filters, options, setFilter, onClose, onReset }) {
     <div className="sheet-backdrop" onClick={onClose}>
       <div
         className="filter-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Фильтры"
         onClick={(event) => event.stopPropagation()}
         onTouchStart={(event) => setTouchStart(event.touches[0]?.clientY ?? null)}
         onTouchEnd={handleTouchEnd}

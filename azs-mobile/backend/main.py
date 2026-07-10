@@ -1,12 +1,17 @@
+import ipaddress
 import json
 import hashlib
 import html
+import logging
 import os
 import re
 import secrets
 import smtplib
 import sqlite3
 import time
+import urllib.error
+import urllib.request
+import uuid
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -21,6 +26,8 @@ except ImportError:  # pragma: no cover - optional local convenience
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 APP_DIR = Path(__file__).resolve().parent
@@ -32,6 +39,7 @@ if load_dotenv:
     load_dotenv(PROJECT_DIR / ".env.local", override=True)
 
 AUTH_DB_PATH = DATA_DIR / "auth.sqlite3"
+KPI_DB_PATH = DATA_DIR / "kpi_metrics.sqlite3"
 AUTH_ALLOWLIST_PATH = DATA_DIR / "auth_allowlist.json"
 PRIVATE_STATIONS_PATH = DATA_DIR / "stations.json"
 STATIONS_PATH = PROJECT_DIR / "public" / "stations.json"
@@ -52,6 +60,16 @@ EMAIL_CODE_TTL_SECONDS = int(os.getenv("AUTH_EMAIL_CODE_TTL_SECONDS", str(10 * 6
 EMAIL_CODE_LENGTH = int(os.getenv("AUTH_EMAIL_CODE_LENGTH", "6"))
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUTH_RATE_LIMIT: dict[str, list[float]] = {}
+# How many trusted proxy hops sit in front of this server.
+# 0  = no proxy; ignore X-Forwarded-For entirely and use the TCP peer IP.
+# N>0 = trust the N rightmost entries in X-Forwarded-For (added by trusted proxies);
+#       use the entry just to the left of those as the real client IP.
+# Incorrect values allow IP-spoofing attacks on rate-limit counters.
+TRUSTED_PROXY_DEPTH = int(os.getenv("TRUSTED_PROXY_DEPTH", "0"))
+_RATE_LIMIT_CLEANUP_COUNTER: int = 0
+
+logger = logging.getLogger("azs-api")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
 class KpiMetric(BaseModel):
@@ -192,7 +210,45 @@ class AuthPolicyResponse(BaseModel):
     emailVerificationRequired: bool = True
 
 
+class KpiPeriodsResponse(BaseModel):
+    source: str
+    updatedAt: str
+    periods: list[str]
+
+
+class KpiImportRecord(BaseModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    ksss: str = Field(min_length=1, max_length=32)
+    revenue: float = Field(ge=0)
+    revenueNtu: Optional[float] = Field(default=None, ge=0)
+    revenue_ntu: Optional[float] = Field(default=None, ge=0)
+    fuelVolume: Optional[float] = Field(default=None, ge=0)
+    fuel_volume: Optional[float] = Field(default=None, ge=0)
+    checks: float = Field(ge=0)
+    checksNtu: Optional[float] = Field(default=None, ge=0)
+    checks_ntu: Optional[float] = Field(default=None, ge=0)
+    avgCheck: Optional[float] = Field(default=None, ge=0)
+    avg_check: Optional[float] = Field(default=None, ge=0)
+    updatedAt: Optional[str] = Field(default=None, max_length=80)
+
+
+class KpiImportPayload(BaseModel):
+    source: str = Field(default="dwh-sync", max_length=120)
+    period: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    replacePeriod: bool = False
+    records: list[KpiImportRecord] = Field(min_length=1)
+
+
+class KpiImportResponse(BaseModel):
+    ok: bool
+    imported: int
+    period: str
+    periods: list[str]
+    updatedAt: str
+
+
 app = FastAPI(title="AZS KPI API", version="0.2.0")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if origin.strip()],
@@ -205,6 +261,18 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     init_auth_db()
+    init_kpi_db()
+    _sec = logging.getLogger("azs.security")
+    if not auth_enabled():
+        _sec.critical(
+            "AUTH_DISABLED is set — ALL authentication checks are bypassed. "
+            "This MUST NEVER be used in production."
+        )
+    if email_dev_mode():
+        _sec.warning(
+            "AUTH_EMAIL_DEV_MODE is active — OTP codes are returned in API responses. "
+            "This MUST NEVER be used in production."
+        )
 
 
 @app.middleware("http")
@@ -214,9 +282,45 @@ async def add_security_headers(request, call_next):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Permissions-Policy", "geolocation=(self), camera=(), microphone=()")
-    if request.url.scheme == "https":
+    # API endpoints return JSON only — forbid all executable content at the CSP level.
+    # The frontend HTML/JS is served by the static server (Vite / nginx) and must set
+    # its own, more permissive CSP that allows Yandex Maps scripts.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'none'; frame-ancestors 'none'",
+    )
+    # Use request_is_https() instead of request.url.scheme so the HSTS header is
+    # also sent when the app sits behind a TLS-terminating reverse proxy.
+    if request_is_https(request):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    request_id = str(uuid.uuid4())[:8]
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = round((time.perf_counter() - start) * 1000)
+    logger.info(
+        "[%s] %s %s -> %s (%dms)",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled exception: %s: %s", type(exc).__name__, exc, exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 def current_period() -> str:
@@ -398,11 +502,65 @@ def init_auth_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_events_created ON auth_events(created_at)")
 
 
+def kpi_connection():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(KPI_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_kpi_db():
+    with kpi_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS station_kpi_daily (
+                metric_date TEXT NOT NULL CHECK (length(metric_date) = 10),
+                period TEXT NOT NULL CHECK (length(period) = 7),
+                ksss TEXT NOT NULL,
+                revenue REAL NOT NULL DEFAULT 0,
+                revenue_ntu REAL,
+                fuel_volume REAL NOT NULL DEFAULT 0,
+                checks REAL NOT NULL DEFAULT 0,
+                checks_ntu REAL,
+                avg_check REAL,
+                updated_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (metric_date, ksss)
+            )
+            """
+        )
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(station_kpi_daily)").fetchall()}
+        for column in ("revenue_ntu", "checks_ntu", "avg_check"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE station_kpi_daily ADD COLUMN {column} REAL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_station_kpi_daily_period ON station_kpi_daily(period)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_station_kpi_daily_ksss_period ON station_kpi_daily(ksss, period)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_station_kpi_daily_updated ON station_kpi_daily(updated_at)")
+
+
 def request_ip(request: Optional[Request] = None) -> str:
+    """Return the real client IP, respecting TRUSTED_PROXY_DEPTH.
+
+    With TRUSTED_PROXY_DEPTH=0 (default) X-Forwarded-For is ignored entirely
+    and the direct TCP peer address is returned — the only spoofing-safe choice
+    when there is no trusted proxy in front of this server.
+    """
     if not request:
         return ""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
+    if TRUSTED_PROXY_DEPTH > 0:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        ips = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
+        if ips:
+            # Peel off the rightmost TRUSTED_PROXY_DEPTH entries (added by trusted
+            # proxies) and take the first entry to the left of them.
+            index = max(len(ips) - TRUSTED_PROXY_DEPTH, 0)
+            candidate = ips[index]
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate
+            except ValueError:
+                pass
+    return request.client.host if request.client else ""
 
 
 def request_is_https(request: Request) -> bool:
@@ -439,8 +597,59 @@ def smtp_configured() -> bool:
     return bool(os.getenv("SMTP_HOST") and os.getenv("SMTP_FROM_EMAIL"))
 
 
+def resend_configured() -> bool:
+    return bool(os.getenv("RESEND_API_KEY") and os.getenv("RESEND_FROM_EMAIL"))
+
+
+def email_configured() -> bool:
+    return smtp_configured() or resend_configured()
+
+
 def email_dev_mode() -> bool:
-    return env_bool("AUTH_EMAIL_DEV_MODE", default=not smtp_configured())
+    return env_bool("AUTH_EMAIL_DEV_MODE", default=not email_configured())
+
+
+def _send_via_resend(to: str, subject: str, html_content: str, text_content: str) -> None:
+    from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
+    from_email = os.getenv("RESEND_FROM_EMAIL", "").strip()
+    api_key = os.getenv("RESEND_API_KEY", "")
+
+    if api_key.startswith("xkeysib-"):
+        # Brevo API
+        payload = json.dumps({
+            "sender": {"name": from_name, "email": from_email},
+            "to": [{"email": to}],
+            "subject": subject,
+            "htmlContent": html_content,
+            "textContent": text_content,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=payload,
+            headers={"api-key": api_key, "Content-Type": "application/json"},
+            method="POST",
+        )
+    else:
+        # Resend API
+        payload = json.dumps({
+            "from": f"{from_name} <{from_email}>",
+            "to": [to],
+            "subject": subject,
+            "html": html_content,
+            "text": text_content,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status not in (200, 201):
+                raise RuntimeError(f"Email API HTTP {resp.status}")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Email API error {exc.code}: {exc.read().decode()}") from exc
 
 
 def app_public_url() -> str:
@@ -592,30 +801,36 @@ def render_password_reset_email_text(code: str, email: str) -> str:
 
 
 def send_verification_email(email: str, code: str, name: str = ""):
-    if not smtp_configured():
+    if not email_configured():
         if email_dev_mode():
             print(f"[auth] verification code for {email}: {code}", flush=True)
             return
-        raise HTTPException(status_code=500, detail="SMTP не настроен для отправки кода подтверждения")
+        raise HTTPException(status_code=500, detail="Email не настроен для отправки кода подтверждения")
 
-    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
-    from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "587"))
-    timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
-    use_ssl = env_bool("SMTP_USE_SSL", False)
-    use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
-
-    message = EmailMessage()
-    message["Subject"] = "Код подтверждения для Классификатора АЗС"
-    message["From"] = f"{from_name} <{from_email}>"
-    message["To"] = email
-    message.set_content(render_verification_email_text(code, email))
-    message.add_alternative(render_verification_email_html(code, email, name), subtype="html")
+    subject = "Код подтверждения для Классификатора АЗС"
+    html_content = render_verification_email_html(code, email, name)
+    text_content = render_verification_email_text(code, email)
 
     try:
+        if resend_configured():
+            _send_via_resend(email, subject, html_content, text_content)
+            return
+
+        from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
+        from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
+        username = os.getenv("SMTP_USERNAME", "").strip()
+        password = os.getenv("SMTP_PASSWORD", "")
+        host = os.getenv("SMTP_HOST", "").strip()
+        port = int(os.getenv("SMTP_PORT", "587"))
+        timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
+        use_ssl = env_bool("SMTP_USE_SSL", False)
+        use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = f"{from_name} <{from_email}>"
+        message["To"] = email
+        message.set_content(text_content)
+        message.add_alternative(html_content, subtype="html")
         if use_ssl:
             with smtplib.SMTP_SSL(host, port, timeout=timeout) as smtp:
                 if username or password:
@@ -635,30 +850,36 @@ def send_verification_email(email: str, code: str, name: str = ""):
 
 
 def send_password_reset_email(email: str, code: str, name: str = ""):
-    if not smtp_configured():
+    if not email_configured():
         if email_dev_mode():
             print(f"[auth] password reset code for {email}: {code}", flush=True)
             return
-        raise HTTPException(status_code=500, detail="SMTP не настроен для отправки кода восстановления")
+        raise HTTPException(status_code=500, detail="Email не настроен для отправки кода восстановления")
 
-    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
-    from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "587"))
-    timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
-    use_ssl = env_bool("SMTP_USE_SSL", False)
-    use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
-
-    message = EmailMessage()
-    message["Subject"] = "Код восстановления пароля для Классификатора АЗС"
-    message["From"] = f"{from_name} <{from_email}>"
-    message["To"] = email
-    message.set_content(render_password_reset_email_text(code, email))
-    message.add_alternative(render_password_reset_email_html(code, email, name), subtype="html")
+    subject = "Код восстановления пароля для Классификатора АЗС"
+    html_content = render_password_reset_email_html(code, email, name)
+    text_content = render_password_reset_email_text(code, email)
 
     try:
+        if resend_configured():
+            _send_via_resend(email, subject, html_content, text_content)
+            return
+
+        from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
+        from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
+        username = os.getenv("SMTP_USERNAME", "").strip()
+        password = os.getenv("SMTP_PASSWORD", "")
+        host = os.getenv("SMTP_HOST", "").strip()
+        port = int(os.getenv("SMTP_PORT", "587"))
+        timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
+        use_ssl = env_bool("SMTP_USE_SSL", False)
+        use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = f"{from_name} <{from_email}>"
+        message["To"] = email
+        message.set_content(text_content)
+        message.add_alternative(html_content, subtype="html")
         if use_ssl:
             with smtplib.SMTP_SSL(host, port, timeout=timeout) as smtp:
                 if username or password:
@@ -766,19 +987,36 @@ def hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def get_client_ip(request: Request) -> str:
+    """Return the real client IP for rate-limiting purposes.
+
+    Delegates to request_ip() so that TRUSTED_PROXY_DEPTH is the single
+    source of truth for XFF handling across the whole codebase.
+    """
+    return request_ip(request) or "unknown"
+
+
 def client_key(request: Request, scope: str) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    host = forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
-    return f"{scope}:{host}"
+    return f"{scope}:{get_client_ip(request)}"
 
 
 def enforce_rate_limit_key(key: str, limit: int, window_seconds: int = 60):
+    global _RATE_LIMIT_CLEANUP_COUNTER
     now = time.time()
     recent = [item for item in AUTH_RATE_LIMIT.get(key, []) if now - item < window_seconds]
     if len(recent) >= limit:
         raise HTTPException(status_code=429, detail="Слишком много попыток. Повторите позже.")
     recent.append(now)
     AUTH_RATE_LIMIT[key] = recent
+    # Periodically evict stale entries to prevent unbounded memory growth
+    # when the server is hit by many distinct IPs (e.g. a distributed attack).
+    _RATE_LIMIT_CLEANUP_COUNTER += 1
+    if _RATE_LIMIT_CLEANUP_COUNTER >= 500:
+        _RATE_LIMIT_CLEANUP_COUNTER = 0
+        cutoff = now - 600  # keep at most 10 min of history
+        stale = [k for k, v in list(AUTH_RATE_LIMIT.items()) if not v or all(t < cutoff for t in v)]
+        for k in stale:
+            AUTH_RATE_LIMIT.pop(k, None)
 
 
 def enforce_rate_limit(request: Request, scope: str, limit: int, window_seconds: int = 60):
@@ -810,7 +1048,7 @@ def create_session(response: Response, request: Request, user_id: int):
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         secure=request_is_https(request),
-        samesite="lax",
+        samesite="strict",  # strict prevents the cookie from being sent on cross-site navigations
         path="/",
     )
 
@@ -820,7 +1058,7 @@ def clear_session(response: Response, request: Request):
     if token:
         with auth_connection() as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (hash_session_token(token),))
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/", samesite="lax")
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/", samesite="strict")
 
 
 def current_user_from_request(request: Request) -> Optional[AuthUser]:
@@ -867,6 +1105,19 @@ def validate_period(period: str) -> str:
     return period
 
 
+# KSSS identifiers are alphanumeric codes up to 32 characters.
+# Rejecting anything outside this pattern blocks path-traversal sequences
+# (../../, %2F, etc.) and injection payloads before they reach any data layer.
+_KSSS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$")
+
+
+def validate_ksss(ksss: str) -> str:
+    """Validate and return a station identifier, or raise HTTP 422."""
+    if not ksss or not _KSSS_PATTERN.match(ksss):
+        raise HTTPException(status_code=422, detail="Некорректный идентификатор станции")
+    return ksss
+
+
 def period_bounds(period: str) -> dict[str, date]:
     period_start = datetime.strptime(period, "%Y-%m").date().replace(day=1)
     if period_start.month == 12:
@@ -885,6 +1136,152 @@ def period_bounds(period: str) -> dict[str, date]:
         "previous_period_start": previous_period_start,
         "previous_year_start": period_start.replace(year=period_start.year - 1),
     }
+
+
+def previous_period(period: str) -> str:
+    bounds = period_bounds(period)
+    return bounds["previous_period_start"].strftime("%Y-%m")
+
+
+def previous_year_period(period: str) -> str:
+    bounds = period_bounds(period)
+    return bounds["previous_year_start"].strftime("%Y-%m")
+
+
+def validate_metric_date(value: str) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD format") from exc
+
+
+def kpi_import_max_records() -> int:
+    try:
+        return max(1, int(os.getenv("KPI_IMPORT_MAX_RECORDS", "10000")))
+    except ValueError:
+        return 10000
+
+
+def require_kpi_import_token(request: Request):
+    configured_token = os.getenv("KPI_IMPORT_TOKEN", "")
+    configured_hash = os.getenv("KPI_IMPORT_TOKEN_SHA256", "").strip().lower()
+    if not configured_token and not configured_hash:
+        raise HTTPException(status_code=503, detail="KPI import token is not configured")
+
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, token = auth_header.partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="KPI import token is required")
+
+    if configured_token and secrets.compare_digest(token, configured_token):
+        return
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if configured_hash and secrets.compare_digest(token_hash, configured_hash):
+        return
+
+    raise HTTPException(status_code=403, detail="KPI import token is invalid")
+
+
+def kpi_periods() -> list[str]:
+    init_kpi_db()
+    with kpi_connection() as conn:
+        rows = conn.execute("SELECT DISTINCT period FROM station_kpi_daily ORDER BY period").fetchall()
+    return [str(row["period"]) for row in rows]
+
+
+def latest_kpi_updated_at(conn: sqlite3.Connection, period: Optional[str] = None, ksss_values: Optional[list[str]] = None) -> str:
+    params: list[str] = []
+    clauses = []
+    if period:
+        clauses.append("period = ?")
+        params.append(period)
+    if ksss_values:
+        placeholders = ",".join("?" for _ in ksss_values)
+        clauses.append(f"ksss IN ({placeholders})")
+        params.extend(ksss_values)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    row = conn.execute(f"SELECT MAX(updated_at) AS updated_at FROM station_kpi_daily {where}", params).fetchone()
+    return str(row["updated_at"] or datetime.now(timezone.utc).isoformat(timespec="seconds")) if row else datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def empty_kpi_values(has_data: bool = False) -> dict[str, object]:
+    return {"revenue": 0, "fuelVolume": 0, "checks": 0, "avgCheck": 0, "hasData": has_data}
+
+
+def period_metric_values(conn: sqlite3.Connection, period: str, ksss_values: Optional[list[str]] = None) -> dict[str, object]:
+    validate_period(period)
+    params: list[str] = [period]
+    clauses = ["period = ?"]
+    if ksss_values is not None:
+        normalized = [validate_ksss(str(ksss)) for ksss in ksss_values if str(ksss).strip()]
+        if not normalized:
+            return empty_kpi_values()
+        placeholders = ",".join("?" for _ in normalized)
+        clauses.append(f"ksss IN ({placeholders})")
+        params.extend(normalized)
+
+    row = conn.execute(
+        f"""
+        SELECT
+            COUNT(*) AS row_count,
+            SUM(revenue) AS revenue,
+            SUM(revenue_ntu) AS revenue_ntu,
+            SUM(fuel_volume) AS fuel_volume,
+            SUM(checks) AS checks,
+            SUM(checks_ntu) AS checks_ntu,
+            COUNT(checks_ntu) AS ntu_row_count,
+            AVG(avg_check) AS imported_avg_check
+        FROM station_kpi_daily
+        WHERE {' AND '.join(clauses)}
+        """,
+        params,
+    ).fetchone()
+
+    if not row or int(row["row_count"] or 0) == 0:
+        return empty_kpi_values()
+
+    revenue = float(row["revenue"] or 0)
+    fuel_volume = float(row["fuel_volume"] or 0)
+    checks = float(row["checks"] or 0)
+    checks_ntu = float(row["checks_ntu"] or 0)
+    if int(row["ntu_row_count"] or 0) > 0:
+        avg_check = round(float(row["revenue_ntu"] or 0) / checks_ntu) if checks_ntu else 0
+    elif row["imported_avg_check"] is not None:
+        avg_check = round(float(row["imported_avg_check"]))
+    else:
+        avg_check = round(revenue / checks) if checks else 0
+    return {
+        "revenue": revenue,
+        "fuelVolume": fuel_volume,
+        "checks": checks,
+        "avgCheck": avg_check,
+        "hasData": True,
+    }
+
+
+def pct_delta(current: float, baseline: float) -> float:
+    if not baseline:
+        return 0
+    return round(((current - baseline) / abs(baseline)) * 100, 1)
+
+
+def kpi_deltas(current: dict[str, object], previous: dict[str, object], year: dict[str, object]) -> dict[str, float]:
+    return {
+        f"{metric_id}_mom_pct": pct_delta(float(current.get(metric_id, 0)), float(previous.get(metric_id, 0)))
+        for metric_id in ("revenue", "fuelVolume", "checks", "avgCheck")
+    } | {
+        f"{metric_id}_yoy_pct": pct_delta(float(current.get(metric_id, 0)), float(year.get(metric_id, 0)))
+        for metric_id in ("revenue", "fuelVolume", "checks", "avgCheck")
+    }
+
+
+def local_metric_set(conn: sqlite3.Connection, period: str, ksss_values: list[str]) -> tuple[dict[str, object], dict[str, float]]:
+    current = period_metric_values(conn, period, ksss_values)
+    previous = period_metric_values(conn, previous_period(period), ksss_values)
+    year = period_metric_values(conn, previous_year_period(period), ksss_values)
+    return current, kpi_deltas(current, previous, year)
 
 
 @lru_cache(maxsize=1)
@@ -987,21 +1384,22 @@ def mock_metric_values(ksss: str, period: str) -> dict[str, float]:
     }
 
 
-def make_metrics(values: dict[str, float], period: str, seed_key: str) -> list[KpiMetric]:
+def make_metrics(values: dict[str, float], period: str, seed_key: str, deltas: Optional[dict[str, float]] = None) -> list[KpiMetric]:
     metrics = [
         ("revenue", "Выручка", values.get("revenue", 0), "₽"),
         ("fuelVolume", "Объем топлива", values.get("fuelVolume", 0), "л"),
         ("checks", "Чеки", values.get("checks", 0), "шт"),
         ("avgCheck", "Средний чек", values.get("avgCheck", 0), "₽"),
     ]
+    deltas = deltas or {}
     return [
         KpiMetric(
             id=metric_id,
             label=label,
             value=value,
             unit=unit,
-            momPct=mock_pct(seed_key, period, metric_id, "mom"),
-            yoyPct=mock_pct(seed_key, period, metric_id, "yoy"),
+            momPct=deltas.get(f"{metric_id}_mom_pct", mock_pct(seed_key, period, metric_id, "mom")),
+            yoyPct=deltas.get(f"{metric_id}_yoy_pct", mock_pct(seed_key, period, metric_id, "yoy")),
         )
         for metric_id, label, value, unit in metrics
     ]
@@ -1027,7 +1425,9 @@ def db_kpis(ksss: str, period: str) -> StationKpiResponse:
     required = ["DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"]
     missing = [name for name in required if not os.getenv(name)]
     if missing:
-        raise HTTPException(status_code=500, detail=f"Missing DB env vars: {', '.join(missing)}")
+        # Log the specific variable names server-side only; never expose them to the client.
+        logger.error("Missing required database configuration keys: %s", ", ".join(missing))
+        raise HTTPException(status_code=500, detail="Database configuration is incomplete. Check server logs.")
 
     if not SQL_TEMPLATE.exists():
         raise HTTPException(status_code=500, detail="SQL template not found")
@@ -1063,6 +1463,23 @@ def db_kpis(ksss: str, period: str) -> StationKpiResponse:
             KpiMetric(id="checks", label="Чеки", value=float(row.get("checks") or 0), unit="шт", momPct=float(row.get("checks_mom_pct") or 0), yoyPct=float(row.get("checks_yoy_pct") or 0)),
             KpiMetric(id="avgCheck", label="Средний чек", value=float(row.get("avg_check") or 0), unit="₽", momPct=float(row.get("avg_check_mom_pct") or 0), yoyPct=float(row.get("avg_check_yoy_pct") or 0)),
         ],
+    )
+
+
+def local_kpis(ksss: str, period: str) -> StationKpiResponse:
+    init_kpi_db()
+    with kpi_connection() as conn:
+        values, deltas = local_metric_set(conn, period, [ksss])
+        if not values.get("hasData"):
+            raise HTTPException(status_code=404, detail="KPI data not found")
+        updated_at = latest_kpi_updated_at(conn, period, [ksss])
+
+    return StationKpiResponse(
+        ksss=ksss,
+        period=period,
+        source="local",
+        updatedAt=updated_at,
+        metrics=make_metrics(values, period, ksss, deltas),
     )
 
 
@@ -1169,6 +1586,53 @@ def mock_overview(period: str, group_by: str) -> AnalyticsOverviewResponse:
     )
 
 
+def overview_group_getter(group_by: str):
+    getter_map = {
+        "territoryManager": lambda station: station.get("territoryManager") or "ТМ не заполнен",
+        "regionalManager": lambda station: station.get("regionalManager") or "РУ не заполнен",
+        "station": lambda station: station_name(station),
+    }
+    if group_by not in getter_map:
+        raise HTTPException(status_code=422, detail="groupBy must be territoryManager, regionalManager or station")
+    return getter_map[group_by]
+
+
+def local_overview(period: str, group_by: str) -> AnalyticsOverviewResponse:
+    getter = overview_group_getter(group_by)
+    groups: dict[str, list[dict]] = {}
+    for station in load_stations():
+        if not station.get("ksss"):
+            continue
+        groups.setdefault(getter(station), []).append(station)
+
+    rows = []
+    init_kpi_db()
+    with kpi_connection() as conn:
+        updated_at = latest_kpi_updated_at(conn, period)
+        for label, stations in groups.items():
+            ksss_values = [str(station.get("ksss")) for station in stations if station.get("ksss")]
+            values, deltas = local_metric_set(conn, period, ksss_values)
+            if not values.get("hasData"):
+                continue
+            rows.append(
+                AnalyticsOverviewRow(
+                    id=label,
+                    label=label,
+                    count=len(stations),
+                    metrics=make_metrics(values, period, f"{group_by}:{label}", deltas),
+                )
+            )
+
+    rows.sort(key=lambda row: next((metric.value for metric in row.metrics if metric.id == "revenue"), 0), reverse=True)
+    return AnalyticsOverviewResponse(
+        period=period,
+        groupBy=group_by,
+        source="local",
+        updatedAt=updated_at,
+        rows=rows[:30],
+    )
+
+
 def station_similarity(base: dict, candidate: dict, period: str) -> tuple[int, list[str]]:
     score = 42
     reasons = []
@@ -1206,6 +1670,44 @@ def station_similarity(base: dict, candidate: dict, period: str) -> tuple[int, l
     return min(score, 100), reasons[:4] or ["экономический профиль"]
 
 
+def local_station_similarity(base: dict, candidate: dict, base_values: dict[str, object], candidate_values: dict[str, object]) -> tuple[int, list[str]]:
+    score = 42
+    reasons = []
+
+    for field, label, points in [
+        ("formatLevel2", "формат", 14),
+        ("location", "локация", 12),
+        ("subject", "регион", 8),
+        ("serviceCluster", "сервисный кластер", 8),
+        ("paymentType", "тип оплаты", 6),
+    ]:
+        if base.get(field) and base.get(field) == candidate.get(field):
+            score += points
+            reasons.append(label)
+
+    base_flags = base.get("flags", {})
+    candidate_flags = candidate.get("flags", {})
+    for flag, label in [("hasCafe", "кафе"), ("hasShop", "магазин"), ("hasToilet", "санузел")]:
+        if base_flags.get(flag) and candidate_flags.get(flag):
+            score += 4
+            reasons.append(label)
+
+    base_revenue = float(base_values.get("revenue", 0))
+    base_volume = float(base_values.get("fuelVolume", 0))
+    if base_revenue and candidate_values.get("hasData"):
+        revenue_delta = abs(base_revenue - float(candidate_values.get("revenue", 0))) / max(base_revenue, 1)
+        if revenue_delta < 0.18:
+            score += 10
+            reasons.append("близкая выручка")
+    if base_volume and candidate_values.get("hasData"):
+        volume_delta = abs(base_volume - float(candidate_values.get("fuelVolume", 0))) / max(base_volume, 1)
+        if volume_delta < 0.18:
+            score += 10
+            reasons.append("близкий объем")
+
+    return min(score, 100), reasons[:4] or ["экономический профиль"]
+
+
 def mock_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
     base = station_by_ksss(ksss)
     if not base:
@@ -1235,6 +1737,44 @@ def mock_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
         period=period,
         source="mock",
         updatedAt=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        items=items[:limit],
+    )
+
+
+def local_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
+    base = station_by_ksss(ksss)
+    if not base:
+        raise HTTPException(status_code=404, detail="Station not found")
+
+    items = []
+    init_kpi_db()
+    with kpi_connection() as conn:
+        updated_at = latest_kpi_updated_at(conn, period)
+        base_values = period_metric_values(conn, period, [str(base.get("ksss"))])
+        for candidate in load_stations():
+            candidate_ksss = str(candidate.get("ksss") or "")
+            if not candidate_ksss or candidate_ksss == str(ksss):
+                continue
+            candidate_values, candidate_deltas = local_metric_set(conn, period, [candidate_ksss])
+            score, reasons = local_station_similarity(base, candidate, base_values, candidate_values)
+            items.append(
+                SimilarStation(
+                    ksss=candidate_ksss,
+                    stationNumber=str(candidate.get("stationNumber") or ""),
+                    name=station_name(candidate),
+                    subject=str(candidate.get("subject") or candidate.get("address") or ""),
+                    score=score,
+                    reasons=reasons,
+                    metrics=make_metrics(candidate_values, period, candidate_ksss, candidate_deltas),
+                )
+            )
+
+    items.sort(key=lambda item: item.score, reverse=True)
+    return SimilarStationsResponse(
+        ksss=ksss,
+        period=period,
+        source="local",
+        updatedAt=updated_at,
         items=items[:limit],
     )
 
@@ -1277,6 +1817,48 @@ def mock_compare(ksss_values: list[str], period: str) -> CompareResponse:
     )
 
 
+def local_compare(ksss_values: list[str], period: str) -> CompareResponse:
+    unique_ksss = []
+    for ksss in ksss_values:
+        if ksss and ksss not in unique_ksss:
+            unique_ksss.append(validate_ksss(ksss))
+    if len(unique_ksss) > 5:
+        raise HTTPException(status_code=422, detail="Compare supports up to 5 stations")
+
+    items = []
+    init_kpi_db()
+    with kpi_connection() as conn:
+        updated_at = latest_kpi_updated_at(conn, period, unique_ksss)
+        for ksss in unique_ksss:
+            station = station_by_ksss(ksss)
+            if not station:
+                continue
+            values, deltas = local_metric_set(conn, period, [ksss])
+            items.append(
+                CompareStation(
+                    ksss=ksss,
+                    stationNumber=str(station.get("stationNumber") or ""),
+                    name=station_name(station),
+                    subject=str(station.get("subject") or station.get("address") or ""),
+                    regionalManager=str(station.get("regionalManager") or ""),
+                    territoryManager=str(station.get("territoryManager") or ""),
+                    format=str(station.get("formatLevel2") or station.get("format") or ""),
+                    location=str(station.get("location") or ""),
+                    trkCount=station.get("trkCount"),
+                    postsCount=station.get("postsCount"),
+                    staffTotal=mock_staff_total(ksss, period),
+                    metrics=make_metrics(values, period, ksss, deltas),
+                )
+            )
+
+    return CompareResponse(
+        period=period,
+        source="local",
+        updatedAt=updated_at,
+        items=items,
+    )
+
+
 def db_extension_not_ready(template: Path):
     raise HTTPException(
         status_code=501,
@@ -1286,7 +1868,120 @@ def db_extension_not_ready(template: Path):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "mode": data_mode()}
+    db_ok = False
+    kpi_db_ok = False
+    active_sessions = 0
+    kpi_period_count = 0
+    kpi_updated_at = ""
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            db_ok = True
+            row = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE expires_at > ?",
+                (int(time.time()),),
+            ).fetchone()
+            active_sessions = row[0] if row else 0
+    except Exception:
+        pass
+    try:
+        init_kpi_db()
+        with sqlite3.connect(KPI_DB_PATH) as conn:
+            kpi_db_ok = True
+            row = conn.execute("SELECT COUNT(DISTINCT period), MAX(updated_at) FROM station_kpi_daily").fetchone()
+            if row:
+                kpi_period_count = int(row[0] or 0)
+                kpi_updated_at = str(row[1] or "")
+    except Exception:
+        pass
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "db": "ok" if db_ok else "error",
+        "kpiDb": "ok" if kpi_db_ok else "error",
+        "kpiPeriods": kpi_period_count,
+        "kpiUpdatedAt": kpi_updated_at,
+        "activeSessions": active_sessions,
+        "mode": data_mode(),
+        "version": "0.2.0",
+    }
+
+
+@app.post("/api/internal/kpi/import", response_model=KpiImportResponse)
+def import_kpi_metrics(payload: KpiImportPayload, request: Request):
+    enforce_rate_limit(request, "kpi-import", 30, window_seconds=60)
+    require_kpi_import_token(request)
+
+    if len(payload.records) > kpi_import_max_records():
+        raise HTTPException(status_code=413, detail="Too many KPI records in one request")
+
+    period = validate_period(payload.period) if payload.period else ""
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    source = (payload.source or "dwh-sync").strip()[:120]
+    rows = []
+
+    for record in payload.records:
+        metric_date = validate_metric_date(record.date)
+        record_period = metric_date.strftime("%Y-%m")
+        if period and record_period != period:
+            raise HTTPException(status_code=422, detail="All KPI records must belong to the requested period")
+        if not period:
+            period = record_period
+
+        fuel_volume = record.fuelVolume if record.fuelVolume is not None else record.fuel_volume
+        if fuel_volume is None:
+            raise HTTPException(status_code=422, detail="fuelVolume is required")
+        revenue_ntu = record.revenueNtu if record.revenueNtu is not None else record.revenue_ntu
+        checks_ntu = record.checksNtu if record.checksNtu is not None else record.checks_ntu
+        avg_check = record.avgCheck if record.avgCheck is not None else record.avg_check
+
+        rows.append(
+            (
+                metric_date.isoformat(),
+                record_period,
+                validate_ksss(record.ksss),
+                float(record.revenue),
+                float(revenue_ntu) if revenue_ntu is not None else None,
+                float(fuel_volume),
+                float(record.checks),
+                float(checks_ntu) if checks_ntu is not None else None,
+                float(avg_check) if avg_check is not None else None,
+                (record.updatedAt or now_iso)[:80],
+                source,
+            )
+        )
+
+    init_kpi_db()
+    with kpi_connection() as conn:
+        if payload.replacePeriod and period:
+            conn.execute("DELETE FROM station_kpi_daily WHERE period = ?", (period,))
+        conn.executemany(
+            """
+            INSERT INTO station_kpi_daily (
+                metric_date, period, ksss, revenue, revenue_ntu, fuel_volume,
+                checks, checks_ntu, avg_check, updated_at, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(metric_date, ksss) DO UPDATE SET
+                period = excluded.period,
+                revenue = excluded.revenue,
+                revenue_ntu = excluded.revenue_ntu,
+                fuel_volume = excluded.fuel_volume,
+                checks = excluded.checks,
+                checks_ntu = excluded.checks_ntu,
+                avg_check = excluded.avg_check,
+                updated_at = excluded.updated_at,
+                source = excluded.source
+            """,
+            rows,
+        )
+        periods = [str(row["period"]) for row in conn.execute("SELECT DISTINCT period FROM station_kpi_daily ORDER BY period").fetchall()]
+
+    logger.info("Imported %d KPI aggregate rows for period %s from %s", len(rows), period, source)
+    return KpiImportResponse(
+        ok=True,
+        imported=len(rows),
+        period=period,
+        periods=periods,
+        updatedAt=now_iso,
+    )
 
 
 @app.get("/api/auth/me", response_model=AuthResponse)
@@ -1565,7 +2260,9 @@ def auth_logout(request: Request, response: Response):
 
 
 @app.get("/api/stations")
-def stations_payload(_user: AuthUser = Depends(require_user)):
+def stations_payload(response: Response, _user: AuthUser = Depends(require_user)):
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    response.headers["Vary"] = "Cookie"
     return load_station_payload()
 
 
@@ -1579,17 +2276,33 @@ def available_staff_periods(_user: AuthUser = Depends(require_user)):
     }
 
 
+@app.get("/api/kpis/periods", response_model=KpiPeriodsResponse)
+def available_kpi_periods(_user: AuthUser = Depends(require_user)):
+    mode = data_mode().lower()
+    periods = kpi_periods() if mode in {"local", "file"} else []
+    with kpi_connection() as conn:
+        updated_at = latest_kpi_updated_at(conn) if periods else datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return KpiPeriodsResponse(
+        source="local" if periods else mode,
+        updatedAt=updated_at,
+        periods=periods,
+    )
+
+
 @app.get("/api/stations/{ksss}/kpis", response_model=StationKpiResponse)
 def station_kpis(
     ksss: str,
     period: str = Query(default_factory=current_period, pattern=r"^\d{4}-\d{2}$"),
     _user: AuthUser = Depends(require_user),
 ):
+    ksss = validate_ksss(ksss)
     period = validate_period(period)
     mode = data_mode().lower()
 
     if mode == "mock":
         return mock_kpis(ksss, period)
+    if mode in {"local", "file"}:
+        return local_kpis(ksss, period)
     if mode == "db":
         return db_kpis(ksss, period)
 
@@ -1602,6 +2315,7 @@ def station_staff(
     period: str = Query(default_factory=current_period, pattern=r"^\d{4}-\d{2}$"),
     _user: AuthUser = Depends(require_user),
 ):
+    ksss = validate_ksss(ksss)
     period = validate_period(period)
     mode = data_mode().lower()
 
@@ -1629,6 +2343,8 @@ def analytics_overview(
 
     if mode == "mock":
         return mock_overview(period, groupBy)
+    if mode in {"local", "file"}:
+        return local_overview(period, groupBy)
     if mode == "db":
         db_extension_not_ready(ANALYTICS_SQL_TEMPLATE)
 
@@ -1642,11 +2358,14 @@ def station_similar(
     limit: int = Query(10, ge=1, le=30),
     _user: AuthUser = Depends(require_user),
 ):
+    ksss = validate_ksss(ksss)
     period = validate_period(period)
     mode = data_mode().lower()
 
     if mode == "mock":
         return mock_similar(ksss, period, limit)
+    if mode in {"local", "file"}:
+        return local_similar(ksss, period, limit)
     if mode == "db":
         db_extension_not_ready(SIMILAR_SQL_TEMPLATE)
 
@@ -1664,6 +2383,8 @@ def analytics_compare(
 
     if mode == "mock":
         return mock_compare(ksss, period)
+    if mode in {"local", "file"}:
+        return local_compare(ksss, period)
     if mode == "db":
         db_extension_not_ready(COMPARE_SQL_TEMPLATE)
 

@@ -5,7 +5,7 @@
   --surface-2: #eef1f5;
   --line: #dfe4ea;
   --text: #151b24;
-  --muted: #6d7785;
+  --muted: #5a6575;
   --red: #c91d32;
   --red-dark: #a91527;
   --green: #14945f;
@@ -47,6 +47,25 @@ a {
 :where(button, a, input, select, textarea, [tabindex]):focus-visible {
   outline: 3px solid rgba(48, 119, 216, 0.34);
   outline-offset: 2px;
+}
+
+/* ── Skip navigation link (WCAG 2.4.1) ──────────────────── */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 16px;
+  background: var(--red);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 0 0 8px 8px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 9999;
+  text-decoration: none;
+  transition: top 0.2s;
+}
+.skip-link:focus {
+  top: 0;
 }
 
 .auth-shell {
@@ -574,6 +593,8 @@ a {
   border-color: rgba(201, 29, 50, 0.28);
   background: #fff1f3;
   color: var(--red-dark);
+  transition: background 200ms ease, color 180ms ease, border-color 180ms ease;
+  animation: chip-pop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .select-chip select {
@@ -601,7 +622,7 @@ a {
   --home-red-dark: #a91527;
   --home-blue: #3077d8;
   --home-ink: #151b24;
-  --home-muted: #6d7785;
+  --home-muted: #5a6575;
   --home-surface: #ffffff;
   --home-map: #d7dce3;
   --home-line: rgba(255, 255, 255, 0.8);
@@ -712,7 +733,7 @@ a {
 }
 
 .home-passport-item small {
-  color: #6d7785;
+  color: #5a6575;
   font-size: 11px;
   font-weight: 720;
   text-transform: uppercase;
@@ -725,7 +746,7 @@ a {
 }
 
 .home-passport-item em {
-  color: #6d7785;
+  color: #5a6575;
   font-size: 12px;
   font-style: normal;
   line-height: 1.25;
@@ -912,6 +933,11 @@ a {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.analytics-head .period-select {
+  flex: 0 0 auto;
+  max-width: 220px;
 }
 
 .quality-button {
@@ -1796,7 +1822,7 @@ a {
   min-height: 30px;
   padding: 0 9px;
   border-radius: 6px;
-  color: #6d7785;
+  color: #5a6575;
   font-size: 11px;
   font-weight: 760;
   transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
@@ -1815,6 +1841,7 @@ a {
 }
 
 .station-row {
+  position: relative;
   width: 100%;
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr) 38px;
@@ -1960,6 +1987,10 @@ a {
   justify-content: center;
   color: #c2c9d2;
   border-radius: 8px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
   transition: transform 120ms ease, color 120ms ease, background 120ms ease;
 }
 
@@ -2391,6 +2422,20 @@ a {
   overflow-wrap: anywhere;
 }
 
+.kpi-card.no-info {
+  background: var(--surface-2);
+}
+
+.kpi-card.no-info strong {
+  color: var(--muted);
+}
+
+.kpi-card.no-info small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
 .kpi-deltas {
   display: flex;
   flex-wrap: wrap;
@@ -2503,6 +2548,11 @@ a {
   background: var(--bg);
 }
 
+.staff-summary.no-info article,
+.staff-day.no-info {
+  background: var(--surface-2);
+}
+
 .staff-summary span,
 .staff-day span,
 .staff-day small {
@@ -2569,6 +2619,18 @@ a {
 .staff-day em {
   background: #eef5ff;
   color: #2868bf;
+}
+
+.staff-day.no-info b,
+.staff-day.no-info em {
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.staff-day.no-info.active {
+  border-color: var(--line);
+  background: var(--surface-2);
+  box-shadow: none;
 }
 
 .staff-day.loading {
@@ -2824,6 +2886,191 @@ a {
   background: #fff1f3;
 }
 
+/* ── Floating hero orbs ──────────────────────────────────── */
+@keyframes float-orb-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(14px, -20px) scale(1.05); }
+  66% { transform: translate(-9px, 11px) scale(0.96); }
+}
+
+@keyframes float-orb-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40% { transform: translate(-16px, 13px) scale(1.07); }
+  80% { transform: translate(11px, -9px) scale(0.95); }
+}
+
+.hero-orb {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.hero-orb-1 {
+  width: 320px;
+  height: 320px;
+  right: -80px;
+  top: -90px;
+  background: radial-gradient(circle at center, rgba(201, 29, 50, 0.11) 0%, transparent 68%);
+  animation: float-orb-a 9s ease-in-out infinite;
+}
+
+.hero-orb-2 {
+  width: 220px;
+  height: 220px;
+  right: 28%;
+  bottom: -50px;
+  background: radial-gradient(circle at center, rgba(48, 119, 216, 0.1) 0%, transparent 68%);
+  animation: float-orb-b 13s ease-in-out infinite;
+}
+
+.hero-orb-3 {
+  width: 130px;
+  height: 130px;
+  left: 42%;
+  top: 16px;
+  background: radial-gradient(circle at center, rgba(201, 29, 50, 0.07) 0%, transparent 68%);
+  animation: float-orb-a 17s ease-in-out infinite reverse;
+}
+
+/* ── Active station pulse ────────────────────────────────── */
+@keyframes azs-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-color, #14945f) 55%, transparent), 0 0 0 4px color-mix(in srgb, var(--status-color, #14945f) 14%, transparent); }
+  70%  { box-shadow: 0 0 0 7px color-mix(in srgb, var(--status-color, #14945f) 0%, transparent), 0 0 0 4px color-mix(in srgb, var(--status-color, #14945f) 14%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-color, #14945f) 0%, transparent), 0 0 0 4px color-mix(in srgb, var(--status-color, #14945f) 14%, transparent); }
+}
+
+.status-dot.tone-green {
+  animation: azs-pulse 2.4s cubic-bezier(0.36, 0.11, 0.89, 0.32) infinite;
+}
+
+/* ── Auth panel entrance ─────────────────────────────────── */
+@keyframes auth-rise {
+  from { opacity: 0; transform: translateY(18px) scale(0.984); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.auth-panel {
+  animation: auth-rise 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Geo-toast slide-in ──────────────────────────────────── */
+@keyframes toast-slide {
+  from { opacity: 0; transform: translateY(-10px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.geo-toast {
+  animation: toast-slide 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Analytics KPI card entrance stagger ────────────────── */
+@keyframes kpi-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.analytics-kpi {
+  animation: kpi-rise 0.28s ease-out both;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.analytics-kpi:nth-child(1) { animation-delay:   0ms; }
+.analytics-kpi:nth-child(2) { animation-delay:  38ms; }
+.analytics-kpi:nth-child(3) { animation-delay:  76ms; }
+.analytics-kpi:nth-child(4) { animation-delay: 114ms; }
+.analytics-kpi:nth-child(5) { animation-delay: 152ms; }
+.analytics-kpi:nth-child(6) { animation-delay: 190ms; }
+.analytics-kpi:nth-child(7) { animation-delay: 228ms; }
+
+/* ── Home summary badges ─────────────────────────────────── */
+@keyframes badge-pop {
+  from { opacity: 0; transform: scale(0.86); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.home-summary span {
+  animation: badge-pop 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.home-summary span:nth-child(1) { animation-delay:  0ms; }
+.home-summary span:nth-child(2) { animation-delay: 44ms; }
+.home-summary span:nth-child(3) { animation-delay: 88ms; }
+
+/* ── Bottom nav icon micro-bounce on active ──────────────── */
+@keyframes nav-bounce {
+  0%   { transform: scale(1) translateY(0); }
+  45%  { transform: scale(1.22) translateY(-3px); }
+  100% { transform: scale(1) translateY(0); }
+}
+
+.bottom-strip button.active .bottom-nav-icon {
+  animation: nav-bounce 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── Hover lifts (pointer devices only) ─────────────────── */
+@media (hover: hover) {
+  .station-row:hover {
+    transform: translateY(-2px);
+    border-color: rgba(201, 29, 50, 0.2);
+    box-shadow: 0 10px 28px rgba(21, 27, 36, 0.09);
+    transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .analytics-kpi:hover {
+    transform: translateY(-3px);
+    border-color: rgba(48, 119, 216, 0.2);
+    box-shadow: 0 10px 26px rgba(21, 27, 36, 0.08);
+  }
+
+  .analytics-card:hover {
+    border-color: rgba(48, 119, 216, 0.16);
+    box-shadow: 0 10px 26px rgba(21, 27, 36, 0.07);
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .kpi-card:hover {
+    border-color: rgba(48, 119, 216, 0.2);
+    box-shadow: 0 8px 20px rgba(21, 27, 36, 0.07);
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .action-button:hover:not(.disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 30px rgba(21, 27, 36, 0.13);
+    transition: transform 160ms ease, box-shadow 160ms ease;
+  }
+
+  .action-button.primary:hover:not(.disabled) {
+    box-shadow: 0 14px 34px rgba(201, 29, 50, 0.34);
+  }
+
+  .icon-button:hover {
+    background: var(--surface-2);
+    box-shadow: 0 4px 14px rgba(21, 27, 36, 0.08);
+  }
+
+  .home-card:hover {
+    box-shadow: 0 18px 40px rgba(21, 27, 36, 0.11);
+  }
+
+  .home-section-nav button:hover {
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 4px 14px rgba(21, 27, 36, 0.09);
+    transform: translateY(-1px);
+    transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+  }
+
+  .select-chip:hover:not(.filled) {
+    border-color: rgba(48, 119, 216, 0.24);
+    background: #f2f6ff;
+  }
+
+  .similar-card:hover .similar-score {
+    background: #ffd9de;
+    transition: background 200ms ease;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mode-row button,
   .bottom-strip button,
@@ -2835,6 +3082,20 @@ a {
   .quality-button,
   .select-chip,
   .reset-button {
+    transition-duration: 0.01ms !important;
+  }
+  .status-dot.tone-green,
+  .hero-orb,
+  .analytics-kpi,
+  .geo-toast,
+  .auth-panel,
+  .home-summary span,
+  .bottom-strip button.active .bottom-nav-icon,
+  .skeleton,
+  .station-row.skeleton,
+  .station-row.selected::before,
+  .select-chip.filled {
+    animation: none !important;
     transition-duration: 0.01ms !important;
   }
 }
@@ -3126,6 +3387,12 @@ a {
 
   .analytics-head {
     display: block;
+  }
+
+  .analytics-head .period-select {
+    width: 100%;
+    max-width: none;
+    margin-top: 10px;
   }
 
   .quality-button {
@@ -3475,5 +3742,497 @@ a {
 
   .map-callout {
     width: 190px;
+  }
+}
+
+/* ── Skeleton shimmer utility ────────────────────────────────── */
+@keyframes skeleton-shimmer {
+  0%   { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--line) 37%, var(--surface-2) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+.station-row.skeleton {
+  pointer-events: none;
+  cursor: default;
+  border-color: transparent;
+  box-shadow: none;
+  min-height: 110px;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--line) 37%, var(--surface-2) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+/* ── Station-row selected-bar entrance ───────────────────────── */
+@keyframes selected-bar {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+
+.station-row.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--red);
+  border-radius: 0 2px 2px 0;
+  animation: selected-bar 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Select chip filled pop ──────────────────────────────────── */
+@keyframes chip-pop {
+  from { transform: scale(0.92); opacity: 0.72; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+/* ── Mobile hero improvements (≤768px) ───────────────────────── */
+@media (max-width: 768px) {
+  .home-hero h2 {
+    font-size: 28px;
+    line-height: 1.1;
+  }
+
+  .home-hero h2::after {
+    content: "";
+    display: block;
+    width: 48px;
+    height: 3px;
+    background: var(--red);
+    margin-top: 8px;
+    border-radius: 2px;
+  }
+
+  .home-passport-item {
+    min-height: 76px;
+    padding: 9px;
+    box-shadow: 0 6px 16px rgba(21, 27, 36, 0.09);
+  }
+
+  .home-passport-item strong {
+    font-size: 18px;
+  }
+
+  .home-passport-item small {
+    font-size: 10px;
+    font-weight: 740;
+  }
+}
+
+/* ── Dark mode ───────────────────────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #0f1117;
+    --surface: #1a1d26;
+    --surface-2: #22263a;
+    --line: #2d3347;
+    --text: #e8ecf2;
+    --muted: #7a8599;
+    --red: #e8253e;
+    --red-dark: #f04459;
+    --green: #1ab86f;
+    --amber: #e09c1a;
+    --blue: #4b8fee;
+    --shadow: 0 16px 48px rgba(0, 0, 0, 0.48);
+  }
+
+  /* Auth error / info panels */
+  .auth-error {
+    background: rgba(232, 37, 62, 0.12);
+    border-color: rgba(232, 37, 62, 0.24);
+  }
+
+  .auth-policy,
+  .auth-code-head {
+    background: rgba(75, 143, 238, 0.1);
+    border-color: rgba(75, 143, 238, 0.22);
+  }
+
+  .auth-policy strong,
+  .auth-code-head strong {
+    color: var(--blue);
+  }
+
+  .auth-policy span,
+  .auth-code-head span,
+  .auth-code-head small {
+    color: var(--muted);
+  }
+
+  .auth-dev-code {
+    background: rgba(232, 37, 62, 0.06);
+    border-color: rgba(232, 37, 62, 0.22);
+  }
+
+  .auth-forgot-row button {
+    color: var(--blue);
+  }
+
+  .auth-forgot-row button:hover,
+  .auth-forgot-row button:focus-visible {
+    background: rgba(75, 143, 238, 0.1);
+    outline: 0;
+  }
+
+  /* Select chip filled */
+  .select-chip.filled {
+    background: rgba(232, 37, 62, 0.12);
+    border-color: rgba(232, 37, 62, 0.28);
+    color: var(--red);
+  }
+
+  /* Install control installed */
+  .install-control.installed {
+    background: rgba(26, 184, 111, 0.12);
+    border-color: rgba(26, 184, 111, 0.2);
+    color: var(--green);
+  }
+
+  /* Reset / clear buttons */
+  .reset-button,
+  .clear-base-button {
+    background: rgba(232, 37, 62, 0.1);
+    border-color: rgba(232, 37, 62, 0.22);
+    color: var(--red);
+  }
+
+  /* Home logout */
+  .home-logout-button {
+    background: rgba(232, 37, 62, 0.1);
+    border-color: rgba(232, 37, 62, 0.22);
+    color: var(--red);
+  }
+
+  .home-logout-button:hover {
+    background: rgba(232, 37, 62, 0.16);
+  }
+
+  /* Favorite dot */
+  .favorite-dot:active {
+    background: rgba(232, 37, 62, 0.1);
+  }
+
+  /* Similar score */
+  .similar-score {
+    background: rgba(232, 37, 62, 0.12);
+    color: var(--red);
+  }
+
+  /* Delta badges */
+  .delta-pair em.negative,
+  .kpi-deltas small.negative {
+    background: rgba(232, 37, 62, 0.12);
+    color: var(--red);
+  }
+
+  .delta-pair em.positive,
+  .kpi-deltas small.positive {
+    background: rgba(26, 184, 111, 0.12);
+    color: var(--green);
+  }
+
+  /* KPI / analytics warning messages */
+  .kpi-message.warning,
+  .analytics-message.warning {
+    background: rgba(232, 37, 62, 0.08);
+    border-color: rgba(232, 37, 62, 0.24);
+    color: var(--red);
+  }
+
+  /* Badges */
+  .badge.warn {
+    background: rgba(224, 156, 26, 0.14);
+    color: var(--amber);
+  }
+
+  .badge.status.green {
+    background: rgba(26, 184, 111, 0.14);
+    color: var(--green);
+  }
+
+  .badge.status.blue {
+    background: rgba(75, 143, 238, 0.14);
+    color: var(--blue);
+  }
+
+  .badge.status.amber {
+    background: rgba(224, 156, 26, 0.14);
+    color: var(--amber);
+  }
+
+  .badge.status.red {
+    background: rgba(232, 37, 62, 0.14);
+    color: var(--red);
+  }
+
+  .badge.status.gray {
+    background: var(--surface-2);
+    color: var(--muted);
+  }
+
+  /* Status chips */
+  .status-chip.tone-green {
+    background: rgba(26, 184, 111, 0.14);
+    color: var(--green);
+  }
+
+  .status-chip.tone-blue {
+    background: rgba(75, 143, 238, 0.14);
+    color: var(--blue);
+  }
+
+  .status-chip.tone-amber {
+    background: rgba(224, 156, 26, 0.14);
+    color: var(--amber);
+  }
+
+  .status-chip.tone-red {
+    background: rgba(232, 37, 62, 0.14);
+    color: var(--red);
+  }
+
+  .status-chip.tone-gray {
+    background: var(--surface-2);
+    color: var(--muted);
+  }
+
+  /* Quality button */
+  .quality-button {
+    background: rgba(224, 156, 26, 0.1);
+    border-color: rgba(224, 156, 26, 0.28);
+    color: var(--amber);
+  }
+
+  /* Source pill */
+  .source-pill {
+    background: rgba(75, 143, 238, 0.14);
+    color: var(--blue);
+  }
+
+  /* Analytics context geo */
+  .analytics-context small.geo-inline.found {
+    color: var(--blue);
+  }
+
+  /* Staff days */
+  .staff-day.active {
+    background: rgba(232, 37, 62, 0.1);
+    border-color: rgba(232, 37, 62, 0.28);
+    box-shadow: 0 0 0 3px rgba(232, 37, 62, 0.04);
+  }
+
+  .staff-day b {
+    background: rgba(26, 184, 111, 0.14);
+    color: var(--green);
+  }
+
+  .staff-day em {
+    background: rgba(75, 143, 238, 0.14);
+    color: var(--blue);
+  }
+
+  .staff-day.no-info b,
+  .staff-day.no-info em {
+    background: var(--surface);
+    color: var(--muted);
+  }
+
+  .staff-day.no-info.active {
+    border-color: var(--line);
+    background: var(--surface-2);
+    box-shadow: none;
+  }
+
+  /* Loading shimmer overrides (hardcoded light gradients) */
+  .kpi-card.loading i,
+  .kpi-card.loading b,
+  .kpi-card.loading small {
+    background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2));
+    background-size: 220% 100%;
+  }
+
+  .staff-day.loading {
+    background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2));
+    background-size: 220% 100%;
+  }
+
+  /* Map elements */
+  .map-canvas {
+    background: var(--surface-2);
+  }
+
+  .map-state {
+    background: rgba(15, 17, 23, 0.88);
+    border-color: var(--line);
+  }
+
+  .geo-toast {
+    background: rgba(26, 29, 38, 0.94);
+    border-color: var(--line);
+    color: var(--muted);
+  }
+
+  .geo-toast.found {
+    color: var(--blue);
+    border-color: rgba(75, 143, 238, 0.28);
+  }
+
+  .geo-toast.error {
+    color: var(--red);
+    border-color: rgba(232, 37, 62, 0.26);
+  }
+
+  .map-legend {
+    background: rgba(26, 29, 38, 0.92);
+    border-color: var(--line);
+  }
+
+  .map-legend span {
+    color: var(--muted);
+  }
+
+  .map-locate-button.active {
+    background: rgba(75, 143, 238, 0.14);
+    border-color: rgba(75, 143, 238, 0.34);
+    color: var(--blue);
+  }
+
+  /* Home hero */
+  .home-hero {
+    background:
+      linear-gradient(125deg, rgba(26, 29, 38, 0.97) 0 43%, rgba(30, 20, 22, 0.97) 43% 58%, rgba(18, 23, 38, 0.97) 58% 100%),
+      linear-gradient(135deg, rgba(232, 37, 62, 0.07), rgba(75, 143, 238, 0.06)),
+      var(--surface);
+  }
+
+  .home-hero p {
+    color: var(--muted);
+  }
+
+  /* Home passport items */
+  .home-passport-item {
+    background: rgba(34, 38, 58, 0.88);
+    border-color: var(--line);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24);
+  }
+
+  .home-passport-item small {
+    color: var(--muted);
+  }
+
+  .home-passport-item strong {
+    color: var(--text);
+  }
+
+  /* Home section nav */
+  .home-section-nav button {
+    background: rgba(26, 29, 38, 0.82);
+    border-color: var(--line);
+    color: var(--text);
+  }
+
+  .home-section-nav button:first-child {
+    border-color: rgba(232, 37, 62, 0.2);
+    color: var(--red);
+  }
+
+  .home-section-nav button:nth-child(2) {
+    border-color: rgba(75, 143, 238, 0.22);
+    color: var(--blue);
+  }
+
+  /* Home summary button */
+  .home-summary button {
+    background: rgba(75, 143, 238, 0.1);
+    border-color: rgba(75, 143, 238, 0.24);
+    color: var(--blue);
+  }
+
+  /* Detail quick facts */
+  .detail-quick-facts .ok {
+    border-color: rgba(26, 184, 111, 0.2);
+    background: rgba(26, 184, 111, 0.12);
+    color: var(--green);
+  }
+
+  .detail-quick-facts .warn {
+    border-color: rgba(224, 156, 26, 0.22);
+    background: rgba(224, 156, 26, 0.1);
+    color: var(--amber);
+  }
+
+  /* Warning block */
+  .warning {
+    color: var(--amber);
+  }
+
+  .warning span {
+    background: rgba(224, 156, 26, 0.12);
+  }
+
+  /* Issue row */
+  .issue-row {
+    background: var(--surface-2);
+  }
+
+  /* Period select */
+  .period-select {
+    background: var(--surface);
+    border-color: var(--line);
+    color: var(--text);
+  }
+
+  /* Density toggle active */
+  .density-toggle button.active {
+    background: var(--surface-2);
+    color: var(--red);
+    box-shadow: 0 5px 14px rgba(0, 0, 0, 0.24);
+  }
+
+  /* Sheet / detail grabbers */
+  .sheet-grabber::before,
+  .detail-grabber::before {
+    background: var(--line);
+  }
+
+  /* Bottom nav strip */
+  .bottom-strip {
+    border-color: rgba(45, 51, 71, 0.9);
+    background: rgba(15, 17, 23, 0.96);
+  }
+
+  .bottom-nav-active {
+    background: linear-gradient(180deg, rgba(232, 37, 62, 0.14) 0%, rgba(232, 37, 62, 0.06) 100%);
+    box-shadow: inset 0 0 0 1px rgba(232, 37, 62, 0.14), 0 8px 18px rgba(232, 37, 62, 0.08);
+  }
+}
+
+/* ── Dark mode + hover combined ──────────────────────────────── */
+@media (prefers-color-scheme: dark) and (hover: hover) {
+  .select-chip:hover:not(.filled) {
+    border-color: rgba(75, 143, 238, 0.24);
+    background: rgba(75, 143, 238, 0.06);
+  }
+
+  .home-section-nav button:hover {
+    background: rgba(34, 38, 58, 0.95);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+    transform: translateY(-1px);
+  }
+
+  .similar-card:hover .similar-score {
+    background: rgba(232, 37, 62, 0.2);
+  }
+
+  .station-row:hover {
+    border-color: rgba(232, 37, 62, 0.22);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
   }
 }
