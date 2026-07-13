@@ -106,6 +106,8 @@ server {
 
     # API → FastAPI
     location /api/ {
+        # Hourly fuel snapshots are uploaded atomically and are roughly 1-2 MB.
+        client_max_body_size 5m;
         proxy_pass         http://127.0.0.1:8000;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Real-IP \$remote_addr;

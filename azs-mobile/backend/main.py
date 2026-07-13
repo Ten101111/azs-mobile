@@ -30,6 +30,17 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.fuel_stock import (
+    FuelStockImportError,
+    FuelStockImportPayload,
+    FuelStockImportResponse,
+    FuelStockStationResponse,
+    fuel_stock_health,
+    get_station_fuel_stock,
+    init_fuel_stock_db,
+    replace_fuel_stock_snapshot,
+)
+
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 DATA_DIR = PROJECT_DIR / "data"
@@ -262,6 +273,7 @@ app.add_middleware(
 def startup():
     init_auth_db()
     init_kpi_db()
+    init_fuel_stock_db()
     _sec = logging.getLogger("azs.security")
     if not auth_enabled():
         _sec.critical(
@@ -1162,26 +1174,62 @@ def kpi_import_max_records() -> int:
         return 10000
 
 
+def fuel_stock_import_max_records() -> int:
+    try:
+        return max(1, int(os.getenv("FUEL_STOCK_IMPORT_MAX_RECORDS", "10000")))
+    except ValueError:
+        return 10000
+
+
+def fuel_stock_import_max_body_bytes() -> int:
+    try:
+        return max(1024, int(os.getenv("FUEL_STOCK_IMPORT_MAX_BODY_BYTES", str(5 * 1024 * 1024))))
+    except ValueError:
+        return 5 * 1024 * 1024
+
+
+def _require_bearer_token(request: Request, token: str, token_hash: str, label: str):
+    if not token and not token_hash:
+        raise HTTPException(status_code=503, detail=f"{label} token is not configured")
+
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, provided_token = auth_header.partition(" ")
+    provided_token = provided_token.strip()
+    if scheme.lower() != "bearer" or not provided_token:
+        raise HTTPException(status_code=401, detail=f"{label} token is required")
+
+    if token and secrets.compare_digest(provided_token, token):
+        return
+
+    provided_hash = hashlib.sha256(provided_token.encode("utf-8")).hexdigest()
+    if token_hash and secrets.compare_digest(provided_hash, token_hash):
+        return
+
+    raise HTTPException(status_code=403, detail=f"{label} token is invalid")
+
+
 def require_kpi_import_token(request: Request):
     configured_token = os.getenv("KPI_IMPORT_TOKEN", "")
     configured_hash = os.getenv("KPI_IMPORT_TOKEN_SHA256", "").strip().lower()
-    if not configured_token and not configured_hash:
-        raise HTTPException(status_code=503, detail="KPI import token is not configured")
+    _require_bearer_token(request, configured_token, configured_hash, "KPI import")
 
-    auth_header = request.headers.get("authorization", "")
-    scheme, _, token = auth_header.partition(" ")
-    token = token.strip()
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=401, detail="KPI import token is required")
 
-    if configured_token and secrets.compare_digest(token, configured_token):
-        return
+def require_fuel_stock_import_token(request: Request):
+    configured_token = os.getenv("FUEL_STOCK_IMPORT_TOKEN", "")
+    configured_hash = os.getenv("FUEL_STOCK_IMPORT_TOKEN_SHA256", "").strip().lower()
+    _require_bearer_token(request, configured_token, configured_hash, "Fuel stock import")
 
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    if configured_hash and secrets.compare_digest(token_hash, configured_hash):
-        return
 
-    raise HTTPException(status_code=403, detail="KPI import token is invalid")
+def validate_import_body_size(request: Request, payload: BaseModel, max_bytes: int):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(status_code=413, detail="Import payload body is too large")
+        except ValueError:
+            pass
+    if len(payload.model_dump_json().encode("utf-8")) > max_bytes:
+        raise HTTPException(status_code=413, detail="Import payload body is too large")
 
 
 def kpi_periods() -> list[str]:
@@ -1907,9 +1955,11 @@ def db_extension_not_ready(template: Path):
 def health():
     db_ok = False
     kpi_db_ok = False
+    fuel_stock_db_ok = False
     active_sessions = 0
     kpi_period_count = 0
     kpi_updated_at = ""
+    fuel_stock = {"rows": 0, "stations": 0, "snapshotAt": "", "importedAt": "", "stale": True}
     try:
         with sqlite3.connect(AUTH_DB_PATH) as conn:
             db_ok = True
@@ -1930,15 +1980,22 @@ def health():
                 kpi_updated_at = str(row[1] or "")
     except Exception:
         pass
+    try:
+        fuel_stock = fuel_stock_health()
+        fuel_stock_db_ok = True
+    except Exception:
+        pass
     return {
         "status": "ok" if db_ok else "degraded",
         "db": "ok" if db_ok else "error",
         "kpiDb": "ok" if kpi_db_ok else "error",
+        "fuelStockDb": "ok" if fuel_stock_db_ok else "error",
         "kpiPeriods": kpi_period_count,
         "kpiUpdatedAt": kpi_updated_at,
+        "fuelStock": fuel_stock,
         "activeSessions": active_sessions,
         "mode": data_mode(),
-        "version": "0.2.0",
+        "version": "0.3.0",
     }
 
 
@@ -2019,6 +2076,31 @@ def import_kpi_metrics(payload: KpiImportPayload, request: Request):
         periods=periods,
         updatedAt=now_iso,
     )
+
+
+@app.post("/api/internal/fuel-stock/import", response_model=FuelStockImportResponse)
+def import_fuel_stock_snapshot(payload: FuelStockImportPayload, request: Request):
+    enforce_rate_limit(request, "fuel-stock-import", 20, window_seconds=60)
+    require_fuel_stock_import_token(request)
+    validate_import_body_size(request, payload, fuel_stock_import_max_body_bytes())
+
+    if len(payload.records) > fuel_stock_import_max_records():
+        raise HTTPException(status_code=413, detail="Too many fuel stock records in one request")
+
+    try:
+        response = replace_fuel_stock_snapshot(payload)
+    except FuelStockImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    logger.info(
+        "Imported fuel stock snapshot accountDate=%s snapshotAt=%s rows=%d stations=%d unchanged=%s",
+        response.accountDate,
+        response.snapshotAt,
+        response.imported,
+        response.stations,
+        response.unchanged,
+    )
+    return response
 
 
 @app.get("/api/auth/me", response_model=AuthResponse)
@@ -2367,6 +2449,18 @@ def station_staff(
         db_extension_not_ready(STAFF_SQL_TEMPLATE)
 
     raise HTTPException(status_code=500, detail=f"Unsupported APP_DATA_MODE: {mode}")
+
+
+@app.get("/api/stations/{ksss}/fuel-stock", response_model=FuelStockStationResponse)
+def station_fuel_stock(
+    ksss: str,
+    _user: AuthUser = Depends(require_user),
+):
+    ksss = validate_ksss(ksss)
+    stock = get_station_fuel_stock(ksss)
+    if not stock:
+        raise HTTPException(status_code=404, detail="Fuel stock data not found")
+    return stock
 
 
 @app.get("/api/analytics/overview", response_model=AnalyticsOverviewResponse)

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { max } from "d3-array";
 import { scaleLinear } from "d3-scale";
@@ -11,9 +11,12 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  Clock3,
   Coffee,
   Download,
   Filter,
+  Fuel,
+  Gauge,
   Heart,
   Home,
   List,
@@ -22,6 +25,7 @@ import {
   MessageSquare,
   Navigation,
   Phone,
+  RefreshCw,
   Send,
   Users,
   Search,
@@ -531,6 +535,144 @@ function deltaTone(value) {
   return numeric > 0 ? "positive" : "negative";
 }
 
+const FUEL_STOCK_REFRESH_MS = 60_000;
+const canonicalFuelGroups = [
+  { key: "ab95", label: "АБ95" },
+  { key: "ab95Ecto", label: "АБ95 ЭКТО" },
+  { key: "dt", label: "ДТ" },
+  { key: "dtEcto", label: "ДТ ЭКТО" },
+];
+
+function numericOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function sumFuelMetric(a, b) {
+  const left = numericOrNull(a);
+  const right = numericOrNull(b);
+  if (left === null && right === null) return null;
+  return (left || 0) + (right || 0);
+}
+
+function normalizeFuelToken(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/Ё/g, "Е")
+    .replace(/[^0-9A-ZА-Я]+/g, "");
+}
+
+function canonicalFuelKey(item) {
+  const code = normalizeFuelToken(item?.fuelCode);
+  const name = normalizeFuelToken(item?.fuelName);
+  const text = `${code}${name}`;
+  const isEcto = text.includes("ЭКТО") || text.includes("ECTO") || text.includes("EKTO");
+  const isDiesel = text.includes("ДТ") || text.includes("DT") || text.includes("DIESEL") || text.includes("ДИЗЕЛ");
+  const is95 = text.includes("95") || text.includes("АБ95") || text.includes("АИ95") || text.includes("AI95");
+
+  if (isDiesel && isEcto) return "dtEcto";
+  if (isDiesel) return "dt";
+  if (is95 && isEcto) return "ab95Ecto";
+  if (is95) return "ab95";
+  return "";
+}
+
+function mergeFuelStockItem(base, next) {
+  return {
+    ...base,
+    fuelCode: base.fuelCode || next.fuelCode,
+    fuelName: base.fuelName || next.fuelName,
+    capacityLiters: sumFuelMetric(base.capacityLiters, next.capacityLiters),
+    physicalVolumeLiters: sumFuelMetric(base.physicalVolumeLiters, next.physicalVolumeLiters),
+    deadRestLiters: sumFuelMetric(base.deadRestLiters, next.deadRestLiters),
+    availableVolumeLiters: sumFuelMetric(base.availableVolumeLiters, next.availableVolumeLiters),
+    tanksCount: sumFuelMetric(base.tanksCount, next.tanksCount),
+    percentage: null,
+    isLow: Boolean(base.isLow || next.isLow),
+  };
+}
+
+function fuelStockTone(percentage) {
+  const numeric = numericOrNull(percentage);
+  if (numeric === null) return "empty";
+  if (numeric < 30) return "red";
+  if (numeric <= 70) return "amber";
+  return "green";
+}
+
+function fuelStockToneLabel(tone) {
+  if (tone === "red") return "Внимание <30%";
+  if (tone === "amber") return "Рабочий 30–70%";
+  if (tone === "green") return "Норма >70%";
+  return "Нет данных";
+}
+
+function normalizeFuelStockGroups(items = []) {
+  const grouped = new Map();
+
+  items.forEach((item) => {
+    const key = canonicalFuelKey(item);
+    if (!key) return;
+    const existing = grouped.get(key);
+    grouped.set(key, existing ? mergeFuelStockItem(existing, item) : { ...item });
+  });
+
+  return canonicalFuelGroups.map((group) => {
+    const item = grouped.get(group.key);
+    if (!item) {
+      return { ...group, item: null, hasData: false, percentage: null, tone: "empty", isLow: false };
+    }
+
+    const capacity = numericOrNull(item.capacityLiters);
+    const available = numericOrNull(item.availableVolumeLiters);
+    const suppliedPercentage = numericOrNull(item.percentage);
+    const percentage = suppliedPercentage ?? (capacity && capacity > 0 && available !== null ? (available / capacity) * 100 : null);
+    const tone = fuelStockTone(percentage);
+    const flaggedLow = item.isLow === true || item.isLow === 1 || String(item.isLow).toLowerCase() === "true";
+    const isLow = flaggedLow || (numericOrNull(percentage) !== null && percentage < 20);
+
+    return { ...group, item, hasData: true, percentage, tone, isLow };
+  });
+}
+
+function formatFuelLiters(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return "—";
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 0 })} л`;
+}
+
+function formatFuelPercent(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return "—";
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: Number.isInteger(numeric) ? 0 : 1 })}%`;
+}
+
+function formatFuelTanks(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return "—";
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: Number.isInteger(numeric) ? 0 : 1 })} шт.`;
+}
+
+function clampFuelPercent(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return 0;
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function formatFuelStockTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function distanceKm(from, station) {
   if (!from || !hasValidPoint(station)) return Number.POSITIVE_INFINITY;
   const toRad = (value) => (value * Math.PI) / 180;
@@ -683,6 +825,86 @@ function fetchJson(url, signal) {
     if (!response.ok) throw new Error(`REQUEST_FAILED_${response.status}`);
     return response.json();
   });
+}
+
+function useFuelStock(ksss) {
+  const [stockState, setStockState] = useState({ status: "idle", data: null, error: "", refreshing: false });
+  const controllerRef = useRef(null);
+  const requestRef = useRef(0);
+  const intervalRef = useRef(null);
+
+  const loadStock = useCallback(
+    (background = false) => {
+      if (!ksss) {
+        setStockState({ status: "no-data", data: null, error: "", refreshing: false });
+        return;
+      }
+
+      requestRef.current += 1;
+      const requestId = requestRef.current;
+      controllerRef.current?.abort();
+      const controller = new AbortController();
+      controllerRef.current = controller;
+
+      setStockState((previous) => {
+        const keepCurrent = background && (previous.data || previous.status === "no-data");
+        return {
+          status: keepCurrent ? previous.status : "loading",
+          data: keepCurrent ? previous.data : null,
+          error: "",
+          refreshing: Boolean(keepCurrent),
+        };
+      });
+
+      fetchJson(`/api/stations/${encodeURIComponent(ksss)}/fuel-stock`, controller.signal)
+        .then((data) => {
+          if (requestRef.current !== requestId) return;
+          if (!data || !Array.isArray(data.items) || data.items.length === 0) {
+            setStockState({ status: "no-data", data: data || null, error: "", refreshing: false });
+            return;
+          }
+          setStockState({ status: "ready", data, error: "", refreshing: false });
+        })
+        .catch((error) => {
+          if (error.name === "AbortError" || error.message === "AUTH_REQUIRED") return;
+          if (requestRef.current !== requestId) return;
+          setStockState((previous) => {
+            if (background && (previous.data || previous.status === "no-data")) {
+              return {
+                ...previous,
+                error: "Не удалось обновить остатки. Показаны последние полученные данные.",
+                refreshing: false,
+              };
+            }
+            return { status: "error", data: null, error: error.message, refreshing: false };
+          });
+        });
+    },
+    [ksss],
+  );
+
+  useEffect(() => {
+    if (!ksss) {
+      setStockState({ status: "no-data", data: null, error: "", refreshing: false });
+      return undefined;
+    }
+
+    const refreshVisibleStock = () => {
+      if (document.visibilityState === "visible") loadStock(true);
+    };
+
+    loadStock(false);
+    intervalRef.current = window.setInterval(refreshVisibleStock, FUEL_STOCK_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshVisibleStock);
+
+    return () => {
+      window.clearInterval(intervalRef.current);
+      document.removeEventListener("visibilitychange", refreshVisibleStock);
+      controllerRef.current?.abort();
+    };
+  }, [ksss, loadStock]);
+
+  return { stockState, refresh: loadStock };
 }
 
 async function authJson(url, options = {}) {
@@ -3228,6 +3450,7 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
         </a>
       </div>
 
+      <StationFuelStock ksss={station.ksss} />
       <StationKpis ksss={station.ksss} />
       <StationStaff ksss={station.ksss} />
 
@@ -3310,6 +3533,159 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
         </DetailGroup>
       )}
     </motion.aside>
+  );
+}
+
+function StationFuelStock({ ksss }) {
+  const { stockState, refresh } = useFuelStock(ksss);
+  const groups = useMemo(() => normalizeFuelStockGroups(stockState.data?.items || []), [stockState.data]);
+  const snapshotAt = formatFuelStockTimestamp(stockState.data?.snapshotAt);
+  const importedAt = formatFuelStockTimestamp(stockState.data?.importedAt);
+  const isLoadingInitial = stockState.status === "loading" && !stockState.data;
+  const isUnavailable = stockState.status === "error" && !stockState.data;
+  const hasAnyGroupData = groups.some((group) => group.hasData);
+  const isNoData = stockState.status === "no-data" || (stockState.status === "ready" && !hasAnyGroupData);
+
+  return (
+    <section
+      className="detail-section fuel-stock-section"
+      aria-labelledby="fuel-stock-title"
+      aria-busy={isLoadingInitial || stockState.refreshing}
+    >
+      <div className="fuel-stock-head">
+        <div>
+          <h3 id="fuel-stock-title">
+            <Fuel size={16} /> Остатки топлива
+          </h3>
+          <div className="fuel-stock-meta">
+            <span>
+              <Clock3 size={13} aria-hidden="true" />
+              {snapshotAt ? `Снимок ${snapshotAt}` : "Снимок не получен"}
+            </span>
+            {importedAt && <span>Импорт {importedAt}</span>}
+          </div>
+        </div>
+        {stockState.refreshing && (
+          <span className="fuel-stock-refreshing" role="status">
+            <RefreshCw size={13} aria-hidden="true" /> Обновление
+          </span>
+        )}
+      </div>
+
+      {isLoadingInitial && <FuelStockSkeleton />}
+
+      {isUnavailable && (
+        <div className="kpi-message warning fuel-stock-message" role="alert">
+          <AlertTriangle size={16} aria-hidden="true" />
+          <span>Остатки временно недоступны</span>
+          <button className="fuel-stock-retry" type="button" onClick={() => refresh(false)}>
+            <RefreshCw size={14} aria-hidden="true" /> Повторить
+          </button>
+        </div>
+      )}
+
+      {isNoData && (
+        <div className="kpi-message fuel-stock-message" role="status">
+          <Gauge size={16} aria-hidden="true" />
+          <span>Нет данных об остатках для этой АЗС</span>
+        </div>
+      )}
+
+      {stockState.data?.stale && (
+        <div className="fuel-stock-inline-warning" role="alert">
+          <AlertTriangle size={15} aria-hidden="true" />
+          <span>Данные устарели: проверьте актуальность перед операционным решением.</span>
+        </div>
+      )}
+
+      {stockState.error && !isUnavailable && (
+        <div className="fuel-stock-inline-warning" role="status">
+          <AlertTriangle size={15} aria-hidden="true" />
+          <span>{stockState.error}</span>
+        </div>
+      )}
+
+      {!isLoadingInitial && (
+        <div className="fuel-stock-grid" aria-label="Остатки по каноническим группам топлива">
+          {groups.map((group) => (
+            <FuelStockCard group={group} key={group.key} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FuelStockSkeleton() {
+  return (
+    <div className="fuel-stock-grid" aria-label="Загрузка остатков топлива">
+      {canonicalFuelGroups.map((group) => (
+        <article className="fuel-stock-card loading" key={group.key}>
+          <i />
+          <b />
+          <small />
+          <em />
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function FuelStockCard({ group }) {
+  const item = group.item || {};
+  const available = item.availableVolumeLiters;
+  const capacity = item.capacityLiters;
+  const tanks = item.tanksCount;
+  const fill = clampFuelPercent(group.percentage);
+  const StatusIcon = group.tone === "green" ? CheckCircle2 : group.tone === "empty" ? Gauge : AlertTriangle;
+  const ariaLabel = group.hasData
+    ? `${group.label}: доступно ${formatFuelLiters(available)}, ${formatFuelPercent(group.percentage)}, емкость ${formatFuelLiters(capacity)}, резервуары ${formatFuelTanks(tanks)}${group.isLow ? ", низкий остаток" : ""}`
+    : `${group.label}: данных нет`;
+
+  return (
+    <article
+      className={`fuel-stock-card tone-${group.tone} ${group.hasData ? "" : "no-data"} ${group.isLow ? "low" : ""}`}
+      style={{ "--fuel-stock-fill": `${fill}%` }}
+      aria-label={ariaLabel}
+    >
+      <div className="fuel-stock-card-head">
+        <strong>{group.label}</strong>
+        <span className={`fuel-stock-band tone-${group.tone}`}>
+          <StatusIcon size={13} aria-hidden="true" />
+          {fuelStockToneLabel(group.tone)}
+        </span>
+      </div>
+
+      <div className="fuel-stock-value">
+        <span>Доступно</span>
+        <strong>
+          {formatFuelLiters(available)}
+          <small>{formatFuelPercent(group.percentage)}</small>
+        </strong>
+      </div>
+
+      <div className="fuel-stock-track" aria-hidden="true">
+        <i />
+      </div>
+
+      <dl className="fuel-stock-facts">
+        <div>
+          <dt>Емкость</dt>
+          <dd>{formatFuelLiters(capacity)}</dd>
+        </div>
+        <div>
+          <dt>Резервуары</dt>
+          <dd>{formatFuelTanks(tanks)}</dd>
+        </div>
+      </dl>
+
+      {group.isLow && (
+        <div className="fuel-stock-low">
+          <AlertTriangle size={13} aria-hidden="true" />
+          <span>Низкий остаток &lt;20%</span>
+        </div>
+      )}
+    </article>
   );
 }
 
