@@ -633,7 +633,7 @@ function fuelStockTone(percentage) {
 }
 
 function fuelStockToneLabel(group) {
-  if (group.onDeadStock) return "На мели";
+  if (group.onDeadStock) return "Отсутствует";
   if (group.capacityExceeded) return "Проверить данные";
   if (group.tone === "red") return "Внимание <30%";
   if (group.tone === "amber") return "Рабочий 30–70%";
@@ -3812,7 +3812,7 @@ function FuelStockCard({ group, index, reduceMotion }) {
   const fill = clampFuelPercent(group.percentage);
   const StatusIcon = group.tone === "green" ? CheckCircle2 : group.tone === "empty" ? Gauge : AlertTriangle;
   const stateLabel = group.onDeadStock
-    ? ", на мели, доступен только технологический остаток"
+    ? ", отсутствует, доступен только технологический остаток"
     : group.capacityExceeded
       ? ", исходный объем DWH выше емкости"
       : group.isLow
