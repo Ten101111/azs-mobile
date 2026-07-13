@@ -258,7 +258,7 @@ class KpiImportResponse(BaseModel):
     updatedAt: str
 
 
-app = FastAPI(title="AZS KPI API", version="0.2.0")
+app = FastAPI(title="AZS KPI API", version="0.4.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
@@ -1995,7 +1995,7 @@ def health():
         "fuelStock": fuel_stock,
         "activeSessions": active_sessions,
         "mode": data_mode(),
-        "version": "0.3.0",
+        "version": "0.4.0",
     }
 
 

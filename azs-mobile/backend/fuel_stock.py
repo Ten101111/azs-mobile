@@ -21,9 +21,15 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 DATA_DIR = PROJECT_DIR / "data"
 
-CANONICAL_FUELS = ("АБ95", "АБ95 ЭКТО", "ДТ", "ДТ ЭКТО")
+GASOLINE_OCTANE_GRADES = (80, 91, 92, 93, 95, 98, 100)
+CANONICAL_FUELS = tuple(
+    fuel
+    for grade in GASOLINE_OCTANE_GRADES
+    for fuel in (f"АБ{grade}", f"АБ{grade} ЭКТО")
+) + ("ДТ", "ДТ ЭКТО", "СУГ", "КПГ")
 UNMAPPED_FUEL = "unmapped"
 FUEL_SORT_ORDER = {fuel: index for index, fuel in enumerate((*CANONICAL_FUELS, UNMAPPED_FUEL))}
+STORED_VOLUME_UNITS_PER_TON = 1000.0
 DEFAULT_STALE_AFTER_SECONDS = 90 * 60
 DEFAULT_MIN_COVERAGE_RATIO = 0.5
 ARITHMETIC_ABS_TOLERANCE = 0.1
@@ -72,6 +78,12 @@ class FuelStockItem(BaseModel):
     deadRestLiters: float
     availableVolumeLiters: float
     availableLiters: float
+    capacityTons: float
+    physicalVolumeTons: float
+    volumeTons: float
+    deadRestTons: float
+    availableVolumeTons: float
+    availableTons: float
     percentage: float
     fillPercent: float
     status: str
@@ -306,22 +318,20 @@ def normalize_fuel_name(value: str) -> str:
     if not compact and not raw_compact:
         return UNMAPPED_FUEL
 
-    excluded_markers = (
-        "ПРИСАД",
-        "ADDITIVE",
-        "СУГ",
-        "СПБТ",
-        "ПРОПАН",
-        "МЕТАН",
-        "ГАЗ",
-        "GAS",
-        "LPG",
-        "CNG",
-    )
+    excluded_markers = ("ПРИСАД", "ADDITIVE")
     if any(marker in compact or marker in raw_compact for marker in excluded_markers):
         return UNMAPPED_FUEL
-    if re.search(r"(?<!\d)(92|100)(?!\d)", tokens) or "АИ92" in compact or "АБ92" in compact or "АИ100" in compact or "АБ100" in compact:
-        return UNMAPPED_FUEL
+
+    is_lpg = any(
+        marker in compact or marker in raw_compact
+        for marker in ("СУГ", "СПБТ", "СЖИЖЕН", "ПРОПАН", "ПБА", "LPG")
+    )
+    if is_lpg:
+        return "СУГ"
+
+    is_cng = any(marker in compact or marker in raw_compact for marker in ("КПГ", "МЕТАН", "CNG"))
+    if is_cng:
+        return "КПГ"
 
     is_ecto = any(marker in compact for marker in ("ЭКТО", "ЕКТО")) or any(marker in raw_compact for marker in ("ECTO", "EKTO"))
     diesel_pattern = r"(^|[^A-ZА-Я0-9])(ДТ|ДИЗЕЛ|ДИЗЕЛЬ|DT|DIESEL)([^A-ZА-Я0-9]|$)"
@@ -331,12 +341,23 @@ def normalize_fuel_name(value: str) -> str:
         or "ДИЗЕЛ" in compact
         or any(marker in compact for marker in ("ДТЛ", "ДТЗ", "ДТЕ"))
     )
-    has_95 = bool(re.search(r"(?<!\d)95(?!\d)", tokens)) or "95" in compact
-
     if is_diesel:
         return "ДТ ЭКТО" if is_ecto else "ДТ"
-    if has_95:
-        return "АБ95 ЭКТО" if is_ecto else "АБ95"
+
+    grades = {
+        grade
+        for grade in GASOLINE_OCTANE_GRADES
+        if bool(re.search(rf"(?<!\d){grade}(?!\d)", tokens))
+        or any(
+            marker in compact or marker in raw_compact
+            for marker in (f"АИ{grade}", f"АБ{grade}", f"AI{grade}", f"AB{grade}")
+        )
+    }
+    if grades == {91, 92, 93}:
+        grades = {92}
+    if len(grades) == 1:
+        grade = grades.pop()
+        return f"АБ{grade} ЭКТО" if is_ecto else f"АБ{grade}"
     return UNMAPPED_FUEL
 
 
@@ -569,16 +590,26 @@ def replace_fuel_stock_snapshot(
 def fuel_item_from_row(row: sqlite3.Row) -> FuelStockItem:
     source_names = json.loads(str(row["source_fuel_names_json"] or "[]"))
     source_counts = json.loads(str(row["source_fuel_name_counts_json"] or "{}"))
+    capacity = float(row["capacity_liters"] or 0)
+    physical_volume = float(row["volume_liters"] or 0)
+    dead_rest = float(row["dead_rest_liters"] or 0)
+    available = float(row["available_liters"] or 0)
     return FuelStockItem(
         canonicalFuel=str(row["canonical_fuel"]),
         fuelCode=str(row["canonical_fuel"]),
         fuelName=str(row["canonical_fuel"]),
-        capacityLiters=float(row["capacity_liters"] or 0),
-        physicalVolumeLiters=float(row["volume_liters"] or 0),
-        volumeLiters=float(row["volume_liters"] or 0),
-        deadRestLiters=float(row["dead_rest_liters"] or 0),
-        availableVolumeLiters=float(row["available_liters"] or 0),
-        availableLiters=float(row["available_liters"] or 0),
+        capacityLiters=capacity,
+        physicalVolumeLiters=physical_volume,
+        volumeLiters=physical_volume,
+        deadRestLiters=dead_rest,
+        availableVolumeLiters=available,
+        availableLiters=available,
+        capacityTons=round(capacity / STORED_VOLUME_UNITS_PER_TON, 4),
+        physicalVolumeTons=round(physical_volume / STORED_VOLUME_UNITS_PER_TON, 4),
+        volumeTons=round(physical_volume / STORED_VOLUME_UNITS_PER_TON, 4),
+        deadRestTons=round(dead_rest / STORED_VOLUME_UNITS_PER_TON, 4),
+        availableVolumeTons=round(available / STORED_VOLUME_UNITS_PER_TON, 4),
+        availableTons=round(available / STORED_VOLUME_UNITS_PER_TON, 4),
         percentage=float(row["fill_percent"] or 0),
         fillPercent=float(row["fill_percent"] or 0),
         status=str(row["status"]),
@@ -600,15 +631,7 @@ def get_station_fuel_stock(ksss: str, db_path: Optional[Path] = None) -> Optiona
             SELECT *
             FROM fuel_stock_current
             WHERE ksss = ?
-            ORDER BY
-                CASE canonical_fuel
-                    WHEN 'АБ95' THEN 1
-                    WHEN 'АБ95 ЭКТО' THEN 2
-                    WHEN 'ДТ' THEN 3
-                    WHEN 'ДТ ЭКТО' THEN 4
-                    WHEN 'unmapped' THEN 5
-                    ELSE 99
-                END
+            ORDER BY canonical_fuel
             """,
             (ksss,),
         ).fetchall()
@@ -627,7 +650,10 @@ def get_station_fuel_stock(ksss: str, db_path: Optional[Path] = None) -> Optiona
         importedAt=imported_at,
         stale=is_stale(snapshot_at, stale_seconds),
         staleAfterSeconds=stale_seconds,
-        items=[fuel_item_from_row(row) for row in rows],
+        items=sorted(
+            (fuel_item_from_row(row) for row in rows),
+            key=lambda item: (FUEL_SORT_ORDER.get(item.canonicalFuel, 99), item.canonicalFuel),
+        ),
     )
 
 

@@ -2578,17 +2578,93 @@ a {
   animation: fuel-stock-spin 900ms linear infinite;
 }
 
-.fuel-stock-grid {
+.fuel-stock-carousel {
+  min-width: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.fuel-stock-carousel-nav {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.fuel-stock-carousel-nav > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+}
+
+.fuel-stock-carousel-nav > div {
+  display: inline-flex;
   gap: 8px;
+}
+
+.fuel-stock-nav-button {
+  width: 44px;
+  height: 44px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.fuel-stock-nav-button:hover:not(:disabled) {
+  border-color: rgba(48, 119, 216, 0.34);
+  background: var(--blue-soft);
+  color: var(--blue-soft-text);
+}
+
+.fuel-stock-nav-button:focus-visible,
+.fuel-stock-track-list:focus-visible {
+  outline: 3px solid rgba(48, 119, 216, 0.28);
+  outline-offset: 2px;
+}
+
+.fuel-stock-nav-button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.fuel-stock-track-list {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding: 2px 2px 10px;
+  scroll-padding-inline: 2px;
+  scroll-snap-type: x mandatory;
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
+  touch-action: pan-x pan-y;
+}
+
+.fuel-stock-track-list::-webkit-scrollbar {
+  height: 6px;
+}
+
+.fuel-stock-track-list::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  background: var(--line);
 }
 
 .fuel-stock-card {
   --stock-tone: var(--muted);
   --stock-soft: var(--surface-2);
+  flex: 0 0 clamp(196px, 43%, 232px);
   min-width: 0;
-  min-height: 142px;
+  min-height: 132px;
   display: grid;
   gap: 8px;
   align-content: start;
@@ -2596,6 +2672,8 @@ a {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--bg);
+  scroll-snap-align: start;
+  scroll-snap-stop: normal;
 }
 
 .fuel-stock-card.tone-red {
@@ -2662,8 +2740,7 @@ a {
   gap: 3px;
 }
 
-.fuel-stock-value span,
-.fuel-stock-facts dt {
+.fuel-stock-value span {
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
@@ -2696,35 +2773,17 @@ a {
 
 .fuel-stock-track i {
   display: block;
-  width: var(--fuel-stock-fill, 0%);
+  width: 100%;
   height: 100%;
   border-radius: inherit;
   background: var(--stock-tone);
-  transition: width 180ms ease;
+  transform: scaleX(var(--fuel-stock-fill, 0));
+  transform-origin: left center;
+  transition: transform 220ms ease-out;
 }
 
 .fuel-stock-card.no-data .fuel-stock-track i {
   display: none;
-}
-
-.fuel-stock-facts {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin: 0;
-}
-
-.fuel-stock-facts div {
-  min-width: 0;
-}
-
-.fuel-stock-facts dd {
-  margin: 3px 0 0;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 780;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
 }
 
 .fuel-stock-low,
@@ -2787,8 +2846,7 @@ a {
 
 .fuel-stock-card.loading i,
 .fuel-stock-card.loading b,
-.fuel-stock-card.loading small,
-.fuel-stock-card.loading em {
+.fuel-stock-card.loading small {
   display: block;
   border-radius: 7px;
   background: linear-gradient(90deg, #e7ebf0, #f5f7fa, #e7ebf0);
@@ -2809,11 +2867,6 @@ a {
 .fuel-stock-card.loading small {
   width: 100%;
   height: 7px;
-}
-
-.fuel-stock-card.loading em {
-  width: 84%;
-  height: 30px;
 }
 
 @keyframes fuel-stock-spin {
@@ -3429,6 +3482,7 @@ a {
   .map-locate-button,
   .action-button,
   .quality-button,
+  .fuel-stock-nav-button,
   .fuel-stock-track i,
   .select-chip,
   .reset-button {
@@ -3447,7 +3501,6 @@ a {
   .fuel-stock-card.loading i,
   .fuel-stock-card.loading b,
   .fuel-stock-card.loading small,
-  .fuel-stock-card.loading em,
   .fuel-stock-refreshing svg,
   .select-chip.filled {
     animation: none !important;
@@ -4081,6 +4134,10 @@ a {
     flex-wrap: wrap;
   }
 
+  .fuel-stock-card {
+    flex-basis: min(76vw, 230px);
+  }
+
   .density-toggle {
     min-width: 142px;
   }
@@ -4110,12 +4167,6 @@ a {
 
   .map-callout {
     width: 190px;
-  }
-}
-
-@media (max-width: 380px) {
-  .fuel-stock-grid {
-    grid-template-columns: 1fr;
   }
 }
 
@@ -4483,8 +4534,7 @@ a {
 
   .fuel-stock-card.loading i,
   .fuel-stock-card.loading b,
-  .fuel-stock-card.loading small,
-  .fuel-stock-card.loading em {
+  .fuel-stock-card.loading small {
     background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2));
     background-size: 220% 100%;
   }

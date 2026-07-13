@@ -159,8 +159,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--volume-multiplier",
         type=float,
-        default=float(env("DWH_FUEL_VOLUME_TO_LITERS", "1000")),
-        help="Conversion from DWH source volume units to liters",
+        default=float(env("DWH_FUEL_TONS_TO_STORAGE_UNITS", env("DWH_FUEL_VOLUME_TO_LITERS", "1000"))),
+        help="Conversion from DWH tonnes to legacy API storage units",
     )
     parser.add_argument(
         "--min-stations",

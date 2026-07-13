@@ -536,12 +536,7 @@ function deltaTone(value) {
 }
 
 const FUEL_STOCK_REFRESH_MS = 60_000;
-const canonicalFuelGroups = [
-  { key: "ab95", label: "АБ95" },
-  { key: "ab95Ecto", label: "АБ95 ЭКТО" },
-  { key: "dt", label: "ДТ" },
-  { key: "dtEcto", label: "ДТ ЭКТО" },
-];
+const fuelNameCollator = new Intl.Collator("ru-RU", { numeric: true, sensitivity: "base" });
 
 function numericOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -563,19 +558,45 @@ function normalizeFuelToken(value) {
     .replace(/[^0-9A-ZА-Я]+/g, "");
 }
 
-function canonicalFuelKey(item) {
-  const code = normalizeFuelToken(item?.fuelCode);
-  const name = normalizeFuelToken(item?.fuelName);
-  const text = `${code}${name}`;
-  const isEcto = text.includes("ЭКТО") || text.includes("ECTO") || text.includes("EKTO");
-  const isDiesel = text.includes("ДТ") || text.includes("DT") || text.includes("DIESEL") || text.includes("ДИЗЕЛ");
-  const is95 = text.includes("95") || text.includes("АБ95") || text.includes("АИ95") || text.includes("AI95");
+function canonicalFuelLabel(item) {
+  const value = String(item?.canonicalFuel || item?.fuelCode || item?.fuelName || "")
+    .trim()
+    .toUpperCase()
+    .replace(/Ё/g, "Е")
+    .replace(/\s+/g, " ");
+  if (!value || value === "UNMAPPED" || value === "UNKNOWN") return "";
 
-  if (isDiesel && isEcto) return "dtEcto";
-  if (isDiesel) return "dt";
-  if (is95 && isEcto) return "ab95Ecto";
-  if (is95) return "ab95";
-  return "";
+  const compact = normalizeFuelToken(value);
+  const gasoline = compact.match(/(?:АБ|АИ|AB|AI)(80|91|92|93|95|98|100)/);
+  const isEcto = compact.includes("ЭКТО") || compact.includes("ECTO") || compact.includes("EKTO");
+  if (gasoline) return `АБ${gasoline[1]}${isEcto ? " ЭКТО" : ""}`;
+  if (compact === "СУГ" || compact.includes("LPG") || compact.includes("СЖИЖЕН")) return "СУГ";
+  if (compact === "КПГ" || compact.includes("CNG") || compact.includes("МЕТАН")) return "КПГ";
+  if (compact.includes("ДТ") || compact.includes("DT") || compact.includes("DIESEL") || compact.includes("ДИЗЕЛ")) {
+    return `ДТ${isEcto ? " ЭКТО" : ""}`;
+  }
+  return value;
+}
+
+function compareFuelGroups(left, right) {
+  const gasolinePattern = /^АБ(\d+)(?: ЭКТО)?$/;
+  const leftGasoline = left.label.match(gasolinePattern);
+  const rightGasoline = right.label.match(gasolinePattern);
+  if (leftGasoline && rightGasoline) {
+    const gradeDelta = Number(leftGasoline[1]) - Number(rightGasoline[1]);
+    if (gradeDelta) return gradeDelta;
+    return Number(left.label.includes("ЭКТО")) - Number(right.label.includes("ЭКТО"));
+  }
+  if (leftGasoline) return -1;
+  if (rightGasoline) return 1;
+
+  const fixedOrder = ["ДТ", "ДТ ЭКТО", "СУГ", "КПГ"];
+  const leftIndex = fixedOrder.indexOf(left.label);
+  const rightIndex = fixedOrder.indexOf(right.label);
+  if (leftIndex !== -1 || rightIndex !== -1) {
+    return (leftIndex === -1 ? fixedOrder.length : leftIndex) - (rightIndex === -1 ? fixedOrder.length : rightIndex);
+  }
+  return fuelNameCollator.compare(left.label, right.label);
 }
 
 function mergeFuelStockItem(base, next) {
@@ -587,6 +608,10 @@ function mergeFuelStockItem(base, next) {
     physicalVolumeLiters: sumFuelMetric(base.physicalVolumeLiters, next.physicalVolumeLiters),
     deadRestLiters: sumFuelMetric(base.deadRestLiters, next.deadRestLiters),
     availableVolumeLiters: sumFuelMetric(base.availableVolumeLiters, next.availableVolumeLiters),
+    capacityTons: sumFuelMetric(base.capacityTons, next.capacityTons),
+    physicalVolumeTons: sumFuelMetric(base.physicalVolumeTons, next.physicalVolumeTons),
+    deadRestTons: sumFuelMetric(base.deadRestTons, next.deadRestTons),
+    availableVolumeTons: sumFuelMetric(base.availableVolumeTons, next.availableVolumeTons),
     tanksCount: sumFuelMetric(base.tanksCount, next.tanksCount),
     percentage: null,
     isLow: Boolean(base.isLow || next.isLow),
@@ -612,46 +637,51 @@ function normalizeFuelStockGroups(items = []) {
   const grouped = new Map();
 
   items.forEach((item) => {
-    const key = canonicalFuelKey(item);
+    const label = canonicalFuelLabel(item);
+    const key = normalizeFuelToken(label);
     if (!key) return;
     const existing = grouped.get(key);
-    grouped.set(key, existing ? mergeFuelStockItem(existing, item) : { ...item });
+    grouped.set(key, existing ? mergeFuelStockItem(existing, item) : { ...item, label });
   });
 
-  return canonicalFuelGroups.map((group) => {
-    const item = grouped.get(group.key);
-    if (!item) {
-      return { ...group, item: null, hasData: false, percentage: null, tone: "empty", isLow: false };
-    }
-
-    const capacity = numericOrNull(item.capacityLiters);
+  return Array.from(grouped, ([key, item]) => {
+    const capacity = fuelCapacityTons(item);
     const available = numericOrNull(item.availableVolumeLiters);
     const suppliedPercentage = numericOrNull(item.percentage);
-    const percentage = suppliedPercentage ?? (capacity && capacity > 0 && available !== null ? (available / capacity) * 100 : null);
+    const availableTons = fuelAvailableTons(item);
+    const percentage = suppliedPercentage ?? (capacity && capacity > 0 && availableTons !== null ? (availableTons / capacity) * 100 : null);
     const tone = fuelStockTone(percentage);
     const flaggedLow = item.isLow === true || item.isLow === 1 || String(item.isLow).toLowerCase() === "true";
     const isLow = flaggedLow || (numericOrNull(percentage) !== null && percentage < 20);
 
-    return { ...group, item, hasData: true, percentage, tone, isLow };
-  });
+    return { key, label: item.label, item, hasData: available !== null || availableTons !== null, percentage, tone, isLow };
+  }).filter((group) => group.hasData).sort(compareFuelGroups);
 }
 
-function formatFuelLiters(value) {
+function fuelCapacityTons(item) {
+  const tons = numericOrNull(item?.capacityTons);
+  if (tons !== null) return tons;
+  const legacyValue = numericOrNull(item?.capacityLiters);
+  return legacyValue === null ? null : legacyValue / 1000;
+}
+
+function fuelAvailableTons(item) {
+  const tons = numericOrNull(item?.availableVolumeTons ?? item?.availableTons);
+  if (tons !== null) return tons;
+  const legacyValue = numericOrNull(item?.availableVolumeLiters ?? item?.availableLiters);
+  return legacyValue === null ? null : legacyValue / 1000;
+}
+
+function formatFuelTons(value) {
   const numeric = numericOrNull(value);
   if (numeric === null) return "—";
-  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 0 })} л`;
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} т`;
 }
 
 function formatFuelPercent(value) {
   const numeric = numericOrNull(value);
   if (numeric === null) return "—";
   return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: Number.isInteger(numeric) ? 0 : 1 })}%`;
-}
-
-function formatFuelTanks(value) {
-  const numeric = numericOrNull(value);
-  if (numeric === null) return "—";
-  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: Number.isInteger(numeric) ? 0 : 1 })} шт.`;
 }
 
 function clampFuelPercent(value) {
@@ -3605,48 +3635,153 @@ function StationFuelStock({ ksss }) {
         </div>
       )}
 
-      {!isLoadingInitial && (
-        <div className="fuel-stock-grid" aria-label="Остатки по каноническим группам топлива">
-          {groups.map((group) => (
-            <FuelStockCard group={group} key={group.key} />
-          ))}
-        </div>
-      )}
+      {!isLoadingInitial && groups.length > 0 && <FuelStockCarousel groups={groups} />}
     </section>
+  );
+}
+
+function FuelStockCarousel({ groups }) {
+  const reduceMotion = useReducedMotion();
+  const trackRef = useRef(null);
+  const frameRef = useRef(0);
+  const [navigation, setNavigation] = useState({ activeIndex: 0, canBack: false, canForward: groups.length > 1 });
+
+  const updateNavigation = useCallback(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    const cards = Array.from(track.querySelectorAll("[data-fuel-stock-card]"));
+    const trackLeft = track.getBoundingClientRect().left;
+    let activeIndex = 0;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    cards.forEach((card, index) => {
+      const distance = Math.abs(card.getBoundingClientRect().left - trackLeft);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        activeIndex = index;
+      }
+    });
+    const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+    setNavigation({
+      activeIndex,
+      canBack: track.scrollLeft > 4,
+      canForward: track.scrollLeft < maxScroll - 4,
+    });
+  }, []);
+
+  const scheduleNavigationUpdate = useCallback(() => {
+    cancelAnimationFrame(frameRef.current);
+    frameRef.current = requestAnimationFrame(updateNavigation);
+  }, [updateNavigation]);
+
+  useEffect(() => {
+    scheduleNavigationUpdate();
+    const track = trackRef.current;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleNavigationUpdate);
+    if (track) observer?.observe(track);
+    window.addEventListener("resize", scheduleNavigationUpdate);
+    return () => {
+      cancelAnimationFrame(frameRef.current);
+      observer?.disconnect();
+      window.removeEventListener("resize", scheduleNavigationUpdate);
+    };
+  }, [groups.length, scheduleNavigationUpdate]);
+
+  const move = useCallback((direction) => {
+    const track = trackRef.current;
+    if (!track) return;
+    const cards = Array.from(track.querySelectorAll("[data-fuel-stock-card]"));
+    const targetIndex = Math.max(0, Math.min(cards.length - 1, navigation.activeIndex + direction));
+    const firstOffset = cards[0]?.offsetLeft || 0;
+    const target = cards[targetIndex];
+    if (!target) return;
+    track.scrollTo({
+      left: Math.max(0, target.offsetLeft - firstOffset),
+      behavior: reduceMotion ? "auto" : "smooth",
+    });
+  }, [navigation.activeIndex, reduceMotion]);
+
+  const handleKeyDown = (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    move(event.key === "ArrowLeft" ? -1 : 1);
+  };
+
+  return (
+    <div className="fuel-stock-carousel">
+      <div className="fuel-stock-carousel-nav">
+        <span>{navigation.activeIndex + 1} из {groups.length}</span>
+        <div>
+          <motion.button
+            type="button"
+            className="fuel-stock-nav-button"
+            disabled={!navigation.canBack}
+            onClick={() => move(-1)}
+            whileTap={reduceMotion ? undefined : { scale: 0.94 }}
+            aria-label="Предыдущий вид топлива"
+            title="Назад"
+          >
+            <ChevronLeft size={18} aria-hidden="true" />
+          </motion.button>
+          <motion.button
+            type="button"
+            className="fuel-stock-nav-button"
+            disabled={!navigation.canForward}
+            onClick={() => move(1)}
+            whileTap={reduceMotion ? undefined : { scale: 0.94 }}
+            aria-label="Следующий вид топлива"
+            title="Вперед"
+          >
+            <ChevronRight size={18} aria-hidden="true" />
+          </motion.button>
+        </div>
+      </div>
+      <div
+        ref={trackRef}
+        className="fuel-stock-track-list"
+        role="region"
+        aria-label="Остатки по видам топлива. Используйте стрелки для прокрутки."
+        tabIndex={groups.length > 1 ? 0 : -1}
+        onScroll={scheduleNavigationUpdate}
+        onKeyDown={handleKeyDown}
+      >
+        {groups.map((group, index) => (
+          <FuelStockCard group={group} index={index} reduceMotion={reduceMotion} key={group.key} />
+        ))}
+      </div>
+    </div>
   );
 }
 
 function FuelStockSkeleton() {
   return (
-    <div className="fuel-stock-grid" aria-label="Загрузка остатков топлива">
-      {canonicalFuelGroups.map((group) => (
-        <article className="fuel-stock-card loading" key={group.key}>
+    <div className="fuel-stock-track-list loading" aria-label="Загрузка остатков топлива">
+      {[0, 1, 2].map((item) => (
+        <article className="fuel-stock-card loading" key={item}>
           <i />
           <b />
           <small />
-          <em />
         </article>
       ))}
     </div>
   );
 }
 
-function FuelStockCard({ group }) {
+function FuelStockCard({ group, index, reduceMotion }) {
   const item = group.item || {};
-  const available = item.availableVolumeLiters;
-  const capacity = item.capacityLiters;
-  const tanks = item.tanksCount;
+  const available = fuelAvailableTons(item);
   const fill = clampFuelPercent(group.percentage);
   const StatusIcon = group.tone === "green" ? CheckCircle2 : group.tone === "empty" ? Gauge : AlertTriangle;
-  const ariaLabel = group.hasData
-    ? `${group.label}: доступно ${formatFuelLiters(available)}, ${formatFuelPercent(group.percentage)}, емкость ${formatFuelLiters(capacity)}, резервуары ${formatFuelTanks(tanks)}${group.isLow ? ", низкий остаток" : ""}`
-    : `${group.label}: данных нет`;
+  const ariaLabel = `${group.label}: доступно ${formatFuelTons(available)}, заполненность ${formatFuelPercent(group.percentage)}${group.isLow ? ", низкий остаток" : ""}`;
 
   return (
-    <article
+    <motion.article
+      data-fuel-stock-card
       className={`fuel-stock-card tone-${group.tone} ${group.hasData ? "" : "no-data"} ${group.isLow ? "low" : ""}`}
-      style={{ "--fuel-stock-fill": `${fill}%` }}
+      style={{ "--fuel-stock-fill": fill / 100 }}
       aria-label={ariaLabel}
+      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 320, damping: 28, delay: Math.min(index * 0.04, 0.2) }}
     >
       <div className="fuel-stock-card-head">
         <strong>{group.label}</strong>
@@ -3659,7 +3794,7 @@ function FuelStockCard({ group }) {
       <div className="fuel-stock-value">
         <span>Доступно</span>
         <strong>
-          {formatFuelLiters(available)}
+          {formatFuelTons(available)}
           <small>{formatFuelPercent(group.percentage)}</small>
         </strong>
       </div>
@@ -3668,24 +3803,13 @@ function FuelStockCard({ group }) {
         <i />
       </div>
 
-      <dl className="fuel-stock-facts">
-        <div>
-          <dt>Емкость</dt>
-          <dd>{formatFuelLiters(capacity)}</dd>
-        </div>
-        <div>
-          <dt>Резервуары</dt>
-          <dd>{formatFuelTanks(tanks)}</dd>
-        </div>
-      </dl>
-
       {group.isLow && (
         <div className="fuel-stock-low">
           <AlertTriangle size={13} aria-hidden="true" />
           <span>Низкий остаток &lt;20%</span>
         </div>
       )}
-    </article>
+    </motion.article>
   );
 }
 
