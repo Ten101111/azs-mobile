@@ -112,6 +112,71 @@ class FuelAggregationTests(unittest.TestCase):
         self.assertEqual(snapshot["records"], [])
         self.assertEqual(snapshot["diagnostics"]["unmappedFuelNames"], {"Присадка Greenpur DT ECTO": 1})
 
+    def test_caps_over_capacity_percentage_and_preserves_anomaly(self):
+        rows = [
+            {
+                "date": "2026-07-13",
+                "ksss": "1001",
+                "ent_name_crc": "station-a",
+                "num_stor": "1",
+                "dt_ins": datetime(2026, 7, 13, 11, 31),
+                "fuel_name": "Бензин АИ-95-К5",
+                "oil_tn": 10,
+                "fact_volume": 13,
+                "dead_rest": 1,
+            }
+        ]
+        snapshot = aggregate_tank_rows(rows, volume_multiplier=1000)
+        self.assertEqual(snapshot["records"][0]["fillPercent"], 100)
+        self.assertEqual(snapshot["diagnostics"]["capacityExceededGroups"], 1)
+
+        payload = FuelStockImportPayload(
+            source="test",
+            accountDate=snapshot["accountDate"],
+            snapshotAt=snapshot["snapshotAt"],
+            records=snapshot["records"],
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            replace_fuel_stock_snapshot(payload, db_path=db_path)
+            item = get_station_fuel_stock("1001", db_path=db_path).items[0]
+        self.assertEqual(item.fillPercent, 100)
+        self.assertEqual(item.rawFillPercent, 120)
+        self.assertTrue(item.capacityExceeded)
+
+    def test_keeps_fuel_that_is_on_dead_stock(self):
+        rows = [
+            {
+                "date": "2026-07-13",
+                "ksss": "1001",
+                "ent_name_crc": "station-a",
+                "num_stor": "1",
+                "dt_ins": datetime(2026, 7, 13, 11, 31),
+                "fuel_name": "Автобензины ЭКТО-92",
+                "oil_tn": 20,
+                "fact_volume": 2,
+                "dead_rest": 3,
+            }
+        ]
+        snapshot = aggregate_tank_rows(rows, volume_multiplier=1000)
+        self.assertEqual(snapshot["records"][0]["availableLiters"], 0)
+        self.assertEqual(snapshot["records"][0]["fillPercent"], 0)
+        self.assertEqual(snapshot["diagnostics"]["deadStockGroups"], 1)
+
+        payload = FuelStockImportPayload(
+            source="test",
+            accountDate=snapshot["accountDate"],
+            snapshotAt=snapshot["snapshotAt"],
+            records=snapshot["records"],
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            replace_fuel_stock_snapshot(payload, db_path=db_path)
+            item = get_station_fuel_stock("1001", db_path=db_path).items[0]
+        self.assertEqual(item.canonicalFuel, "АБ92 ЭКТО")
+        self.assertEqual(item.availableTons, 0)
+        self.assertTrue(item.onDeadStock)
+
     def test_color_and_business_threshold_boundaries(self):
         self.assertEqual(status_for_percent(29.999), "red")
         self.assertEqual(status_for_percent(30), "orange")

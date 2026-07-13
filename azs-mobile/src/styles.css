@@ -2702,6 +2702,15 @@ a {
   box-shadow: inset 3px 0 0 var(--red-dark);
 }
 
+.fuel-stock-card.capacity-exceeded {
+  border-color: rgba(201, 29, 50, 0.42);
+  box-shadow: inset 3px 0 0 var(--red-dark);
+}
+
+.fuel-stock-card.on-dead-stock .fuel-stock-track {
+  background: var(--red-soft);
+}
+
 .fuel-stock-card-head {
   min-width: 0;
   display: grid;
@@ -2801,6 +2810,15 @@ a {
   padding: 5px 7px;
 }
 
+.fuel-stock-low.capacity-warning {
+  background: var(--amber-soft);
+  color: var(--amber-soft-text);
+}
+
+.fuel-stock-low.dead-stock {
+  border: 1px solid rgba(201, 29, 50, 0.2);
+}
+
 .fuel-stock-inline-warning {
   display: flex;
   align-items: flex-start;
@@ -2880,7 +2898,7 @@ a {
 }
 
 .period-select {
-  min-height: 34px;
+  min-height: 44px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -2891,9 +2909,9 @@ a {
 }
 
 .period-navigator {
-  width: min(100%, 300px);
+  width: min(100%, 320px);
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
   align-items: center;
   gap: 6px;
 }
@@ -2904,8 +2922,8 @@ a {
 }
 
 .period-nav-button {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4136,6 +4154,15 @@ a {
 
   .fuel-stock-card {
     flex-basis: min(76vw, 230px);
+  }
+
+  .kpi-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .kpi-head .period-navigator {
+    width: 100%;
   }
 
   .density-toggle {

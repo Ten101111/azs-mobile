@@ -218,6 +218,11 @@ def main() -> int:
         f"non-canonical={diagnostics['skippedNonCanonicalFuel']}, "
         f"non-positive-capacity={diagnostics['skippedNonPositiveCapacity']}"
     )
+    print(
+        "Stock states: "
+        f"capacity-exceeded={diagnostics['capacityExceededGroups']}, "
+        f"dead-stock={diagnostics['deadStockGroups']}"
+    )
     unmapped = list(diagnostics.get("unmappedFuelNames", {}).items())[: max(0, args.unmapped_limit)]
     if unmapped:
         print("Top unmapped fuel names:")

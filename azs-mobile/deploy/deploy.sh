@@ -66,6 +66,17 @@ rsync -az \
   --exclude='*.pyc' \
   "$APP_DIR_LOCAL/backend/" "root@$SERVER_IP:$APP_DIR_REMOTE/backend/"
 
+# Рекомендации содержат рабочие агрегаты, поэтому храним их вне public/.
+# rsync передаёт только изменения и не открывает файл через веб-сервер.
+if [ -f "$APP_DIR_LOCAL/data/staff_recommendations.json" ]; then
+  info "Синхронизируем рекомендации по персоналу..."
+  $SSH "install -d -m 750 -o $APP_USER -g $APP_USER $APP_DIR_REMOTE/data"
+  rsync -az \
+    "$APP_DIR_LOCAL/data/staff_recommendations.json" \
+    "root@$SERVER_IP:$APP_DIR_REMOTE/data/staff_recommendations.json"
+  $SSH "chown $APP_USER:$APP_USER $APP_DIR_REMOTE/data/staff_recommendations.json && chmod 600 $APP_DIR_REMOTE/data/staff_recommendations.json"
+fi
+
 # requirements.txt если есть
 [ -f "$APP_DIR_LOCAL/backend/requirements.txt" ] && \
   scp -q "$APP_DIR_LOCAL/backend/requirements.txt" \

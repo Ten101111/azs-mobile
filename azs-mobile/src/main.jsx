@@ -458,6 +458,7 @@ function formatPeriod(period) {
 }
 
 function PeriodNavigator({ periods, period, onChange, label = "Период KPI" }) {
+  const reduceMotion = useReducedMotion();
   const orderedPeriods = [...periods].sort();
   const currentIndex = orderedPeriods.indexOf(period);
   const previous = currentIndex > 0 ? orderedPeriods[currentIndex - 1] : "";
@@ -469,16 +470,17 @@ function PeriodNavigator({ periods, period, onChange, label = "Период KPI"
 
   return (
     <div className="period-navigator">
-      <button
+      <motion.button
         className="period-nav-button"
         type="button"
         disabled={!previous}
         onClick={() => previous && onChange(previous)}
         aria-label={previous ? `Предыдущий месяц: ${formatPeriod(previous)}` : "Предыдущего месяца нет"}
         title="Предыдущий месяц"
+        whileTap={reduceMotion ? undefined : { scale: 0.94 }}
       >
         <ChevronLeft size={17} />
-      </button>
+      </motion.button>
       <select className="period-select" value={period} onChange={(event) => onChange(event.target.value)} aria-label={label}>
         {orderedPeriods.map((item) => (
           <option key={item} value={item}>
@@ -486,16 +488,17 @@ function PeriodNavigator({ periods, period, onChange, label = "Период KPI"
           </option>
         ))}
       </select>
-      <button
+      <motion.button
         className="period-nav-button"
         type="button"
         disabled={!next}
         onClick={() => next && onChange(next)}
         aria-label={next ? `Следующий месяц: ${formatPeriod(next)}` : "Следующего месяца нет"}
         title="Следующий месяц"
+        whileTap={reduceMotion ? undefined : { scale: 0.94 }}
       >
         <ChevronRight size={17} />
-      </button>
+      </motion.button>
     </div>
   );
 }
@@ -614,6 +617,9 @@ function mergeFuelStockItem(base, next) {
     availableVolumeTons: sumFuelMetric(base.availableVolumeTons, next.availableVolumeTons),
     tanksCount: sumFuelMetric(base.tanksCount, next.tanksCount),
     percentage: null,
+    rawFillPercent: null,
+    capacityExceeded: Boolean(base.capacityExceeded || next.capacityExceeded),
+    onDeadStock: Boolean(base.onDeadStock || next.onDeadStock),
     isLow: Boolean(base.isLow || next.isLow),
   };
 }
@@ -626,10 +632,12 @@ function fuelStockTone(percentage) {
   return "green";
 }
 
-function fuelStockToneLabel(tone) {
-  if (tone === "red") return "Внимание <30%";
-  if (tone === "amber") return "Рабочий 30–70%";
-  if (tone === "green") return "Норма >70%";
+function fuelStockToneLabel(group) {
+  if (group.onDeadStock) return "На мели";
+  if (group.capacityExceeded) return "Проверить данные";
+  if (group.tone === "red") return "Внимание <30%";
+  if (group.tone === "amber") return "Рабочий 30–70%";
+  if (group.tone === "green") return "Норма >70%";
   return "Нет данных";
 }
 
@@ -649,12 +657,30 @@ function normalizeFuelStockGroups(items = []) {
     const available = numericOrNull(item.availableVolumeLiters);
     const suppliedPercentage = numericOrNull(item.percentage);
     const availableTons = fuelAvailableTons(item);
-    const percentage = suppliedPercentage ?? (capacity && capacity > 0 && availableTons !== null ? (availableTons / capacity) * 100 : null);
-    const tone = fuelStockTone(percentage);
+    const calculatedPercentage = capacity && capacity > 0 && availableTons !== null ? (availableTons / capacity) * 100 : null;
+    const rawPercentage = numericOrNull(item.rawFillPercent) ?? suppliedPercentage ?? calculatedPercentage;
+    const percentage = rawPercentage === null ? null : Math.max(0, Math.min(100, rawPercentage));
+    const capacityExceeded = Boolean(item.capacityExceeded) || (rawPercentage !== null && rawPercentage > 100.1);
+    const physicalTons = fuelPhysicalTons(item);
+    const deadRestTons = fuelDeadRestTons(item);
+    const onDeadStock = Boolean(item.onDeadStock)
+      || (availableTons !== null && availableTons <= 0.0001 && physicalTons > 0 && deadRestTons > 0);
+    const tone = capacityExceeded ? "red" : fuelStockTone(percentage);
     const flaggedLow = item.isLow === true || item.isLow === 1 || String(item.isLow).toLowerCase() === "true";
-    const isLow = flaggedLow || (numericOrNull(percentage) !== null && percentage < 20);
+    const isLow = onDeadStock || flaggedLow || (numericOrNull(percentage) !== null && percentage < 20);
 
-    return { key, label: item.label, item, hasData: available !== null || availableTons !== null, percentage, tone, isLow };
+    return {
+      key,
+      label: item.label,
+      item,
+      hasData: available !== null || availableTons !== null,
+      percentage,
+      rawPercentage,
+      capacityExceeded,
+      onDeadStock,
+      tone,
+      isLow,
+    };
   }).filter((group) => group.hasData).sort(compareFuelGroups);
 }
 
@@ -669,6 +695,20 @@ function fuelAvailableTons(item) {
   const tons = numericOrNull(item?.availableVolumeTons ?? item?.availableTons);
   if (tons !== null) return tons;
   const legacyValue = numericOrNull(item?.availableVolumeLiters ?? item?.availableLiters);
+  return legacyValue === null ? null : legacyValue / 1000;
+}
+
+function fuelPhysicalTons(item) {
+  const tons = numericOrNull(item?.physicalVolumeTons ?? item?.volumeTons);
+  if (tons !== null) return tons;
+  const legacyValue = numericOrNull(item?.physicalVolumeLiters ?? item?.volumeLiters);
+  return legacyValue === null ? null : legacyValue / 1000;
+}
+
+function fuelDeadRestTons(item) {
+  const tons = numericOrNull(item?.deadRestTons);
+  if (tons !== null) return tons;
+  const legacyValue = numericOrNull(item?.deadRestLiters);
   return legacyValue === null ? null : legacyValue / 1000;
 }
 
@@ -3771,12 +3811,19 @@ function FuelStockCard({ group, index, reduceMotion }) {
   const available = fuelAvailableTons(item);
   const fill = clampFuelPercent(group.percentage);
   const StatusIcon = group.tone === "green" ? CheckCircle2 : group.tone === "empty" ? Gauge : AlertTriangle;
-  const ariaLabel = `${group.label}: доступно ${formatFuelTons(available)}, заполненность ${formatFuelPercent(group.percentage)}${group.isLow ? ", низкий остаток" : ""}`;
+  const stateLabel = group.onDeadStock
+    ? ", на мели, доступен только технологический остаток"
+    : group.capacityExceeded
+      ? ", исходный объем DWH выше емкости"
+      : group.isLow
+        ? ", низкий остаток"
+        : "";
+  const ariaLabel = `${group.label}: доступно ${formatFuelTons(available)}, заполненность ${formatFuelPercent(group.percentage)}${stateLabel}`;
 
   return (
     <motion.article
       data-fuel-stock-card
-      className={`fuel-stock-card tone-${group.tone} ${group.hasData ? "" : "no-data"} ${group.isLow ? "low" : ""}`}
+      className={`fuel-stock-card tone-${group.tone} ${group.hasData ? "" : "no-data"} ${group.isLow ? "low" : ""} ${group.capacityExceeded ? "capacity-exceeded" : ""} ${group.onDeadStock ? "on-dead-stock" : ""}`}
       style={{ "--fuel-stock-fill": fill / 100 }}
       aria-label={ariaLabel}
       initial={reduceMotion ? false : { opacity: 0, y: 8 }}
@@ -3787,7 +3834,7 @@ function FuelStockCard({ group, index, reduceMotion }) {
         <strong>{group.label}</strong>
         <span className={`fuel-stock-band tone-${group.tone}`}>
           <StatusIcon size={13} aria-hidden="true" />
-          {fuelStockToneLabel(group.tone)}
+          {fuelStockToneLabel(group)}
         </span>
       </div>
 
@@ -3803,7 +3850,21 @@ function FuelStockCard({ group, index, reduceMotion }) {
         <i />
       </div>
 
-      {group.isLow && (
+      {group.capacityExceeded && (
+        <div className="fuel-stock-low capacity-warning">
+          <AlertTriangle size={13} aria-hidden="true" />
+          <span>DWH: объем выше емкости</span>
+        </div>
+      )}
+
+      {group.onDeadStock && (
+        <div className="fuel-stock-low dead-stock">
+          <AlertTriangle size={13} aria-hidden="true" />
+          <span>Только технологический остаток</span>
+        </div>
+      )}
+
+      {group.isLow && !group.onDeadStock && !group.capacityExceeded && (
         <div className="fuel-stock-low">
           <AlertTriangle size={13} aria-hidden="true" />
           <span>Низкий остаток &lt;20%</span>
@@ -4031,7 +4092,7 @@ function StationStaff({ ksss }) {
     <section className="detail-section staff-section">
       <div className="kpi-head">
         <h3>
-          <Users size={16} /> Персонал
+          <Users size={16} /> Рекомендации по персоналу
         </h3>
         <PeriodNavigator periods={periods} period={period} onChange={setPeriod} label="Период рекомендаций" />
       </div>

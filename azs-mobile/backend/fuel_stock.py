@@ -52,7 +52,7 @@ class FuelStockImportRecord(BaseModel):
     volumeLiters: float = Field(ge=0)
     deadRestLiters: float = Field(ge=0)
     availableLiters: float = Field(ge=0)
-    fillPercent: float = Field(ge=0)
+    fillPercent: float = Field(ge=0, le=100)
     tanksCount: int = Field(ge=1)
     sourceFuelNames: list[str] = Field(min_length=1, max_length=100)
     sourceFuelNameCounts: dict[str, int] = Field(min_length=1, max_length=100)
@@ -86,6 +86,9 @@ class FuelStockItem(BaseModel):
     availableTons: float
     percentage: float
     fillPercent: float
+    rawFillPercent: float
+    capacityExceeded: bool
+    onDeadStock: bool
     status: str
     isLow: bool
     businessLow: bool
@@ -373,6 +376,11 @@ def business_low_for_percent(percent: float) -> bool:
     return percent < 20
 
 
+def calculated_fill_percent(available: float, capacity: float) -> tuple[float, float]:
+    raw_percent = (available / capacity) * 100 if capacity > 0 else 0.0
+    return raw_percent, min(100.0, max(0.0, raw_percent))
+
+
 def _is_close(actual: float, expected: float, absolute_tolerance: float) -> bool:
     return math.isclose(actual, expected, rel_tol=1e-6, abs_tol=absolute_tolerance)
 
@@ -416,11 +424,13 @@ def validate_import_record(record: FuelStockImportRecord) -> ValidatedFuelStockR
     if available > volume + ARITHMETIC_ABS_TOLERANCE:
         raise FuelStockImportError(422, "availableLiters cannot exceed volumeLiters")
 
-    expected_percent = (available / capacity) * 100
+    raw_percent, expected_percent = calculated_fill_percent(available, capacity)
     if not _is_close(float(record.fillPercent), expected_percent, PERCENT_ABS_TOLERANCE):
-        raise FuelStockImportError(422, "fillPercent must equal availableLiters / capacityLiters * 100")
+        raise FuelStockImportError(422, "fillPercent must equal the available/capacity ratio capped at 100")
 
     fill_percent = round(expected_percent, 4)
+    capacity_exceeded = raw_percent > 100 + PERCENT_ABS_TOLERANCE
+    on_dead_stock = available <= ARITHMETIC_ABS_TOLERANCE and volume > 0 and dead_rest > 0
     return ValidatedFuelStockRow(
         ksss=ksss,
         canonical_fuel=canonical_fuel,
@@ -429,7 +439,7 @@ def validate_import_record(record: FuelStockImportRecord) -> ValidatedFuelStockR
         dead_rest_liters=round(dead_rest, 4),
         available_liters=round(available, 4),
         fill_percent=fill_percent,
-        status=status_for_percent(fill_percent),
+        status="red" if capacity_exceeded or on_dead_stock else status_for_percent(fill_percent),
         business_low=business_low_for_percent(fill_percent),
         tanks_count=int(record.tanksCount),
         source_fuel_names=source_names,
@@ -594,6 +604,11 @@ def fuel_item_from_row(row: sqlite3.Row) -> FuelStockItem:
     physical_volume = float(row["volume_liters"] or 0)
     dead_rest = float(row["dead_rest_liters"] or 0)
     available = float(row["available_liters"] or 0)
+    raw_fill_percent, fill_percent = calculated_fill_percent(available, capacity)
+    capacity_exceeded = raw_fill_percent > 100 + PERCENT_ABS_TOLERANCE
+    on_dead_stock = available <= ARITHMETIC_ABS_TOLERANCE and physical_volume > 0 and dead_rest > 0
+    status = "capacity_exceeded" if capacity_exceeded else "dead_stock" if on_dead_stock else status_for_percent(fill_percent)
+    business_low = business_low_for_percent(fill_percent)
     return FuelStockItem(
         canonicalFuel=str(row["canonical_fuel"]),
         fuelCode=str(row["canonical_fuel"]),
@@ -610,11 +625,14 @@ def fuel_item_from_row(row: sqlite3.Row) -> FuelStockItem:
         deadRestTons=round(dead_rest / STORED_VOLUME_UNITS_PER_TON, 4),
         availableVolumeTons=round(available / STORED_VOLUME_UNITS_PER_TON, 4),
         availableTons=round(available / STORED_VOLUME_UNITS_PER_TON, 4),
-        percentage=float(row["fill_percent"] or 0),
-        fillPercent=float(row["fill_percent"] or 0),
-        status=str(row["status"]),
-        isLow=bool(row["business_low"]),
-        businessLow=bool(row["business_low"]),
+        percentage=round(fill_percent, 4),
+        fillPercent=round(fill_percent, 4),
+        rawFillPercent=round(raw_fill_percent, 4),
+        capacityExceeded=capacity_exceeded,
+        onDeadStock=on_dead_stock,
+        status=status,
+        isLow=business_low,
+        businessLow=business_low,
         tanksCount=int(row["tanks_count"] or 0),
         sourceFuelNames=[str(item) for item in source_names],
         sourceFuelNameCount=len(source_names),
@@ -749,6 +767,8 @@ def aggregate_tank_rows(
         "skippedInvalidRows": 0,
         "skippedNonCanonicalFuel": 0,
         "skippedNonPositiveCapacity": 0,
+        "capacityExceededGroups": 0,
+        "deadStockGroups": 0,
         "sourceTimestamps": 0,
         "groups": 0,
         "stations": 0,
@@ -831,7 +851,11 @@ def aggregate_tank_rows(
     for group in groups.values():
         capacity = float(group["capacityLiters"])
         available = float(group["availableLiters"])
-        percent = (available / capacity) * 100 if capacity else 0
+        raw_percent, percent = calculated_fill_percent(available, capacity)
+        if raw_percent > 100 + PERCENT_ABS_TOLERANCE:
+            diagnostics["capacityExceededGroups"] += 1
+        if available <= ARITHMETIC_ABS_TOLERANCE and float(group["volumeLiters"]) > 0 and float(group["deadRestLiters"]) > 0:
+            diagnostics["deadStockGroups"] += 1
         source_counts = dict(sorted(group["sourceNames"].items()))
         records.append(
             {
