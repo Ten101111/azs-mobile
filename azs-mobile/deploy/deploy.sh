@@ -66,6 +66,24 @@ rsync -az \
   --exclude='*.pyc' \
   "$APP_DIR_LOCAL/backend/" "root@$SERVER_IP:$APP_DIR_REMOTE/backend/"
 
+# Email outage importer runs on the VPS and keeps only the latest normalized snapshot.
+$SSH "install -d -m 750 -o $APP_USER -g $APP_USER $APP_DIR_REMOTE/scripts"
+rsync -az \
+  "$APP_DIR_LOCAL/scripts/sync_fuel_outages_from_email.py" \
+  "root@$SERVER_IP:$APP_DIR_REMOTE/scripts/sync_fuel_outages_from_email.py"
+scp -q \
+  "$APP_DIR_LOCAL/deploy/install_fuel_outage_email_timer.sh" \
+  "root@$SERVER_IP:/tmp/azs-deploy/install_fuel_outage_email_timer.sh"
+scp -q \
+  "$APP_DIR_LOCAL/deploy/azs-api-private-tmp.conf" \
+  "root@$SERVER_IP:/tmp/azs-deploy/azs-api-private-tmp.conf"
+scp -q \
+  "$APP_DIR_LOCAL/deploy/configure_nginx_transport.sh" \
+  "root@$SERVER_IP:/tmp/azs-deploy/configure_nginx_transport.sh"
+$SSH "install -d -m 755 /etc/systemd/system/azs-api.service.d && install -m 644 /tmp/azs-deploy/azs-api-private-tmp.conf /etc/systemd/system/azs-api.service.d/10-private-tmp.conf && systemctl daemon-reload"
+$SSH "bash /tmp/azs-deploy/configure_nginx_transport.sh"
+$SSH "chown $APP_USER:$APP_USER $APP_DIR_REMOTE/scripts/sync_fuel_outages_from_email.py && chmod 750 $APP_DIR_REMOTE/scripts/sync_fuel_outages_from_email.py"
+
 # Рекомендации содержат рабочие агрегаты, поэтому храним их вне public/.
 # rsync передаёт только изменения и не открывает файл через веб-сервер.
 if [ -f "$APP_DIR_LOCAL/data/staff_recommendations.json" ]; then
@@ -98,7 +116,12 @@ info "Перезапускаем FastAPI сервис..."
 $SSH "systemctl restart azs-api && sleep 2 && systemctl is-active azs-api"
 success "API перезапущен"
 
-# ── 5. Проверяем работоспособность ────────────────────────
+# ── 5. Включаем импорт отчёта о простоях из почты ─────────
+info "Настраиваем проверку почты для отчёта о простоях..."
+$SSH "APP_DIR=$APP_DIR_REMOTE APP_USER=$APP_USER bash /tmp/azs-deploy/install_fuel_outage_email_timer.sh"
+success "Проверка почты настроена"
+
+# ── 6. Проверяем работоспособность ────────────────────────
 info "Проверяем сайт..."
 sleep 3
 HTTP=$(curl -s -o /dev/null -w "%{http_code}" "https://azs-classifier.ru/" 2>/dev/null || echo "???")

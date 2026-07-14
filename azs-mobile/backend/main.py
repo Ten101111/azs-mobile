@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - optional local convenience
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.fuel_stock import (
@@ -39,6 +39,15 @@ from backend.fuel_stock import (
     get_station_fuel_stock,
     init_fuel_stock_db,
     replace_fuel_stock_snapshot,
+)
+from backend.fuel_outages import (
+    FuelOutageImportError,
+    aggregate_outage_snapshot,
+    get_outage_snapshot,
+    is_outage_ongoing,
+    outage_health,
+    outage_xlsx_path,
+    replace_outage_snapshot,
 )
 
 APP_DIR = Path(__file__).resolve().parent
@@ -256,6 +265,71 @@ class KpiImportResponse(BaseModel):
     period: str
     periods: list[str]
     updatedAt: str
+
+
+class FuelOutageItem(BaseModel):
+    npo: str = ""
+    region: str = ""
+    station: str = ""
+    ksss: str = ""
+    product: str = ""
+    hours: Optional[float] = None
+    date: str = ""
+    startTime: str = ""
+    endTime: str = ""
+    expectedSalesLiters: Optional[float] = None
+
+
+class FuelOutageImportResponse(BaseModel):
+    ok: bool = True
+    unchanged: bool
+    imported: int
+    stations: int
+    active: int
+    importedAt: str
+    sourceReceivedAt: str = ""
+
+
+class FuelOutageResponse(BaseModel):
+    source: str = "email-fuel-outage-report"
+    sourceMessageId: str = ""
+    sourceReceivedAt: str = ""
+    sourceEmailFrom: str = ""
+    importedAt: str = ""
+    rowCount: int = 0
+    stationCount: int = 0
+    activeCount: int = 0
+    totalHours: float = 0
+    expectedSalesLiters: float = 0
+    total: int = 0
+    offset: int = 0
+    limit: int = 0
+    items: list[FuelOutageItem] = Field(default_factory=list)
+
+
+class FuelOutageAnalyticsTotals(BaseModel):
+    eventCount: int = 0
+    stationCount: int = 0
+    productCount: int = 0
+    ongoingCount: int = 0
+    totalHours: float = 0
+    expectedSalesLiters: float = 0
+
+
+class FuelOutageAnalyticsRow(FuelOutageAnalyticsTotals):
+    id: str
+    label: str
+
+
+class FuelOutageAnalyticsResponse(BaseModel):
+    source: str = "email-fuel-outage-report"
+    sourceReceivedAt: str = ""
+    importedAt: str = ""
+    reportDate: str = ""
+    groupBy: str
+    unmatchedStationCount: int = 0
+    totals: FuelOutageAnalyticsTotals
+    rows: list[FuelOutageAnalyticsRow] = Field(default_factory=list)
 
 
 app = FastAPI(title="AZS KPI API", version="0.4.1")
@@ -1188,6 +1262,13 @@ def fuel_stock_import_max_body_bytes() -> int:
         return 5 * 1024 * 1024
 
 
+def fuel_outage_import_max_body_bytes() -> int:
+    try:
+        return max(1024, int(os.getenv("FUEL_OUTAGE_IMPORT_MAX_BODY_BYTES", str(10 * 1024 * 1024))))
+    except ValueError:
+        return 10 * 1024 * 1024
+
+
 def _require_bearer_token(request: Request, token: str, token_hash: str, label: str):
     if not token and not token_hash:
         raise HTTPException(status_code=503, detail=f"{label} token is not configured")
@@ -1218,6 +1299,12 @@ def require_fuel_stock_import_token(request: Request):
     configured_token = os.getenv("FUEL_STOCK_IMPORT_TOKEN", "")
     configured_hash = os.getenv("FUEL_STOCK_IMPORT_TOKEN_SHA256", "").strip().lower()
     _require_bearer_token(request, configured_token, configured_hash, "Fuel stock import")
+
+
+def require_fuel_outage_import_token(request: Request):
+    configured_token = os.getenv("FUEL_OUTAGE_IMPORT_TOKEN", "")
+    configured_hash = os.getenv("FUEL_OUTAGE_IMPORT_TOKEN_SHA256", "").strip().lower()
+    _require_bearer_token(request, configured_token, configured_hash, "Fuel outage import")
 
 
 def validate_import_body_size(request: Request, payload: BaseModel, max_bytes: int):
@@ -1755,6 +1842,12 @@ def station_similarity(base: dict, candidate: dict, period: str) -> tuple[int, l
     return min(score, 100), reasons[:4] or ["экономический профиль"]
 
 
+def stations_share_region(base: dict, candidate: dict) -> bool:
+    base_region = str(base.get("subject") or "").strip().casefold()
+    candidate_region = str(candidate.get("subject") or "").strip().casefold()
+    return bool(base_region and candidate_region and base_region == candidate_region)
+
+
 def local_station_similarity(base: dict, candidate: dict, base_values: dict[str, object], candidate_values: dict[str, object]) -> tuple[int, list[str]]:
     score = 42
     reasons = []
@@ -1805,7 +1898,7 @@ def mock_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
             continue
         score, reasons = station_similarity(base, candidate, period)
         items.append(
-            SimilarStation(
+            (stations_share_region(base, candidate), SimilarStation(
                 ksss=candidate_ksss,
                 stationNumber=str(candidate.get("stationNumber") or ""),
                 name=station_name(candidate),
@@ -1813,16 +1906,16 @@ def mock_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
                 score=score,
                 reasons=reasons,
                 metrics=make_metrics(mock_metric_values(candidate_ksss, period), period, candidate_ksss),
-            )
+            ))
         )
 
-    items.sort(key=lambda item: item.score, reverse=True)
+    items.sort(key=lambda pair: (not pair[0], -pair[1].score, pair[1].name.casefold(), pair[1].ksss))
     return SimilarStationsResponse(
         ksss=ksss,
         period=period,
         source="mock",
         updatedAt=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        items=items[:limit],
+        items=[item for _, item in items[:limit]],
     )
 
 
@@ -1843,7 +1936,7 @@ def local_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse
             candidate_values, candidate_deltas = local_metric_set(conn, period, [candidate_ksss])
             score, reasons = local_station_similarity(base, candidate, base_values, candidate_values)
             items.append(
-                SimilarStation(
+                (stations_share_region(base, candidate), SimilarStation(
                     ksss=candidate_ksss,
                     stationNumber=str(candidate.get("stationNumber") or ""),
                     name=station_name(candidate),
@@ -1851,16 +1944,16 @@ def local_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse
                     score=score,
                     reasons=reasons,
                     metrics=make_metrics(candidate_values, period, candidate_ksss, candidate_deltas),
-                )
+                ))
             )
 
-    items.sort(key=lambda item: item.score, reverse=True)
+    items.sort(key=lambda pair: (not pair[0], -pair[1].score, pair[1].name.casefold(), pair[1].ksss))
     return SimilarStationsResponse(
         ksss=ksss,
         period=period,
         source="local",
         updatedAt=updated_at,
-        items=items[:limit],
+        items=[item for _, item in items[:limit]],
     )
 
 
@@ -1960,6 +2053,7 @@ def health():
     kpi_period_count = 0
     kpi_updated_at = ""
     fuel_stock = {"rows": 0, "stations": 0, "snapshotAt": "", "importedAt": "", "stale": True}
+    fuel_outages = {"rows": 0, "stations": 0, "active": 0, "importedAt": "", "stale": True}
     try:
         with sqlite3.connect(AUTH_DB_PATH) as conn:
             db_ok = True
@@ -1985,6 +2079,10 @@ def health():
         fuel_stock_db_ok = True
     except Exception:
         pass
+    try:
+        fuel_outages = outage_health()
+    except Exception:
+        pass
     return {
         "status": "ok" if db_ok else "degraded",
         "db": "ok" if db_ok else "error",
@@ -1993,9 +2091,10 @@ def health():
         "kpiPeriods": kpi_period_count,
         "kpiUpdatedAt": kpi_updated_at,
         "fuelStock": fuel_stock,
+        "fuelOutages": fuel_outages,
         "activeSessions": active_sessions,
         "mode": data_mode(),
-        "version": "0.4.1",
+        "version": "0.5.0",
     }
 
 
@@ -2101,6 +2200,48 @@ def import_fuel_stock_snapshot(payload: FuelStockImportPayload, request: Request
         response.unchanged,
     )
     return response
+
+
+@app.post("/api/internal/fuel-outages/import", response_model=FuelOutageImportResponse)
+async def import_fuel_outage_report(request: Request):
+    enforce_rate_limit(request, "fuel-outage-import", 12, window_seconds=60)
+    require_fuel_outage_import_token(request)
+    max_body_bytes = fuel_outage_import_max_body_bytes()
+    content_length = request.headers.get("content-length", "")
+    if content_length.isdigit() and int(content_length) > max_body_bytes:
+        raise HTTPException(status_code=413, detail="Fuel outage XLSX is too large")
+
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=422, detail="Fuel outage XLSX is empty")
+    if len(content) > max_body_bytes:
+        raise HTTPException(status_code=413, detail="Fuel outage XLSX is too large")
+
+    try:
+        result = replace_outage_snapshot(
+            content,
+            source_message_id=request.headers.get("x-source-message-id", ""),
+            source_received_at=request.headers.get("x-source-received-at", ""),
+            source_email_from=request.headers.get("x-source-email-from", ""),
+        )
+    except FuelOutageImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    logger.info(
+        "Imported fuel outage report rows=%d stations=%d active=%d unchanged=%s",
+        result["rowCount"],
+        result["stationCount"],
+        result["activeCount"],
+        result["unchanged"],
+    )
+    return FuelOutageImportResponse(
+        unchanged=bool(result["unchanged"]),
+        imported=int(result["rowCount"]),
+        stations=int(result["stationCount"]),
+        active=int(result["activeCount"]),
+        importedAt=str(result["importedAt"]),
+        sourceReceivedAt=str(result.get("sourceReceivedAt", "")),
+    )
 
 
 @app.get("/api/auth/me", response_model=AuthResponse)
@@ -2461,6 +2602,76 @@ def station_fuel_stock(
     if not stock:
         raise HTTPException(status_code=404, detail="Fuel stock data not found")
     return stock
+
+
+@app.get("/api/fuel-outages", response_model=FuelOutageResponse)
+def fuel_outages(
+    ksss: str = Query("", max_length=32),
+    npo: str = Query("", max_length=120),
+    region: str = Query("", max_length=160),
+    product: str = Query("", max_length=160),
+    activeOnly: bool = Query(False),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(250, ge=1, le=1000),
+    _user: AuthUser = Depends(require_user),
+):
+    snapshot = get_outage_snapshot() or {}
+    items = list(snapshot.get("items") or [])
+    filters = {
+        "ksss": ksss.strip().casefold(),
+        "npo": npo.strip().casefold(),
+        "region": region.strip().casefold(),
+        "product": product.strip().casefold(),
+    }
+    for key, expected in filters.items():
+        if expected:
+            items = [item for item in items if str(item.get(key, "")).strip().casefold() == expected]
+    if activeOnly:
+        items = [item for item in items if is_outage_ongoing(item)]
+
+    total = len(items)
+    return FuelOutageResponse(
+        source=str(snapshot.get("source", "email-fuel-outage-report")),
+        sourceMessageId=str(snapshot.get("sourceMessageId", "")),
+        sourceReceivedAt=str(snapshot.get("sourceReceivedAt", "")),
+        sourceEmailFrom=str(snapshot.get("sourceEmailFrom", "")),
+        importedAt=str(snapshot.get("importedAt", "")),
+        rowCount=int(snapshot.get("rowCount", 0)),
+        stationCount=int(snapshot.get("stationCount", 0)),
+        activeCount=sum(1 for item in snapshot.get("items") or [] if is_outage_ongoing(item)),
+        totalHours=float(snapshot.get("totalHours", 0)),
+        expectedSalesLiters=float(snapshot.get("expectedSalesLiters", 0)),
+        total=total,
+        offset=offset,
+        limit=limit,
+        items=items[offset : offset + limit],
+    )
+
+
+@app.get("/api/analytics/fuel-outages", response_model=FuelOutageAnalyticsResponse)
+def fuel_outage_analytics(
+    groupBy: str = Query("region"),
+    _user: AuthUser = Depends(require_user),
+):
+    try:
+        return aggregate_outage_snapshot(get_outage_snapshot(), load_stations(), groupBy)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="groupBy must be region, regionalManager or territoryManager",
+        ) from exc
+
+
+@app.get("/api/fuel-outages/export.xlsx")
+def fuel_outages_export(_user: AuthUser = Depends(require_user)):
+    path = outage_xlsx_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Fuel outage XLSX not found")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="fuel_outages_latest.xlsx",
+    )
 
 
 @app.get("/api/analytics/overview", response_model=AnalyticsOverviewResponse)

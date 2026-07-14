@@ -22,12 +22,17 @@ data/fuel_stock.sqlite3-shm
 # === Private station data ===
 data/stations.json
 data/staff/
+data/fuel_outages_latest.json
+data/fuel_outages_latest.xlsx
+data/fuel_outages_latest.server.xlsx
+data/mail/
 
 # === Build artifacts ===
 dist/
 node_modules/
 .vite/
 logs/
+artifacts/
 
 # === OS / editor artifacts ===
 .DS_Store

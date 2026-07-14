@@ -3,34 +3,39 @@ set -euo pipefail
 
 SOURCE_PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LABEL="ru.azs-classifier.fuel-stock-sync"
+WATCH_LABEL="ru.azs-classifier.fuel-stock-vpn-watch"
 PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
+WATCH_PLIST_PATH="$HOME/Library/LaunchAgents/$WATCH_LABEL.plist"
 RUNTIME_DIR="$HOME/Library/Application Support/AZS Classifier/fuel-stock-sync"
 LOG_DIR="$HOME/Library/Logs/AZS Classifier"
 DOMAIN="gui/$(id -u)"
 
 if [[ "${1:-}" == "--uninstall" ]]; then
   launchctl bootout "$DOMAIN" "$PLIST_PATH" 2>/dev/null || true
+  launchctl bootout "$DOMAIN" "$WATCH_PLIST_PATH" 2>/dev/null || true
   rm -f "$PLIST_PATH"
-  echo "Hourly fuel-stock sync removed."
+  rm -f "$WATCH_PLIST_PATH"
+  echo "Fuel-stock sync schedule and VPN watcher removed."
   exit 0
 fi
 
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
-mkdir -p "${PLIST_PATH:h}" "$RUNTIME_DIR" "$LOG_DIR"
+mkdir -p "$(dirname "$PLIST_PATH")" "$RUNTIME_DIR" "$LOG_DIR"
 chmod 700 "$RUNTIME_DIR" "$LOG_DIR"
 
-"$PYTHON_BIN" - "$SOURCE_PROJECT_DIR" "$RUNTIME_DIR" "$PLIST_PATH" "$LOG_DIR" "$PYTHON_BIN" "$LABEL" <<'PY'
+"$PYTHON_BIN" - "$SOURCE_PROJECT_DIR" "$RUNTIME_DIR" "$PLIST_PATH" "$WATCH_PLIST_PATH" "$LOG_DIR" "$PYTHON_BIN" "$LABEL" "$WATCH_LABEL" <<'PY'
 import plistlib
 import shutil
 import sys
 from pathlib import Path
 
-source_dir, runtime_dir, plist_path, log_dir, python_bin, label = sys.argv[1:]
+source_dir, runtime_dir, plist_path, watch_plist_path, log_dir, python_bin, label, watch_label = sys.argv[1:]
 source = Path(source_dir)
 runtime = Path(runtime_dir)
 
 files = (
     (source / "scripts" / "sync_fuel_stock.py", runtime / "scripts" / "sync_fuel_stock.py", 0o700),
+    (source / "scripts" / "watch_fuel_stock_vpn.py", runtime / "scripts" / "watch_fuel_stock_vpn.py", 0o700),
     (source / "backend" / "__init__.py", runtime / "backend" / "__init__.py", 0o600),
     (source / "backend" / "fuel_stock.py", runtime / "backend" / "fuel_stock.py", 0o600),
     (
@@ -62,6 +67,9 @@ allowed_env_keys = (
     "FUEL_STOCK_IMPORT_RETRIES",
     "FUEL_STOCK_IMPORT_MAX_BODY_BYTES",
     "FUEL_STOCK_MIN_LOCAL_STATIONS",
+    "FUEL_STOCK_CATCHUP_AFTER_SECONDS",
+    "FUEL_STOCK_VPN_PROBE_TIMEOUT_SECONDS",
+    "FUEL_STOCK_SERVER_HEALTH_TIMEOUT_SECONDS",
 )
 source_env = {}
 for line in (source / ".env.local").read_text(encoding="utf-8").splitlines():
@@ -89,7 +97,7 @@ runtime_env.write_text(
 )
 runtime_env.chmod(0o600)
 
-payload = {
+hourly_payload = {
     "Label": label,
     "ProgramArguments": [python_bin, str(runtime / "scripts" / "sync_fuel_stock.py")],
     "WorkingDirectory": str(runtime),
@@ -104,15 +112,38 @@ payload = {
     "StandardErrorPath": str(Path(log_dir) / "fuel-stock-sync.error.log"),
 }
 with Path(plist_path).open("wb") as output:
-    plistlib.dump(payload, output, sort_keys=False)
+    plistlib.dump(hourly_payload, output, sort_keys=False)
 Path(plist_path).chmod(0o600)
+
+watch_payload = {
+    "Label": watch_label,
+    "ProgramArguments": [python_bin, str(runtime / "scripts" / "watch_fuel_stock_vpn.py")],
+    "WorkingDirectory": str(runtime),
+    "RunAtLoad": True,
+    "StartInterval": 300,
+    "ProcessType": "Background",
+    "LowPriorityIO": True,
+    "Nice": 5,
+    "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+    "StandardOutPath": str(Path(log_dir) / "fuel-stock-vpn-watch.log"),
+    "StandardErrorPath": str(Path(log_dir) / "fuel-stock-vpn-watch.error.log"),
+}
+with Path(watch_plist_path).open("wb") as output:
+    plistlib.dump(watch_payload, output, sort_keys=False)
+Path(watch_plist_path).chmod(0o600)
 PY
 
 launchctl bootout "$DOMAIN" "$PLIST_PATH" 2>/dev/null || true
+launchctl bootout "$DOMAIN" "$WATCH_PLIST_PATH" 2>/dev/null || true
 launchctl bootstrap "$DOMAIN" "$PLIST_PATH"
+launchctl bootstrap "$DOMAIN" "$WATCH_PLIST_PATH"
 launchctl enable "$DOMAIN/$LABEL"
+launchctl enable "$DOMAIN/$WATCH_LABEL"
 launchctl kickstart -k "$DOMAIN/$LABEL"
+launchctl kickstart -k "$DOMAIN/$WATCH_LABEL"
 
 echo "Hourly fuel-stock sync installed: $PLIST_PATH"
+echo "VPN catch-up watcher installed: $WATCH_PLIST_PATH"
 echo "Private runtime: $RUNTIME_DIR"
 echo "Logs: $LOG_DIR/fuel-stock-sync.log"
+echo "Watcher logs: $LOG_DIR/fuel-stock-vpn-watch.log"

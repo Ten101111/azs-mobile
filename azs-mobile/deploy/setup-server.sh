@@ -71,7 +71,9 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
+    # HTTP/2 is intentionally disabled: the current VPS/nginx transport
+    # intermittently resets Chromium streams before /api/auth/me completes.
+    listen 443 ssl;
     server_name ${DOMAIN} www.${DOMAIN};
 
     ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
@@ -168,6 +170,7 @@ StandardError=append:${APP_DIR}/logs/api.error.log
 
 # Безопасность
 NoNewPrivileges=true
+PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=${APP_DIR}/data ${APP_DIR}/logs
 

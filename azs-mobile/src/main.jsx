@@ -1434,7 +1434,7 @@ function App() {
           <>
             <header className="topbar">
               <div>
-                <h1>{isControlMode ? "Контроль АЗС" : "АЗС"}</h1>
+                <h1>{isControlMode ? "Контроль АЗС" : "АЗС ЛУКОЙЛ"}</h1>
                 <p>
                   {isControlMode
                     ? `${asInt(stations.length)} объектов в контуре контроля`
