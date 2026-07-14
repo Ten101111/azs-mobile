@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { max } from "d3-array";
 import { scaleLinear } from "d3-scale";
@@ -8,19 +9,28 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleDot,
+  Clock3,
   Coffee,
   Download,
   Filter,
+  Fuel,
+  Gauge,
   Heart,
   Home,
   List,
   LocateFixed,
   Map as MapIcon,
   MessageSquare,
+  Monitor,
   Navigation,
   Phone,
+  RefreshCw,
   Send,
+  Share2,
+  Smartphone,
   Users,
   Search,
   ShieldCheck,
@@ -62,6 +72,31 @@ const viewIds = new Set(viewItems.map((item) => item.id));
 
 const YANDEX_MAPS_API_KEY = import.meta.env.VITE_YANDEX_MAPS_API_KEY || "";
 let yandexMapsPromise;
+
+function useCountUp(target, duration = 680) {
+  const reduceMotion = useReducedMotion();
+  const fmt = (n) => new Intl.NumberFormat("ru-RU").format(Math.round(n));
+  const [display, setDisplay] = useState(() => fmt(reduceMotion ? target : 0));
+
+  useEffect(() => {
+    if (reduceMotion || !Number.isFinite(target) || target === 0) {
+      setDisplay(fmt(target));
+      return;
+    }
+    const start = performance.now();
+    let raf;
+    function tick(now) {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(fmt(target * eased));
+      if (t < 1) raf = requestAnimationFrame(tick);
+    }
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration, reduceMotion]);
+
+  return display;
+}
 
 function uniqueOptions(stations, key) {
   return [...new Set(stations.map((item) => item[key]).filter(Boolean))].sort((a, b) =>
@@ -153,6 +188,27 @@ function mapLocationForYmaps2(points, selected, focusSelected = true) {
   }
 
   return { center: [55.7558, 37.6176], zoom: 4 };
+}
+
+async function checkYandexApiKey(apiKey) {
+  try {
+    const res = await fetch(
+      `https://api-maps.yandex.ru/v3/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`,
+      { method: "HEAD", referrerPolicy: "no-referrer" }
+    );
+    if (res.status === 403) {
+      let msg = "YANDEX_MAPS_KEY_FORBIDDEN";
+      try {
+        const body = await fetch(
+          `https://api-maps.yandex.ru/v3/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`,
+          { referrerPolicy: "no-referrer" }
+        ).then((r) => r.json());
+        if (body?.message) msg = `YANDEX_MAPS_KEY_FORBIDDEN: ${body.message}`;
+      } catch (_) {}
+      return msg;
+    }
+  } catch (_) {}
+  return null;
 }
 
 function loadYandexMaps(apiKey) {
@@ -405,6 +461,52 @@ function formatPeriod(period) {
   return date.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
 }
 
+function PeriodNavigator({ periods, period, onChange, label = "Период KPI" }) {
+  const reduceMotion = useReducedMotion();
+  const orderedPeriods = [...periods].sort();
+  const currentIndex = orderedPeriods.indexOf(period);
+  const previous = currentIndex > 0 ? orderedPeriods[currentIndex - 1] : "";
+  const next = currentIndex >= 0 && currentIndex < orderedPeriods.length - 1 ? orderedPeriods[currentIndex + 1] : "";
+
+  if (orderedPeriods.length <= 1) {
+    return <span>{formatPeriod(period)}</span>;
+  }
+
+  return (
+    <div className="period-navigator">
+      <motion.button
+        className="period-nav-button"
+        type="button"
+        disabled={!previous}
+        onClick={() => previous && onChange(previous)}
+        aria-label={previous ? `Предыдущий месяц: ${formatPeriod(previous)}` : "Предыдущего месяца нет"}
+        title="Предыдущий месяц"
+        whileTap={reduceMotion ? undefined : { scale: 0.94 }}
+      >
+        <ChevronLeft size={17} />
+      </motion.button>
+      <select className="period-select" value={period} onChange={(event) => onChange(event.target.value)} aria-label={label}>
+        {orderedPeriods.map((item) => (
+          <option key={item} value={item}>
+            {formatPeriod(item)}
+          </option>
+        ))}
+      </select>
+      <motion.button
+        className="period-nav-button"
+        type="button"
+        disabled={!next}
+        onClick={() => next && onChange(next)}
+        aria-label={next ? `Следующий месяц: ${formatPeriod(next)}` : "Следующего месяца нет"}
+        title="Следующий месяц"
+        whileTap={reduceMotion ? undefined : { scale: 0.94 }}
+      >
+        <ChevronRight size={17} />
+      </motion.button>
+    </div>
+  );
+}
+
 function formatKpiValue(value, unit) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "—";
@@ -427,15 +529,291 @@ function formatStaffValue(value) {
 }
 
 function formatDelta(value) {
+  if (value === null || value === undefined || value === "") return "—";
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "—";
   return `${numeric > 0 ? "+" : ""}${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
 function deltaTone(value) {
+  if (value === null || value === undefined || value === "") return "";
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric === 0) return "";
   return numeric > 0 ? "positive" : "negative";
+}
+
+const FUEL_STOCK_REFRESH_MS = 60_000;
+const fuelNameCollator = new Intl.Collator("ru-RU", { numeric: true, sensitivity: "base" });
+
+function numericOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function sumFuelMetric(a, b) {
+  const left = numericOrNull(a);
+  const right = numericOrNull(b);
+  if (left === null && right === null) return null;
+  return (left || 0) + (right || 0);
+}
+
+function normalizeFuelToken(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/Ё/g, "Е")
+    .replace(/[^0-9A-ZА-Я]+/g, "");
+}
+
+function canonicalFuelLabel(item) {
+  const value = String(item?.canonicalFuel || item?.fuelCode || item?.fuelName || "")
+    .trim()
+    .toUpperCase()
+    .replace(/Ё/g, "Е")
+    .replace(/\s+/g, " ");
+  if (!value || value === "UNMAPPED" || value === "UNKNOWN") return "";
+
+  const compact = normalizeFuelToken(value);
+  const gasoline = compact.match(/(?:АБ|АИ|AB|AI)(80|91|92|93|95|98|100)/);
+  const isEcto = compact.includes("ЭКТО") || compact.includes("ECTO") || compact.includes("EKTO");
+  if (gasoline) return `АИ-${gasoline[1]}${isEcto ? " ЭКТО" : ""}`;
+  if (compact === "СУГ" || compact.includes("LPG") || compact.includes("СЖИЖЕН")) return "СУГ";
+  if (compact === "КПГ" || compact.includes("CNG") || compact.includes("МЕТАН")) return "КПГ";
+  if (compact.includes("ДТ") || compact.includes("DT") || compact.includes("DIESEL") || compact.includes("ДИЗЕЛ")) {
+    return `ДТ${isEcto ? " ЭКТО" : ""}`;
+  }
+  return value;
+}
+
+function compareFuelGroups(left, right) {
+  const gasolinePattern = /^АИ-(\d+)(?: ЭКТО)?$/;
+  const leftGasoline = left.label.match(gasolinePattern);
+  const rightGasoline = right.label.match(gasolinePattern);
+  if (leftGasoline && rightGasoline) {
+    const gradeDelta = Number(leftGasoline[1]) - Number(rightGasoline[1]);
+    if (gradeDelta) return gradeDelta;
+    return Number(left.label.includes("ЭКТО")) - Number(right.label.includes("ЭКТО"));
+  }
+  if (leftGasoline) return -1;
+  if (rightGasoline) return 1;
+
+  const fixedOrder = ["ДТ", "ДТ ЭКТО", "СУГ", "КПГ"];
+  const leftIndex = fixedOrder.indexOf(left.label);
+  const rightIndex = fixedOrder.indexOf(right.label);
+  if (leftIndex !== -1 || rightIndex !== -1) {
+    return (leftIndex === -1 ? fixedOrder.length : leftIndex) - (rightIndex === -1 ? fixedOrder.length : rightIndex);
+  }
+  return fuelNameCollator.compare(left.label, right.label);
+}
+
+function mergeFuelStockItem(base, next) {
+  return {
+    ...base,
+    fuelCode: base.fuelCode || next.fuelCode,
+    fuelName: base.fuelName || next.fuelName,
+    capacityLiters: sumFuelMetric(base.capacityLiters, next.capacityLiters),
+    physicalVolumeLiters: sumFuelMetric(base.physicalVolumeLiters, next.physicalVolumeLiters),
+    deadRestLiters: sumFuelMetric(base.deadRestLiters, next.deadRestLiters),
+    availableVolumeLiters: sumFuelMetric(base.availableVolumeLiters, next.availableVolumeLiters),
+    capacityTons: sumFuelMetric(base.capacityTons, next.capacityTons),
+    physicalVolumeTons: sumFuelMetric(base.physicalVolumeTons, next.physicalVolumeTons),
+    deadRestTons: sumFuelMetric(base.deadRestTons, next.deadRestTons),
+    availableVolumeTons: sumFuelMetric(base.availableVolumeTons, next.availableVolumeTons),
+    tanksCount: sumFuelMetric(base.tanksCount, next.tanksCount),
+    percentage: null,
+    rawFillPercent: null,
+    capacityExceeded: Boolean(base.capacityExceeded || next.capacityExceeded),
+    onDeadStock: Boolean(base.onDeadStock || next.onDeadStock),
+    isLow: Boolean(base.isLow || next.isLow),
+  };
+}
+
+function fuelStockTone(percentage) {
+  const numeric = numericOrNull(percentage);
+  if (numeric === null) return "empty";
+  if (numeric < 30) return "red";
+  if (numeric <= 70) return "amber";
+  return "green";
+}
+
+function fuelStockToneLabel(group) {
+  if (group.onDeadStock) return "Отсутствует";
+  if (group.capacityExceeded) return "Проверить данные";
+  if (group.tone === "red") return "Внимание <30%";
+  if (group.tone === "amber") return "Рабочий 30–70%";
+  if (group.tone === "green") return "Норма >70%";
+  return "Нет данных";
+}
+
+function normalizeFuelStockGroups(items = []) {
+  const grouped = new Map();
+
+  items.forEach((item) => {
+    const label = canonicalFuelLabel(item);
+    const key = normalizeFuelToken(label);
+    if (!key) return;
+    const existing = grouped.get(key);
+    grouped.set(key, existing ? mergeFuelStockItem(existing, item) : { ...item, label });
+  });
+
+  return Array.from(grouped, ([key, item]) => {
+    const capacity = fuelCapacityTons(item);
+    const available = numericOrNull(item.availableVolumeLiters);
+    const suppliedPercentage = numericOrNull(item.percentage);
+    const availableTons = fuelAvailableTons(item);
+    const calculatedPercentage = capacity && capacity > 0 && availableTons !== null ? (availableTons / capacity) * 100 : null;
+    const rawPercentage = numericOrNull(item.rawFillPercent) ?? suppliedPercentage ?? calculatedPercentage;
+    const percentage = rawPercentage === null ? null : Math.max(0, Math.min(100, rawPercentage));
+    const capacityExceeded = Boolean(item.capacityExceeded) || (rawPercentage !== null && rawPercentage > 100.1);
+    const physicalTons = fuelPhysicalTons(item);
+    const deadRestTons = fuelDeadRestTons(item);
+    const onDeadStock = Boolean(item.onDeadStock)
+      || (availableTons !== null && availableTons <= 0.0001 && physicalTons > 0 && deadRestTons > 0);
+    const tone = capacityExceeded ? "red" : fuelStockTone(percentage);
+    const flaggedLow = item.isLow === true || item.isLow === 1 || String(item.isLow).toLowerCase() === "true";
+    const isLow = onDeadStock || flaggedLow || (numericOrNull(percentage) !== null && percentage < 20);
+
+    return {
+      key,
+      label: item.label,
+      item,
+      hasData: available !== null || availableTons !== null,
+      percentage,
+      rawPercentage,
+      capacityExceeded,
+      onDeadStock,
+      tone,
+      isLow,
+    };
+  }).filter((group) => group.hasData).sort(compareFuelGroups);
+}
+
+function fuelCapacityTons(item) {
+  const tons = numericOrNull(item?.capacityTons);
+  if (tons !== null) return tons;
+  const legacyValue = numericOrNull(item?.capacityLiters);
+  return legacyValue === null ? null : legacyValue / 1000;
+}
+
+function fuelAvailableTons(item) {
+  const tons = numericOrNull(item?.availableVolumeTons ?? item?.availableTons);
+  if (tons !== null) return tons;
+  const legacyValue = numericOrNull(item?.availableVolumeLiters ?? item?.availableLiters);
+  return legacyValue === null ? null : legacyValue / 1000;
+}
+
+function fuelPhysicalTons(item) {
+  const tons = numericOrNull(item?.physicalVolumeTons ?? item?.volumeTons);
+  if (tons !== null) return tons;
+  const legacyValue = numericOrNull(item?.physicalVolumeLiters ?? item?.volumeLiters);
+  return legacyValue === null ? null : legacyValue / 1000;
+}
+
+function fuelDeadRestTons(item) {
+  const tons = numericOrNull(item?.deadRestTons);
+  if (tons !== null) return tons;
+  const legacyValue = numericOrNull(item?.deadRestLiters);
+  return legacyValue === null ? null : legacyValue / 1000;
+}
+
+function formatFuelTons(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return "—";
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} т`;
+}
+
+function formatFuelPercent(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return "—";
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: Number.isInteger(numeric) ? 0 : 1 })}%`;
+}
+
+function clampFuelPercent(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return 0;
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function formatFuelStockTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatOutageDate(value) {
+  if (!value) return "Дата не указана";
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const date = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+}
+
+function formatOutageDuration(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return "—";
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 1 })} ч`;
+}
+
+function formatOutageSales(value) {
+  const numeric = numericOrNull(value);
+  if (numeric === null) return "—";
+  return `${numeric.toLocaleString("ru-RU", { maximumFractionDigits: 0 })} л`;
+}
+
+function formatOutageCount(value) {
+  const count = Math.max(0, Number(value) || 0);
+  const mod100 = count % 100;
+  const mod10 = count % 10;
+  const noun = mod100 >= 11 && mod100 <= 14
+    ? "событий"
+    : mod10 === 1
+      ? "событие"
+      : mod10 >= 2 && mod10 <= 4
+        ? "события"
+        : "событий";
+  return `${asInt(count)} ${noun}`;
+}
+
+function formatFuelTypeCount(value) {
+  const count = Math.max(0, Number(value) || 0);
+  const mod100 = count % 100;
+  const mod10 = count % 10;
+  const noun = mod100 >= 11 && mod100 <= 14
+    ? "видов топлива"
+    : mod10 === 1
+      ? "вид топлива"
+      : mod10 >= 2 && mod10 <= 4
+        ? "вида топлива"
+        : "видов топлива";
+  return `${asInt(count)} ${noun}`;
+}
+
+function outageTimeRange(item) {
+  const start = String(item?.startTime || "").trim();
+  const end = String(item?.endTime || "").trim();
+  if (start && end) return `${start}–${end}`;
+  if (start) return `с ${start}`;
+  if (end) return `до ${end}`;
+  return "Время не указано";
+}
+
+function isOutageDayEnd(item) {
+  return String(item?.endTime || "").trim().slice(0, 5) === "23:59";
+}
+
+function compareOutageItems(left, right) {
+  const leftKey = `${left?.date || ""}T${left?.startTime || "00:00"}`;
+  const rightKey = `${right?.date || ""}T${right?.startTime || "00:00"}`;
+  return rightKey.localeCompare(leftKey, "ru");
 }
 
 function distanceKm(from, station) {
@@ -475,6 +853,22 @@ function metricDisplay(metrics, id) {
   return metric ? formatKpiValue(metric.value, metric.unit) : "—";
 }
 
+function formatPersonName(value) {
+  const parts = String(value || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts[0] || "—";
+  const initials = parts
+    .slice(1)
+    .flatMap((part) => Array.from(part.matchAll(/\p{L}/gu), (match) => match[0]))
+    .slice(0, 2);
+  return initials.length
+    ? `${parts[0]} ${initials.map((letter) => `${letter.toLocaleUpperCase("ru-RU")}.`).join("")}`
+    : parts[0];
+}
+
+function analyticsGroupLabel(label, groupBy) {
+  return groupBy === "regionalManager" || groupBy === "territoryManager" ? formatPersonName(label) : label;
+}
+
 function stableNumber(seed, minimum, maximum) {
   const text = String(seed);
   let hash = 2166136261;
@@ -486,40 +880,19 @@ function stableNumber(seed, minimum, maximum) {
   return minimum + (normalized % (maximum - minimum + 1));
 }
 
-function demoPct(ksss, period, metricId, salt) {
-  return stableNumber(`${ksss}:${period}:${metricId}:${salt}`, -120, 180) / 10;
-}
-
-function demoKpiMetrics(ksss, period) {
-  const revenue = stableNumber(`${ksss}:${period}:revenue`, 4_000_000, 28_000_000);
-  const fuelVolume = stableNumber(`${ksss}:${period}:fuelVolume`, 120_000, 850_000);
-  const checks = stableNumber(`${ksss}:${period}:checks`, 8_000, 62_000);
-  const avgCheck = Math.round(revenue / Math.max(checks, 1));
-  return [
-    ["revenue", "Выручка", revenue, "₽"],
-    ["fuelVolume", "Объем топлива", fuelVolume, "л"],
-    ["checks", "Чеки", checks, "шт"],
-    ["avgCheck", "Средний чек", avgCheck, "₽"],
-  ].map(([id, label, value, unit]) => ({
-    id,
-    label,
-    value,
-    unit,
-    momPct: demoPct(ksss, period, id, "mom"),
-    yoyPct: demoPct(ksss, period, id, "yoy"),
-  }));
-}
-
-function demoKpiPayload(ksss, period, reason = "fallback") {
-  return {
-    ksss,
-    period,
-    source: "placeholder",
-    fallbackReason: reason,
-    updatedAt: new Date().toISOString(),
-    metrics: demoKpiMetrics(ksss, period),
-  };
-}
+const noInfoKpiMetrics = [
+  ["revenue", "Выручка", "₽"],
+  ["fuelVolume", "Объем топлива", "л"],
+  ["checks", "Чеки", "шт"],
+  ["avgCheck", "Средний чек", "₽"],
+].map(([id, label, unit]) => ({
+  id,
+  label,
+  value: undefined,
+  unit,
+  momPct: undefined,
+  yoyPct: undefined,
+}));
 
 function monthDates(period) {
   const [year, month] = period.split("-").map(Number);
@@ -527,21 +900,14 @@ function monthDates(period) {
   return Array.from({ length: days }, (_, index) => new Date(year, month - 1, index + 1));
 }
 
-function demoStaffPayload(ksss, period, reason = "fallback") {
-  const staffTotal = stableNumber(`${ksss}:${period}:staffTotal`, 9, 24);
+function noInfoStaffPayload(ksss, period) {
   const days = monthDates(period).map((date) => {
-    const weekday = date.getDay();
-    const dayMin = Math.max(2, Math.round(staffTotal * 0.34));
-    const dayMax = Math.max(dayMin, Math.round(staffTotal * 0.58));
-    const nightMin = Math.max(1, Math.round(staffTotal * 0.18));
-    const nightMax = Math.max(nightMin, Math.round(staffTotal * 0.34));
     const dateIso = date.toISOString().slice(0, 10);
-    const weekendOffset = weekday === 0 || weekday === 6 ? 1 : 0;
     return {
       date: dateIso,
       label: formatWeekday(dateIso),
-      day: Math.max(dayMin, stableNumber(`${ksss}:${dateIso}:day`, dayMin, dayMax) - weekendOffset),
-      night: stableNumber(`${ksss}:${dateIso}:night`, nightMin, nightMax),
+      day: undefined,
+      night: undefined,
     };
   });
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -549,10 +915,9 @@ function demoStaffPayload(ksss, period, reason = "fallback") {
   return {
     ksss,
     period,
-    source: "placeholder",
-    fallbackReason: reason,
+    source: "no-info",
     updatedAt: new Date().toISOString(),
-    staffTotal,
+    staffTotal: undefined,
     today,
     days,
   };
@@ -612,24 +977,166 @@ function fetchJson(url, signal) {
   });
 }
 
-async function authJson(url, options = {}) {
-  const response = await fetch(url, {
-    credentials: "include",
-    ...options,
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
+function useFuelStock(ksss) {
+  const [stockState, setStockState] = useState({ status: "idle", data: null, error: "", refreshing: false });
+  const controllerRef = useRef(null);
+  const requestRef = useRef(0);
+  const intervalRef = useRef(null);
+
+  const loadStock = useCallback(
+    (background = false) => {
+      if (!ksss) {
+        setStockState({ status: "no-data", data: null, error: "", refreshing: false });
+        return;
+      }
+
+      requestRef.current += 1;
+      const requestId = requestRef.current;
+      controllerRef.current?.abort();
+      const controller = new AbortController();
+      controllerRef.current = controller;
+
+      setStockState((previous) => {
+        const keepCurrent = background && (previous.data || previous.status === "no-data");
+        return {
+          status: keepCurrent ? previous.status : "loading",
+          data: keepCurrent ? previous.data : null,
+          error: "",
+          refreshing: Boolean(keepCurrent),
+        };
+      });
+
+      fetchJson(`/api/stations/${encodeURIComponent(ksss)}/fuel-stock`, controller.signal)
+        .then((data) => {
+          if (requestRef.current !== requestId) return;
+          if (!data || !Array.isArray(data.items) || data.items.length === 0) {
+            setStockState({ status: "no-data", data: data || null, error: "", refreshing: false });
+            return;
+          }
+          setStockState({ status: "ready", data, error: "", refreshing: false });
+        })
+        .catch((error) => {
+          if (error.name === "AbortError" || error.message === "AUTH_REQUIRED") return;
+          if (requestRef.current !== requestId) return;
+          setStockState((previous) => {
+            if (background && (previous.data || previous.status === "no-data")) {
+              return {
+                ...previous,
+                error: "Не удалось обновить остатки. Показаны последние полученные данные.",
+                refreshing: false,
+              };
+            }
+            return { status: "error", data: null, error: error.message, refreshing: false };
+          });
+        });
     },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.detail || `REQUEST_FAILED_${response.status}`);
-    error.status = response.status;
-    error.payload = data;
+    [ksss],
+  );
+
+  useEffect(() => {
+    if (!ksss) {
+      setStockState({ status: "no-data", data: null, error: "", refreshing: false });
+      return undefined;
+    }
+
+    const refreshVisibleStock = () => {
+      if (document.visibilityState === "visible") loadStock(true);
+    };
+
+    loadStock(false);
+    intervalRef.current = window.setInterval(refreshVisibleStock, FUEL_STOCK_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshVisibleStock);
+
+    return () => {
+      window.clearInterval(intervalRef.current);
+      document.removeEventListener("visibilitychange", refreshVisibleStock);
+      controllerRef.current?.abort();
+    };
+  }, [ksss, loadStock]);
+
+  return { stockState, refresh: loadStock };
+}
+
+function useFuelOutages(ksss) {
+  const [outageState, setOutageState] = useState({ status: "idle", data: null, error: "" });
+  const controllerRef = useRef(null);
+  const requestRef = useRef(0);
+
+  const loadOutages = useCallback(() => {
+    if (!ksss) {
+      setOutageState({ status: "ready", data: null, error: "" });
+      return;
+    }
+
+    requestRef.current += 1;
+    const requestId = requestRef.current;
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setOutageState({ status: "loading", data: null, error: "" });
+
+    fetchJson(`/api/fuel-outages?ksss=${encodeURIComponent(ksss)}&limit=1000`, controller.signal)
+      .then((data) => {
+        if (requestRef.current !== requestId) return;
+        setOutageState({ status: "ready", data: data || null, error: "" });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError" || error.message === "AUTH_REQUIRED") return;
+        if (requestRef.current !== requestId) return;
+        setOutageState({ status: "error", data: null, error: error.message });
+      });
+  }, [ksss]);
+
+  useEffect(() => {
+    loadOutages();
+    return () => controllerRef.current?.abort();
+  }, [loadOutages]);
+
+  return { outageState, refresh: loadOutages };
+}
+
+async function authJson(url, options = {}) {
+  const { timeoutMs = 15_000, signal: externalSignal, ...requestOptions } = options;
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromExternal = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      credentials: "include",
+      ...requestOptions,
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        ...(requestOptions.body ? { "Content-Type": "application/json" } : {}),
+        ...(requestOptions.headers || {}),
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.detail || `REQUEST_FAILED_${response.status}`);
+      error.status = response.status;
+      error.payload = data;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (timedOut) {
+      const timeoutError = new Error("Сервер не ответил вовремя. Проверьте соединение и повторите.");
+      timeoutError.code = "REQUEST_TIMEOUT";
+      throw timeoutError;
+    }
     throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
   }
-  return data;
 }
 
 function isStandaloneApp() {
@@ -678,19 +1185,26 @@ function App() {
   const [registryDensity, setRegistryDensity] = useState("comfortable");
   const [favorites, setFavorites] = useState(() => JSON.parse(localStorage.getItem("azs:favorites") || "[]"));
   const [showFilters, setShowFilters] = useState(false);
-  const [detailSheet, setDetailSheet] = useState("half");
+  const [detailOpen, setDetailOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState(null);
   const [standaloneApp, setStandaloneApp] = useState(() => isStandaloneApp());
+  const previousModeRef = useRef("list");
 
   useEffect(() => {
     let alive = true;
-    authJson("/api/auth/me")
+    authJson("/api/auth/me", { timeoutMs: 8_000 })
       .then((data) => {
         if (alive) setAuth({ status: "ready", user: data.user, error: "" });
       })
-      .catch(() => {
+      .catch((authError) => {
         purgePrivateCaches();
-        if (alive) setAuth({ status: "guest", user: null, error: "" });
+        if (!alive) return;
+        const connectionError = authError?.status === 401
+          ? ""
+          : authError?.code === "REQUEST_TIMEOUT"
+            ? "Не удалось быстро проверить сессию. Войдите снова."
+            : "Не удалось связаться с сервером. Проверьте соединение.";
+        setAuth({ status: "guest", user: null, error: connectionError });
       });
     return () => {
       alive = false;
@@ -703,7 +1217,7 @@ function App() {
       setAuth({ status: "guest", user: null, error: "Сессия истекла. Войдите снова." });
       setPayload({ meta: null, stations: [] });
       setSelectedId("");
-      setDetailSheet("closed");
+      setDetailOpen(false);
     }
 
     window.addEventListener("azs:auth-required", handleAuthRequired);
@@ -775,6 +1289,10 @@ function App() {
     setRegistryCompact(false);
   }, [query, filters.npo, filters.subject, filters.status, filters.type, filters.location, filters.service, filters.quality]);
 
+  useEffect(() => {
+    if (mode !== "map") previousModeRef.current = mode;
+  }, [mode]);
+
   const stations = useMemo(() => payload.stations.filter(hasValidPoint), [payload.stations]);
   const excludedNoCoords = Math.max((payload.meta?.count || payload.stations.length) - stations.length, 0);
   const options = useMemo(
@@ -807,7 +1325,8 @@ function App() {
   }, [stations, query, filters]);
 
   const selected = filtered.find((station) => station.id === selectedId) || null;
-  const detailVisible = Boolean(selected && detailSheet !== "closed");
+  const detailVisible = Boolean(selected && detailOpen);
+  const previewVisible = Boolean(selected && !detailOpen && mode === "map");
 
   const metrics = useMemo(() => {
     const active = stations.filter((station) => station.flags.active).length;
@@ -816,7 +1335,16 @@ function App() {
     return { active, cafe, toilet };
   }, [stations]);
   const issueCount = useMemo(() => filtered.filter((station) => station.qualityIssues.length > 0).length, [filtered]);
+  const loading = Boolean(auth.user) && payload.meta === null;
   const viewMotion = motionPreset(reduceMotion);
+  const mapSheetMotion = reduceMotion
+    ? { initial: false, animate: {}, exit: {}, transition: { duration: 0 } }
+    : {
+        initial: { y: "100%" },
+        animate: { y: 0 },
+        exit: { y: "100%" },
+        transition: { type: "spring", stiffness: 300, damping: 34, mass: 0.9 },
+      };
 
   function setFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -829,13 +1357,27 @@ function App() {
   function selectStation(id) {
     setSelectedId(id);
     setSelectionMode("manual");
-    setDetailSheet("half");
+    setDetailOpen(true);
+  }
+
+  function previewStation(id) {
+    setSelectedId(id);
+    setSelectionMode("manual");
+    setDetailOpen(false);
+  }
+
+  function openDetail() {
+    if (selectedId) setDetailOpen(true);
+  }
+
+  function closeDetailSheet() {
+    setDetailOpen(false);
   }
 
   function changeMode(nextMode, { closeDetail = true } = {}) {
     setMode(nextMode);
     setRegistryCompact(false);
-    if (closeDetail && selectedId) setDetailSheet("closed");
+    if (closeDetail && selectedId) setDetailOpen(false);
   }
 
   function handleRegistryScroll(scrollTop) {
@@ -869,7 +1411,7 @@ function App() {
     setAuth({ status: "guest", user: null, error: "" });
     setPayload({ meta: null, stations: [] });
     setSelectedId("");
-    setDetailSheet("closed");
+    setDetailOpen(false);
   }
 
   const canInstallApp = Boolean(installPrompt && !standaloneApp);
@@ -884,13 +1426,15 @@ function App() {
   }
 
   return (
-    <main className={`app-shell ${mode}-mode ${detailVisible ? "" : "no-detail"} ${mode === "list" && registryCompact ? "registry-compact" : ""}`}>
+    <>
+      <a href="#main-content" className="skip-link">Перейти к содержимому</a>
+      <main id="main-content" className={`app-shell ${mode}-mode ${detailVisible ? "" : "no-detail"} ${mode === "list" && registryCompact ? "registry-compact" : ""}`}>
       <section className="workspace">
         {mode !== "home" && (
           <>
             <header className="topbar">
               <div>
-                <h1>{isControlMode ? "Контроль АЗС" : "АЗС"}</h1>
+                <h1>{isControlMode ? "Контроль АЗС" : "АЗС ЛУКОЙЛ"}</h1>
                 <p>
                   {isControlMode
                     ? `${asInt(stations.length)} объектов в контуре контроля`
@@ -910,6 +1454,12 @@ function App() {
             </header>
 
             {!isControlMode && (
+              <button className="landscape-filter-fab" type="button" onClick={() => setShowFilters(true)} aria-label="Фильтры">
+                <SlidersHorizontal size={20} />
+              </button>
+            )}
+
+            {!isControlMode && (
               <>
                 <div className="search-row">
                   <Search size={18} />
@@ -917,6 +1467,7 @@ function App() {
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder="КССС, номер, адрес, регион"
+                    aria-label="Поиск по КССС, номеру, адресу или региону"
                   />
                   {query && (
                     <button className="clear-button" onClick={() => setQuery("")} aria-label="Очистить поиск">
@@ -942,7 +1493,6 @@ function App() {
                 count={filtered.length}
                 total={stations.length}
                 metrics={metrics}
-                issueCount={issueCount}
                 meta={payload.meta}
                 regionCount={options.subject.length}
                 excludedNoCoords={excludedNoCoords}
@@ -982,7 +1532,7 @@ function App() {
               />
             </motion.div>
           ) : (
-            <motion.div className="view-stage content-grid" key={mode} {...viewMotion}>
+            <motion.div className="view-stage content-grid" key={mode} {...(mode === "map" ? mapSheetMotion : viewMotion)}>
               <section className={`list-pane ${mode === "map" ? "mobile-hidden" : ""}`}>
                 <div className="pane-title">
                   <span>{asInt(filtered.length)} найдено</span>
@@ -1014,6 +1564,7 @@ function App() {
                   onSelect={selectStation}
                   onFavorite={toggleFavorite}
                   onScroll={handleRegistryScroll}
+                  loading={loading}
                 />
               </section>
 
@@ -1022,7 +1573,8 @@ function App() {
                   stations={filtered}
                   selected={selected}
                   focusSelected={selectionMode === "manual"}
-                  onSelect={selectStation}
+                  onSelect={previewStation}
+                  onCloseFullscreen={mode === "map" ? () => changeMode(previousModeRef.current || "list") : undefined}
                 />
               </section>
             </motion.div>
@@ -1031,13 +1583,18 @@ function App() {
       </section>
 
       <AnimatePresence>
+        {previewVisible && (
+          <MapStationPreview key={selected.id} station={selected} onOpen={openDetail} onDismiss={() => setSelectedId("")} />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {detailVisible && (
           <StationDetail
             station={selected}
             favorite={favorites.includes(selected.id)}
             onFavorite={() => toggleFavorite(selected.id)}
-            sheetState={detailSheet}
-            onSheetState={setDetailSheet}
+            onClose={closeDetailSheet}
           />
         )}
       </AnimatePresence>
@@ -1060,6 +1617,7 @@ function App() {
         onChange={changeMode}
       />
     </main>
+    </>
   );
 }
 
@@ -1145,6 +1703,183 @@ function InstallAppControl({ canInstall, standalone, onInstall, compact = false 
       <Download size={compact ? 16 : 18} />
       <span>{compact ? "Установить" : "Установить приложение"}</span>
     </motion.button>
+  );
+}
+
+function detectInstallPlatform() {
+  if (typeof navigator === "undefined") return "desktop";
+  const userAgent = navigator.userAgent || "";
+  const isIPad = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  if (/iPad|iPhone|iPod/i.test(userAgent) || isIPad) return "ios";
+  if (/Android/i.test(userAgent)) return "android";
+  return "desktop";
+}
+
+function PwaInstallGuide({ canInstall, standalone, onInstall }) {
+  const reduceMotion = useReducedMotion();
+  const [open, setOpen] = useState(false);
+  const [platform, setPlatform] = useState(detectInstallPlatform);
+  const triggerRef = useRef(null);
+  const closeRef = useRef(null);
+  const guides = {
+    ios: {
+      title: "iPhone и iPad",
+      intro: "Установка выполняется через Safari и занимает меньше минуты.",
+      steps: [
+        ["Откройте сайт в Safari", "Перейдите на azs-classifier.ru и войдите в систему."],
+        ["Откройте меню «Поделиться»", "Нажмите значок «Поделиться». В новой раскладке Safari сначала может потребоваться кнопка «Еще»."],
+        ["Добавьте на экран «Домой»", "Выберите «На экран Домой», включите «Открывать как веб-приложение» и нажмите «Добавить»."],
+      ],
+    },
+    android: {
+      title: "Android",
+      intro: "В Chrome приложение устанавливается на главный экран устройства.",
+      steps: [
+        ["Откройте сайт в Chrome", "Перейдите на azs-classifier.ru и войдите в систему."],
+        ["Откройте меню браузера", "Нажмите три точки справа от адресной строки."],
+        ["Запустите установку", "Выберите «Добавить на главный экран», затем «Установить» и подтвердите действие."],
+      ],
+    },
+    desktop: {
+      title: "Компьютер",
+      intro: "Сайт можно открыть в отдельном окне и закрепить как обычное приложение.",
+      steps: [
+        ["Chrome или Edge", "Нажмите значок установки в адресной строке. В Edge также можно открыть меню: Приложения → Установить этот сайт как приложение."],
+        ["Подтвердите установку", "После установки закрепите приложение в панели задач, Dock или меню «Пуск»."],
+        ["Safari на Mac", "В macOS Sonoma и новее откройте «Поделиться» → «Добавить в Dock», затем нажмите «Добавить»."],
+      ],
+    },
+  };
+  const guide = guides[platform];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+    window.requestAnimationFrame(() => closeRef.current?.focus());
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+      triggerRef.current?.focus();
+    };
+  }, [open]);
+
+  if (standalone) return null;
+
+  const dialog = typeof document !== "undefined" && createPortal(
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="pwa-guide-backdrop"
+          initial={reduceMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: reduceMotion ? 0 : 0.18 }}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setOpen(false);
+          }}
+        >
+          <motion.section
+            className="pwa-guide-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pwa-guide-title"
+            initial={reduceMotion ? false : { opacity: 0, y: 24, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 16, scale: 0.99 }}
+            transition={{ duration: reduceMotion ? 0 : 0.22, ease: "easeOut" }}
+          >
+            <header className="pwa-guide-head">
+              <div>
+                <span><Smartphone size={16} aria-hidden="true" /> Установка приложения</span>
+                <h2 id="pwa-guide-title">Добавить на устройство</h2>
+              </div>
+              <button ref={closeRef} type="button" onClick={() => setOpen(false)} aria-label="Закрыть инструкцию">
+                <X size={20} aria-hidden="true" />
+              </button>
+            </header>
+
+            <div className="pwa-guide-tabs" role="tablist" aria-label="Выберите устройство">
+              {[
+                ["ios", "iPhone / iPad", Smartphone],
+                ["android", "Android", Smartphone],
+                ["desktop", "Компьютер", Monitor],
+              ].map(([id, label, Icon]) => (
+                <button
+                  className={platform === id ? "active" : ""}
+                  type="button"
+                  role="tab"
+                  aria-selected={platform === id}
+                  key={id}
+                  onClick={() => setPlatform(id)}
+                >
+                  <Icon size={16} aria-hidden="true" />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="pwa-guide-content" role="tabpanel" key={platform}>
+              <h3>{guide.title}</h3>
+              <p>{guide.intro}</p>
+              <ol>
+                {guide.steps.map(([title, detail], index) => (
+                  <li key={title}>
+                    <span>{index + 1}</span>
+                    <div><strong>{title}</strong><small>{detail}</small></div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <footer className="pwa-guide-actions">
+              {canInstall && (
+                <motion.button
+                  className="primary"
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onInstall();
+                  }}
+                  whileTap={reduceMotion ? undefined : { scale: 0.97 }}
+                >
+                  <Download size={17} aria-hidden="true" /> Установить сейчас
+                </motion.button>
+              )}
+              <button type="button" onClick={() => setOpen(false)}>Готово</button>
+            </footer>
+          </motion.section>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body,
+  );
+
+  return (
+    <>
+      <section className="pwa-install-banner" aria-labelledby="pwa-install-title">
+        <span className="pwa-install-icon" aria-hidden="true"><Smartphone size={20} /></span>
+        <div>
+          <strong id="pwa-install-title">Добавьте сервис на главный экран</strong>
+          <small>Открывается как приложение и всегда остается под рукой.</small>
+        </div>
+        <div className="pwa-install-actions">
+          {canInstall && (
+            <motion.button className="primary" type="button" onClick={onInstall} whileTap={reduceMotion ? undefined : { scale: 0.97 }}>
+              <Download size={16} aria-hidden="true" /> Установить
+            </motion.button>
+          )}
+          <button ref={triggerRef} type="button" onClick={() => setOpen(true)}>
+            <Share2 size={16} aria-hidden="true" /> Как установить
+          </button>
+        </div>
+      </section>
+      {dialog}
+    </>
   );
 }
 
@@ -1388,9 +2123,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
             </div>
 
             {!passwordReset.email ? (
-              <label>
+              <label htmlFor="reset-email">
                 <span>Email</span>
                 <input
+                  id="reset-email"
                   type="email"
                   autoComplete="email"
                   value={form.email}
@@ -1401,9 +2137,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
               </label>
             ) : (
               <>
-                <label>
+                <label htmlFor="reset-code">
                   <span>Код из письма</span>
                   <input
+                    id="reset-code"
                     autoComplete="one-time-code"
                     inputMode="numeric"
                     value={code}
@@ -1413,9 +2150,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
                   />
                 </label>
 
-                <label>
+                <label htmlFor="reset-new-password">
                   <span>Новый пароль</span>
                   <input
+                    id="reset-new-password"
                     type="password"
                     autoComplete="new-password"
                     value={form.password}
@@ -1476,9 +2214,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
               <small>{verification.email}</small>
             </div>
 
-            <label>
+            <label htmlFor="verify-code">
               <span>Код из письма</span>
               <input
+                id="verify-code"
                 autoComplete="one-time-code"
                 inputMode="numeric"
                 value={code}
@@ -1515,19 +2254,20 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
         ) : (
           <>
             <div className="auth-switch" role="tablist" aria-label="Режим авторизации">
-              <button className={mode === "login" ? "active" : ""} type="button" onClick={() => setMode("login")}>
+              <button className={mode === "login" ? "active" : ""} type="button" role="tab" aria-selected={mode === "login"} onClick={() => setMode("login")}>
                 Вход
               </button>
-              <button className={mode === "register" ? "active" : ""} type="button" onClick={() => setMode("register")}>
+              <button className={mode === "register" ? "active" : ""} type="button" role="tab" aria-selected={mode === "register"} onClick={() => setMode("register")}>
                 Регистрация
               </button>
             </div>
 
             <form className="auth-form" onSubmit={submitAuth}>
               {mode === "register" && (
-                <label>
+                <label htmlFor="auth-name">
                   <span>Имя</span>
                   <input
+                    id="auth-name"
                     autoComplete="name"
                     value={form.name}
                     onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
@@ -1536,9 +2276,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
                 </label>
               )}
 
-              <label>
+              <label htmlFor="auth-email">
                 <span>Email</span>
                 <input
+                  id="auth-email"
                   type="email"
                   autoComplete="email"
                   value={form.email}
@@ -1548,9 +2289,10 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
                 />
               </label>
 
-              <label>
+              <label htmlFor="auth-password">
                 <span>Пароль</span>
                 <input
+                  id="auth-password"
                   type="password"
                   autoComplete={mode === "register" ? "new-password" : "current-password"}
                   value={form.password}
@@ -1604,7 +2346,6 @@ function HomeDashboard({
   count,
   total,
   metrics,
-  issueCount,
   meta,
   regionCount,
   excludedNoCoords,
@@ -1635,13 +2376,15 @@ function HomeDashboard({
   return (
     <section className="home-pane dala-home" aria-labelledby="home-title">
       <div className="home-hero">
+        <div className="hero-orb hero-orb-1" aria-hidden="true" />
+        <div className="hero-orb hero-orb-2" aria-hidden="true" />
+        <div className="hero-orb hero-orb-3" aria-hidden="true" />
         <div className="home-copy">
           <span>Классификатор АЗС</span>
           <h2 id="home-title">Операционный контур АЗС</h2>
           <p>
             Инструмент собирает реестр АЗС, координаты, сервисы, классификацию, контакты, показатели месяца и рекомендации по персоналу в одном рабочем контуре.
           </p>
-          <InstallAppControl canInstall={canInstall} standalone={standalone} onInstall={onInstallApp} />
           <div className="home-passport" aria-label="Паспорт данных">
             {passportItems.map((item, index) => (
               <motion.div
@@ -1676,36 +2419,15 @@ function HomeDashboard({
         </div>
       </div>
 
-      <div className="home-grid">
-        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
-          <BarChart3 size={18} />
-          <h3>Аналитика и сравнение</h3>
-          <p>Показывает распределения по статусам, НПО, регионам, форматам, а также подбор похожих АЗС и сравнение показателей.</p>
-        </motion.article>
-        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
-          <ShieldCheck size={18} />
-          <h3>Контроль качества</h3>
-          <p>Помогает найти карточки с замечаниями: отсутствующие контакты, ответственные, координаты или неполные сервисные признаки.</p>
-        </motion.article>
-        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
-          <Users size={18} />
-          <h3>Персонал и KPI</h3>
-          <p>Показатели месяца и персонал находятся внутри карточки конкретной АЗС. Откройте объект из реестра или карты, чтобы увидеть эти блоки.</p>
-        </motion.article>
-        <motion.article className="home-card" whileHover={{ y: -3 }} transition={{ duration: 0.18 }}>
-          <MessageSquare size={18} />
-          <h3>Обратная связь</h3>
-          <p>Если в карточке обнаружена неправильная информация, перейдите в “Контроль” и оставьте уточнение в форме обратной связи.</p>
-        </motion.article>
-      </div>
+      <PwaInstallGuide canInstall={canInstall} standalone={standalone} onInstall={onInstallApp} />
 
-      <div className="home-summary">
-        <span><CircleDot size={15} /><strong>{asInt(count)}</strong> в текущем срезе</span>
-        <span><CheckCircle2 size={15} /><strong>{asInt(metrics.active)}</strong> действующих</span>
-        <span><Coffee size={15} /><strong>{asInt(metrics.cafe)}</strong> с кафе</span>
-        <button type="button" onClick={onOpenControl}>
-          {issueCount ? `${asInt(issueCount)} замечаний` : "Замечаний нет"}
-        </button>
+      <div className="home-grid">
+        <motion.button className="home-card home-feedback-card" type="button" aria-labelledby="home-card-feedback" onClick={onOpenControl} whileHover={{ y: -3, boxShadow: "0 18px 40px rgba(21,27,36,0.11)" }} whileTap={{ scale: 0.99 }} transition={{ duration: 0.18 }}>
+          <MessageSquare size={18} aria-hidden="true" />
+          <h3 id="home-card-feedback">Обратная связь</h3>
+          <p>Сообщите о неточности в карточке АЗС или оставьте уточнение по данным.</p>
+          <span className="home-feedback-action">Перейти в контроль <ChevronRight size={16} aria-hidden="true" /></span>
+        </motion.button>
       </div>
 
       <div className="home-user-panel" aria-label="Текущий пользователь">
@@ -1738,10 +2460,13 @@ function MetricStrip({ count, metrics }) {
 }
 
 function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpenList, onOpenStation }) {
-  const period = useMemo(() => currentMonthPeriod(), []);
+  const [period, setPeriod] = useState(() => currentMonthPeriod());
+  const [periods, setPeriods] = useState([]);
   const [view, setView] = useState("overview");
   const [groupBy, setGroupBy] = useState("territoryManager");
+  const [outageGroupBy, setOutageGroupBy] = useState("region");
   const [overviewState, setOverviewState] = useState({ status: "idle", data: null, error: "" });
+  const [outageAnalyticsState, setOutageAnalyticsState] = useState({ status: "idle", data: null, error: "" });
   const [similarState, setSimilarState] = useState({ status: "idle", data: null, error: "" });
   const [compareState, setCompareState] = useState({ status: "idle", data: null, error: "" });
   const [similarBaseId, setSimilarBaseId] = useState("");
@@ -1750,6 +2475,21 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
   const [compareIds, setCompareIds] = useState(() => (selected?.ksss ? [selected.ksss] : []));
   const [compareNotice, setCompareNotice] = useState("");
   const similarBase = stations.find((station) => station.ksss === similarBaseId);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchJson("/api/kpis/periods", controller.signal)
+      .then((data) => {
+        const available = Array.isArray(data?.periods) ? data.periods : [];
+        setPeriods(available);
+        if (available.length && !available.includes(period)) {
+          setPeriod(available[available.length - 1]);
+        }
+      })
+      .catch(() => {});
+
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!selected?.ksss || compareIds.length) return;
@@ -1824,6 +2564,27 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
 
     return () => controller.abort();
   }, [view, groupBy, period]);
+
+  useEffect(() => {
+    if (view !== "outages") return undefined;
+    const controller = new AbortController();
+    setOutageAnalyticsState((current) => ({ status: "loading", data: current.data, error: "" }));
+
+    fetchJson(`/api/analytics/fuel-outages?groupBy=${outageGroupBy}`, controller.signal)
+      .then((data) => {
+        if (!data || !Array.isArray(data.rows)) {
+          setOutageAnalyticsState({ status: "no-data", data: null, error: "" });
+          return;
+        }
+        setOutageAnalyticsState({ status: data.rows.length ? "ready" : "no-data", data, error: "" });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setOutageAnalyticsState({ status: "error", data: null, error: error.message });
+      });
+
+    return () => controller.abort();
+  }, [view, outageGroupBy]);
 
   useEffect(() => {
     if (view !== "similar") return undefined;
@@ -1912,7 +2673,8 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
   const tabs = [
     ["overview", "Обзор"],
     ["slices", "Разрезы"],
-    ["similar", "Похожие"],
+    ["outages", "Простои"],
+    ["similar", "Аналоги"],
     ["compare", "Сравнение"],
   ];
 
@@ -1924,14 +2686,19 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
           <p>
             {view === "overview"
               ? `Показатели пересчитываются по текущей выборке: ${asInt(stations.length)} из ${asInt(totalStations.length)} объектов.`
+              : view === "outages"
+                ? outageAnalyticsState.data?.reportDate
+                  ? `Последний отчет: ${formatOutageDate(outageAnalyticsState.data.reportDate)} · источник API /api`
+                  : "Сводка по последнему загруженному отчету о простоях топлива."
               : `Период: ${formatPeriod(period)} · источник API /api`}
           </p>
         </div>
+        {view !== "outages" && periods.length > 1 && <PeriodNavigator periods={periods} period={period} onChange={setPeriod} />}
       </div>
 
       <div className="analytics-tabs" role="tablist" aria-label="Режим аналитики">
         {tabs.map(([id, label]) => (
-          <button className={view === id ? "active" : ""} type="button" key={id} onClick={() => setView(id)}>
+          <button className={view === id ? "active" : ""} type="button" key={id} role="tab" aria-selected={view === id} onClick={() => setView(id)}>
             {label}
           </button>
         ))}
@@ -1950,6 +2717,13 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
           state={overviewState}
           groupBy={groupBy}
           setGroupBy={setGroupBy}
+        />
+      )}
+      {view === "outages" && (
+        <AnalyticsFuelOutages
+          state={outageAnalyticsState}
+          groupBy={outageGroupBy}
+          setGroupBy={setOutageGroupBy}
         />
       )}
       {view === "similar" && (
@@ -2093,7 +2867,6 @@ function AnalyticsSlices({ state, groupBy, setGroupBy }) {
             </button>
           ))}
         </div>
-        {state.data?.source && <span className="source-pill">{state.data.source === "mock" ? "mock" : "db"}</span>}
       </div>
 
       <AnalyticsStateMessage
@@ -2117,7 +2890,7 @@ function AnalyticsSlices({ state, groupBy, setGroupBy }) {
               return (
                 <article className="analytics-table-row" key={row.id}>
                   <div>
-                    <strong>{row.label}</strong>
+                    <strong>{analyticsGroupLabel(row.label, groupBy)}</strong>
                     <small>{asInt(row.count)} объект.</small>
                     <i style={{ width: `${Math.max(5, ((revenue?.value || 0) / maxRevenue) * 100)}%` }} />
                   </div>
@@ -2133,6 +2906,115 @@ function AnalyticsSlices({ state, groupBy, setGroupBy }) {
             })}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+const outageGroupByOptions = [
+  ["region", "Регион"],
+  ["regionalManager", "РУ"],
+  ["territoryManager", "Территория"],
+];
+
+function AnalyticsFuelOutages({ state, groupBy, setGroupBy }) {
+  const reduceMotion = useReducedMotion();
+  const [expandedRows, setExpandedRows] = useState(false);
+  const rows = state.data?.rows || [];
+  const visibleRows = expandedRows ? rows : rows.slice(0, 30);
+  const totals = state.data?.totals || {};
+  const maxHours = Math.max(...rows.map((row) => Number(row.totalHours) || 0), 1);
+  const reportTimestamp = formatFuelStockTimestamp(state.data?.sourceReceivedAt || state.data?.importedAt);
+  const summary = [
+    { label: "АЗС с простоями", value: asInt(totals.stationCount || 0), helper: formatFuelTypeCount(totals.productCount || 0) },
+    { label: "События", value: asInt(totals.eventCount || 0), helper: "в последнем отчете" },
+    { label: "Не завершены", value: asInt(totals.ongoingCount || 0), helper: "включая 23:59", tone: "amber" },
+    { label: "Суммарный простой", value: formatOutageDuration(totals.totalHours || 0), helper: "по всем объектам" },
+    { label: "Ожид. реализация", value: formatOutageSales(totals.expectedSalesLiters || 0), helper: "за время простоя", tone: "red" },
+  ];
+
+  useEffect(() => {
+    setExpandedRows(false);
+  }, [groupBy]);
+
+  return (
+    <div className="analytics-api-block outage-analytics">
+      <div className="analytics-toolbar outage-analytics-toolbar">
+        <div className="segmented" role="group" aria-label="Группировка простоев">
+          {outageGroupByOptions.map(([id, label]) => (
+            <button className={groupBy === id ? "active" : ""} type="button" key={id} onClick={() => setGroupBy(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {reportTimestamp && <span className="source-pill">Отчет {reportTimestamp}</span>}
+      </div>
+
+      <AnalyticsStateMessage
+        state={state}
+        emptyText={state.data?.importedAt ? "В последнем отчете простои не зафиксированы." : "Отчет о простоях еще не загружен."}
+        errorText="Аналитика простоев временно недоступна"
+      />
+
+      {state.status === "ready" && (
+        <>
+          <div className="outage-analytics-kpis" aria-label="Итоги по простоям">
+            {summary.map((item) => (
+              <div className={`outage-analytics-kpi ${item.tone || ""}`} key={item.label}>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <small>{item.helper}</small>
+              </div>
+            ))}
+          </div>
+
+          <div className="analytics-card outage-ranking-card">
+            <div className="outage-ranking-head">
+              <div>
+                <h3>Сводка по группам</h3>
+                <p>Ранжирование по суммарной длительности простоев</p>
+              </div>
+              <span>{asInt(rows.length)} групп</span>
+            </div>
+            <ol className="outage-ranking-list">
+              {visibleRows.map((row, index) => (
+                <motion.li
+                  key={row.id}
+                  initial={reduceMotion ? false : { opacity: 0, y: 7 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: reduceMotion ? 0 : 0.2, delay: reduceMotion ? 0 : Math.min(index * 0.025, 0.15) }}
+                >
+                  <div className="outage-ranking-label">
+                    <span aria-hidden="true">{index + 1}</span>
+                    <div>
+                      <strong>{analyticsGroupLabel(row.label, groupBy)}</strong>
+                      <small>{asInt(row.stationCount)} АЗС · {formatFuelTypeCount(row.productCount)}</small>
+                    </div>
+                  </div>
+                  <div className="outage-ranking-bar" aria-hidden="true">
+                    <motion.i
+                      initial={reduceMotion ? false : { scaleX: 0 }}
+                      animate={{ scaleX: Math.max(0.03, (Number(row.totalHours) || 0) / maxHours) }}
+                      transition={{ duration: reduceMotion ? 0 : 0.34, delay: reduceMotion ? 0 : Math.min(index * 0.025, 0.15), ease: "easeOut" }}
+                    />
+                  </div>
+                  <dl className="outage-ranking-metrics">
+                    <div><dt>События</dt><dd>{asInt(row.eventCount)}</dd></div>
+                    <div><dt>Не завершены</dt><dd className={row.ongoingCount ? "attention" : ""}>{asInt(row.ongoingCount)}</dd></div>
+                    <div><dt>Простой</dt><dd>{formatOutageDuration(row.totalHours)}</dd></div>
+                    <div><dt>Ожид. реализация</dt><dd>{formatOutageSales(row.expectedSalesLiters)}</dd></div>
+                  </dl>
+                </motion.li>
+              ))}
+            </ol>
+            {rows.length > 30 && (
+              <button className="outage-ranking-more" type="button" onClick={() => setExpandedRows((current) => !current)}>
+                {expandedRows ? "Свернуть список" : `Показать еще ${rows.length - 30}`}
+                <ChevronDown size={17} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
@@ -2206,7 +3088,7 @@ function AnalyticsSimilar({ stations, selected, geo, state, onSelectBase, onClea
             stations={stations}
             selectedStation={selected}
             placeholder="КССС, номер, адрес"
-            emptyHint="Начните вводить АЗС для подбора похожих"
+            emptyHint="Начните вводить АЗС для подбора аналогов"
             onPick={onSelectBase}
           />
           {selected && (
@@ -2219,20 +3101,20 @@ function AnalyticsSimilar({ stations, selected, geo, state, onSelectBase, onClea
 
       <AnalyticsStateMessage
         state={state}
-        emptyText="Выберите АЗС, чтобы подобрать похожие объекты."
-        errorText="Подбор похожих АЗС временно недоступен"
+        emptyText="Выберите АЗС, чтобы подобрать аналоги."
+        errorText="Подбор аналогов временно недоступен"
       />
 
       {state.status === "ready" && (
         <div className="similar-list">
           {state.data.items.map((item) => (
-            <article className="analytics-card similar-card" key={item.ksss}>
+            <article className="analytics-card similar-card" key={item.ksss} aria-labelledby={`similar-${item.ksss}`}>
               <div className="similar-score">
                 <strong>{item.score}</strong>
                 <span>score</span>
               </div>
               <div className="similar-main">
-                <h3>{item.name}</h3>
+                <h3 id={`similar-${item.ksss}`}>{item.name}</h3>
                 <p>{item.ksss} · {item.subject || "Регион не заполнен"}</p>
                 <div className="similar-reasons">
                   {item.reasons.map((reason) => (
@@ -2261,8 +3143,8 @@ function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove
   const availableStations = stations.filter((station) => station.ksss && !compareIds.includes(station.ksss));
   const rows = [
     ["Регион", (item) => item.subject || "—"],
-    ["РУ", (item) => item.regionalManager || "—"],
-    ["ТМ", (item) => item.territoryManager || "—"],
+    ["РУ", (item) => formatPersonName(item.regionalManager)],
+    ["ТМ", (item) => formatPersonName(item.territoryManager)],
     ["Формат", (item) => item.format || "—"],
     ["Локация", (item) => item.location || "—"],
     ["ТРК", (item) => (item.trkCount ? asInt(item.trkCount) : "—")],
@@ -2309,9 +3191,9 @@ function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove
           <table className="compare-table">
             <thead>
               <tr>
-                <th>Показатель</th>
+                <th scope="col">Показатель</th>
                 {state.data.items.map((item) => (
-                  <th key={item.ksss}>
+                  <th key={item.ksss} scope="col">
                     <strong>{item.name}</strong>
                     <span>{item.ksss}</span>
                   </th>
@@ -2321,7 +3203,7 @@ function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove
             <tbody>
               {rows.map(([label, getter]) => (
                 <tr key={label}>
-                  <th>{label}</th>
+                  <th scope="row">{label}</th>
                   {state.data.items.map((item) => (
                     <td key={`${item.ksss}-${label}`}>{getter(item)}</td>
                   ))}
@@ -2402,7 +3284,7 @@ function ControlDashboard({ stations, onOpenStation }) {
         <div className="issue-table">
           {issueStations.slice(0, 28).map((station) => (
             <button type="button" key={station.id} onClick={() => onOpenStation(station.id)}>
-              <span className="status-dot" style={{ background: statusColors[station.status] || "#8f99a8" }} />
+              <span className="status-dot" style={{ background: statusColors[station.status] || "#8f99a8" }} aria-hidden="true" />
               <span>
                 <strong>{station.name}</strong>
                 <small>{station.ksss} · {station.subject || station.address || "Регион не заполнен"}</small>
@@ -2428,25 +3310,28 @@ function FeedbackCard({ feedback, sent, onChange, onSubmit }) {
           <p>Сообщите, если в карточке АЗС нашли неверную информацию.</p>
         </div>
       </div>
-      <label>
+      <label htmlFor="feedback-station">
         <span>АЗС или КССС</span>
         <input
+          id="feedback-station"
           value={feedback.station}
           onChange={(event) => onChange((current) => ({ ...current, station: event.target.value }))}
           placeholder="Например: 2707 или АЗС №02003"
         />
       </label>
-      <label>
+      <label htmlFor="feedback-field">
         <span>Что исправить</span>
         <input
+          id="feedback-field"
           value={feedback.field}
           onChange={(event) => onChange((current) => ({ ...current, field: event.target.value }))}
           placeholder="Телефон, адрес, персонал, сервисы..."
         />
       </label>
-      <label>
+      <label htmlFor="feedback-message">
         <span>Комментарий</span>
         <textarea
+          id="feedback-message"
           value={feedback.message}
           onChange={(event) => onChange((current) => ({ ...current, message: event.target.value }))}
           placeholder="Опишите, какая информация неправильная и что должно быть указано."
@@ -2462,17 +3347,18 @@ function FeedbackCard({ feedback, sent, onChange, onSubmit }) {
   );
 }
 
-function Kpi({ title, value, share, tone = "" }) {
+const Kpi = React.memo(function Kpi({ title, value, share, tone = "" }) {
+  const displayValue = useCountUp(value);
   return (
     <div className={`analytics-kpi ${tone}`}>
       <span>{title}</span>
-      <strong>{asInt(value)}</strong>
+      <strong>{displayValue}</strong>
       <small>{share}% выборки</small>
     </div>
   );
-}
+});
 
-function ChartCard({ title, items, total, compact = false }) {
+const ChartCard = React.memo(function ChartCard({ title, items, total, compact = false }) {
   const reduceMotion = useReducedMotion();
   const maxValue = max(items, (item) => item.value) || 1;
   const widthScale = scaleLinear().domain([0, maxValue]).range([4, 100]).clamp(true);
@@ -2499,16 +3385,17 @@ function ChartCard({ title, items, total, compact = false }) {
       </div>
     </div>
   );
-}
+});
 
-function Metric({ label, value, tone = "" }) {
+const Metric = React.memo(function Metric({ label, value, tone = "" }) {
+  const displayValue = useCountUp(value);
   return (
     <div className={`metric ${tone}`}>
       <span>{label}</span>
-      <strong>{asInt(value)}</strong>
+      <strong>{displayValue}</strong>
     </div>
   );
-}
+});
 
 function FilterRail({ filters, options, setFilter }) {
   return (
@@ -2545,8 +3432,20 @@ function SelectChip({ label, value, options, onChange }) {
   );
 }
 
-function StationList({ stations, selectedId, favorites, density = "comfortable", onSelect, onFavorite, onScroll }) {
+function StationList({ stations, selectedId, favorites, density = "comfortable", onSelect, onFavorite, onScroll, loading = false }) {
   const reduceMotion = useReducedMotion();
+
+  if (!stations.length && loading) {
+    const skeletonCount = density === "compact" ? 8 : 6;
+    return (
+      <div className={`station-list ${density === "compact" ? "compact" : ""}`} aria-busy="true" aria-label="Загружаем список АЗС">
+        {Array.from({ length: skeletonCount }, (_, i) => (
+          <div key={i} className="station-row skeleton" aria-hidden="true" />
+        ))}
+      </div>
+    );
+  }
+
   if (!stations.length) {
     return (
       <div className="empty">
@@ -2573,6 +3472,7 @@ function StationList({ stations, selectedId, favorites, density = "comfortable",
           <span
             className={`status-dot tone-${statusTone(station.status)}`}
             style={{ "--status-color": statusColors[station.status] || "#8f99a8" }}
+            aria-hidden="true"
           />
           <span className="row-main">
             <span className="row-title">
@@ -2590,9 +3490,20 @@ function StationList({ stations, selectedId, favorites, density = "comfortable",
           </span>
           <span
             className={`favorite-dot ${favorites.includes(station.id) ? "on" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-label={favorites.includes(station.id) ? "Убрать из избранного" : "Добавить в избранное"}
+            aria-pressed={favorites.includes(station.id)}
             onClick={(event) => {
               event.stopPropagation();
               onFavorite(station.id);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.stopPropagation();
+                event.preventDefault();
+                onFavorite(station.id);
+              }
             }}
           >
             <Heart size={15} fill="currentColor" />
@@ -2612,7 +3523,7 @@ function Badge({ children, icon, tone = "" }) {
   );
 }
 
-function StationMap({ stations, selected, focusSelected, onSelect }) {
+function StationMap({ stations, selected, focusSelected, onSelect, onCloseFullscreen }) {
   const reduceMotion = useReducedMotion();
   const mapNodeRef = useRef(null);
   const mapRef = useRef(null);
@@ -2622,6 +3533,8 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
   const markerRefs = useRef([]);
   const userMarkerRef = useRef(null);
   const onSelectRef = useRef(onSelect);
+  const headerDragStartRef = useRef(null);
+  const headerDragTimeRef = useRef(0);
   const [mapStatus, setMapStatus] = useState(YANDEX_MAPS_API_KEY ? "idle" : "missing-key");
   const [mapError, setMapError] = useState("");
   const [geoStatus, setGeoStatus] = useState("idle");
@@ -2643,7 +3556,19 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
     }
 
     setMapStatus("loading");
-    loadYandexMaps(YANDEX_MAPS_API_KEY)
+
+    let loadPromise = loadYandexMaps(YANDEX_MAPS_API_KEY);
+
+    // Быстрая диагностика ключа параллельно с загрузкой скрипта
+    checkYandexApiKey(YANDEX_MAPS_API_KEY).then((keyError) => {
+      if (keyError && !cancelled) {
+        setMapError(keyError);
+        setMapStatus("error");
+        yandexMapsPromise = null; // сбрасываем кэш промиса чтобы не блокировать повтор
+      }
+    });
+
+    loadPromise
       .then(({ version, api }) => {
         if (cancelled || !mapNodeRef.current) return;
 
@@ -2837,6 +3762,24 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
     }
   }
 
+  function handleHeaderTouchStart(event) {
+    if (event.target.closest("button")) return;
+    headerDragStartRef.current = event.touches[0]?.clientY ?? 0;
+    headerDragTimeRef.current = Date.now();
+  }
+
+  function handleHeaderTouchEnd(event) {
+    if (headerDragStartRef.current == null || !onCloseFullscreen) return;
+    const endY = event.changedTouches[0]?.clientY ?? headerDragStartRef.current;
+    const delta = endY - headerDragStartRef.current;
+    const elapsedMs = Math.max(Date.now() - headerDragTimeRef.current, 1);
+    const velocity = delta / elapsedMs;
+    headerDragStartRef.current = null;
+    if (delta > 20 && (velocity > 0.6 || delta > 90)) {
+      onCloseFullscreen();
+    }
+  }
+
   return (
     <motion.div
       className="map-surface"
@@ -2844,21 +3787,33 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: "spring", stiffness: 220, damping: 28, mass: 0.9 }}
     >
-      <div className="map-header">
+      <div
+        className="map-header"
+        onTouchStart={handleHeaderTouchStart}
+        onTouchEnd={handleHeaderTouchEnd}
+        onTouchCancel={handleHeaderTouchEnd}
+      >
         <div>
           <strong>{asInt(points.length)} точек на карте</strong>
           <span>Все объекты с координатами</span>
         </div>
-        <button
-          className={`map-locate-button ${geoStatus === "found" ? "active" : ""}`}
-          type="button"
-          onClick={locateUser}
-          disabled={mapStatus !== "ready" || geoStatus === "locating"}
-          aria-label="Показать мою геолокацию"
-          title="Показать мою геолокацию"
-        >
-          <LocateFixed size={18} />
-        </button>
+        <div className="map-header-actions">
+          <button
+            className={`map-locate-button ${geoStatus === "found" ? "active" : ""}`}
+            type="button"
+            onClick={locateUser}
+            disabled={mapStatus !== "ready" || geoStatus === "locating"}
+            aria-label="Показать мою геолокацию"
+            title="Показать мою геолокацию"
+          >
+            <LocateFixed size={18} />
+          </button>
+          {onCloseFullscreen && (
+            <button className="map-close-button" type="button" onClick={onCloseFullscreen} aria-label="Закрыть карту">
+              <X size={18} />
+            </button>
+          )}
+        </div>
       </div>
       <div className="map-canvas">
         <div className="yandex-map" ref={mapNodeRef} />
@@ -2880,10 +3835,23 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
               <>
                 <strong>Карта не загрузилась</strong>
                 <span>
-                  {mapError.includes("YANDEX_MAPS")
-                    ? "Яндекс не отдал JS API. Проверь, что ключ активен для JavaScript API и разрешает текущий адрес приложения."
+                  {mapError.includes("FORBIDDEN") || mapError.includes("Invalid api key")
+                    ? "Ключ Yandex Maps API не разрешает этот адрес. Добавь localhost:5174 в HTTP Referer в кабинете developer.tech.yandex.ru → Ключ → Ограничения."
+                    : mapError.includes("limited")
+                    ? "Ключ Yandex Maps требует HTTP Referer. Добавь localhost:5174 в разрешённые домены ключа."
+                    : mapError.includes("YANDEX_MAPS")
+                    ? "Яндекс не отдал JS API. Проверь, что ключ активен и домен приложения добавлен в разрешения."
                     : mapError || "Проверь API-ключ и ограничения HTTP Referer."}
                 </span>
+                <a
+                  href="https://developer.tech.yandex.ru/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="action-button primary"
+                  style={{ marginTop: 12, display: "inline-flex", fontSize: 13 }}
+                >
+                  Открыть кабинет Яндекса
+                </a>
               </>
             ) : (
               <>
@@ -2898,71 +3866,89 @@ function StationMap({ stations, selected, focusSelected, onSelect }) {
   );
 }
 
-function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState }) {
+function MapStationPreview({ station, onOpen, onDismiss }) {
+  return (
+    <motion.div
+      className="map-preview"
+      role="dialog"
+      aria-label={`Превью АЗС № ${station.stationNumber || station.ksss}`}
+      initial={{ opacity: 0, y: 26, scale: 0.96 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 18, scale: 0.97 }}
+      transition={{ type: "spring", stiffness: 380, damping: 32, mass: 0.8 }}
+    >
+      <button className="map-preview-dismiss" type="button" onClick={onDismiss} aria-label="Скрыть превью">
+        <X size={15} />
+      </button>
+      <div className="map-preview-body">
+        <div className="map-preview-number" aria-hidden="true">
+          {station.stationNumber || station.ksss || "—"}
+        </div>
+        <div className="map-preview-info">
+          <strong>{station.name || `АЗС № ${station.stationNumber}`}</strong>
+          <span>{station.address || station.subject || "Адрес не указан"}</span>
+          <span className={`status-chip tone-${statusTone(station.status)}`}>
+            <i aria-hidden="true" />
+            {shortStatus(station.status)}
+          </span>
+        </div>
+      </div>
+      <button className="map-preview-open action-button primary" type="button" onClick={onOpen}>
+        Открыть анкету <ChevronRight size={16} />
+      </button>
+    </motion.div>
+  );
+}
+
+function StationDetail({ station, favorite, onFavorite, onClose }) {
   const routeUrl = hasValidPoint(station)
     ? `https://yandex.ru/maps/?rtext=~${station.lat},${station.lon}&rtt=auto`
     : "";
   const phone = bestPhone(station);
   const [dragOffset, setDragOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
   const dragStartRef = useRef(null);
-  const suppressGrabberClickRef = useRef(false);
+  const dragStartTimeRef = useRef(0);
+  const panelRef = useRef(null);
 
-  function cycleSheet() {
-    if (suppressGrabberClickRef.current) {
-      suppressGrabberClickRef.current = false;
-      return;
-    }
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      panelRef.current?.querySelector('button, [href], input')?.focus();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [station.id]);
 
-    if (sheetState === "closed" || sheetState === "peek") {
-      onSheetState("half");
-      return;
-    }
-
-    onSheetState(sheetState === "full" ? "half" : "full");
-  }
-
-  function beginSheetDrag(clientY) {
+  // Свайп-закрытие разрешён только когда контент проскроллен до самого верха —
+  // иначе обычный скролл анкеты будет случайно закрывать её.
+  function beginSheetDrag(clientY, scrollTop) {
+    if (scrollTop > 0) return;
     dragStartRef.current = clientY;
-    setDragOffset(0);
+    dragStartTimeRef.current = Date.now();
+    setDragging(true);
   }
 
   function updateSheetDrag(clientY) {
     if (dragStartRef.current == null) return;
-    setDragOffset(Math.max(clientY - dragStartRef.current, -80));
+    setDragOffset(Math.max(clientY - dragStartRef.current, 0));
   }
 
-  function finishSheetDrag(clientY, scrollTop = 0) {
+  function finishSheetDrag(clientY) {
     if (dragStartRef.current == null) return;
     const delta = clientY - dragStartRef.current;
+    const elapsedMs = Math.max(Date.now() - dragStartTimeRef.current, 1);
+    const velocity = delta / elapsedMs;
     dragStartRef.current = null;
+    setDragging(false);
     setDragOffset(0);
-    if (Math.abs(delta) < 36) return;
-    suppressGrabberClickRef.current = true;
-    window.setTimeout(() => {
-      suppressGrabberClickRef.current = false;
-    }, 0);
-    if (delta > 0 && scrollTop > 4) return;
-    if (delta < 0) {
-      onSheetState(sheetState === "closed" || sheetState === "peek" ? "half" : "full");
-    } else {
-      onSheetState("closed");
+    // Закрываем только по резкому (быстрому) или явно завершённому свайпу вниз.
+    if (delta > 20 && (velocity > 0.6 || delta > 140)) {
+      onClose();
     }
   }
 
-  function beginMouseSheetDrag(clientY) {
-    beginSheetDrag(clientY);
-
-    function handleMouseMove(event) {
-      updateSheetDrag(event.clientY);
-    }
-
-    function handleMouseUp(event) {
-      window.removeEventListener("mousemove", handleMouseMove);
-      finishSheetDrag(event.clientY);
-    }
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp, { once: true });
+  function handleTouchStart(event) {
+    if (event.target.closest("a, button, summary, select, input")) return;
+    beginSheetDrag(event.touches[0]?.clientY ?? 0, event.currentTarget.scrollTop);
   }
 
   function handleTouchMove(event) {
@@ -2970,69 +3956,36 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
   }
 
   function handleTouchEnd(event) {
-    finishSheetDrag(event.changedTouches[0]?.clientY ?? dragStartRef.current ?? 0, event.currentTarget.scrollTop);
+    finishSheetDrag(event.changedTouches[0]?.clientY ?? dragStartRef.current ?? 0);
   }
 
   return (
     <motion.aside
-      className={`detail sheet-${sheetState} ${dragOffset ? "dragging" : ""}`}
-      style={{ "--sheet-drag": `${dragOffset}px` }}
-      initial={{ opacity: sheetState === "closed" ? 0 : 1 }}
-      animate={{ opacity: sheetState === "closed" ? 0 : 1 }}
-      exit={{ opacity: 0, y: 80 }}
-      transition={{ opacity: { duration: 0.18 }, y: { duration: 0.2, ease: "easeOut" } }}
-      onTouchStart={(event) => {
-        if (event.target.closest("a, button, summary, select, input")) return;
-        beginSheetDrag(event.touches[0]?.clientY ?? 0);
-      }}
+      ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="detail-station-title"
+      className={`detail ${dragging ? "dragging" : ""}`}
+      initial={{ y: "100%" }}
+      animate={{ y: dragging ? dragOffset : 0 }}
+      exit={{ y: "100%" }}
+      transition={dragging ? { duration: 0 } : { type: "spring", stiffness: 340, damping: 36, mass: 0.9 }}
+      onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
     >
-      <button
-        className="detail-grabber"
-        type="button"
-        onClick={cycleSheet}
-        onTouchStart={(event) => {
-          event.stopPropagation();
-          beginSheetDrag(event.touches[0]?.clientY ?? 0);
-        }}
-        onTouchMove={(event) => {
-          event.stopPropagation();
-          updateSheetDrag(event.touches[0]?.clientY ?? dragStartRef.current ?? 0);
-        }}
-        onTouchEnd={(event) => {
-          event.stopPropagation();
-          finishSheetDrag(event.changedTouches[0]?.clientY ?? dragStartRef.current ?? 0);
-        }}
-        onPointerDown={(event) => {
-          if (event.pointerType === "touch") return;
-          event.currentTarget.setPointerCapture?.(event.pointerId);
-          beginSheetDrag(event.clientY);
-        }}
-        onPointerMove={(event) => {
-          if (event.pointerType === "touch") return;
-          updateSheetDrag(event.clientY);
-        }}
-        onPointerUp={(event) => {
-          if (event.pointerType === "touch") return;
-          finishSheetDrag(event.clientY);
-        }}
-        onMouseDown={(event) => {
-          event.preventDefault();
-          beginMouseSheetDrag(event.clientY);
-        }}
-        aria-label="Развернуть карточку"
-      />
+      <div className="detail-grabber" aria-hidden="true" />
       <div className="detail-head">
         <div className="detail-title-block">
           <div className="detail-meta-line">
             <span className="eyeless">{station.ksss}</span>
             <span className={`status-chip tone-${statusTone(station.status)}`}>
-              <i />
+              <i aria-hidden="true" />
               {shortStatus(station.status)}
             </span>
           </div>
-          <h2>{station.name}</h2>
+          <h2 id="detail-station-title">{station.name}</h2>
           <p>{station.address || station.subject}</p>
           <div className="detail-quick-facts" aria-label="Краткая информация">
             <span>{station.subject || "Регион не указан"}</span>
@@ -3042,9 +3995,14 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
             </span>
           </div>
         </div>
-        <button className={`icon-button favorite ${favorite ? "on" : ""}`} type="button" onClick={onFavorite} aria-label="Избранное">
-          <Heart size={19} fill="currentColor" />
-        </button>
+        <div className="detail-head-actions">
+          <button className={`icon-button favorite ${favorite ? "on" : ""}`} type="button" onClick={onFavorite} aria-label={favorite ? "Убрать из избранного" : "Добавить в избранное"} aria-pressed={favorite}>
+            <Heart size={19} fill="currentColor" />
+          </button>
+          <button className="icon-button detail-close" type="button" onClick={onClose} aria-label="Закрыть анкету">
+            <X size={20} />
+          </button>
+        </div>
       </div>
 
       <div className="action-row">
@@ -3056,6 +4014,8 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
         </a>
       </div>
 
+      <StationFuelStock ksss={station.ksss} />
+      <StationFuelOutages ksss={station.ksss} />
       <StationKpis ksss={station.ksss} />
       <StationStaff ksss={station.ksss} />
 
@@ -3141,9 +4101,477 @@ function StationDetail({ station, favorite, onFavorite, sheetState, onSheetState
   );
 }
 
+function StationFuelStock({ ksss }) {
+  const { stockState, refresh } = useFuelStock(ksss);
+  const groups = useMemo(() => normalizeFuelStockGroups(stockState.data?.items || []), [stockState.data]);
+  const snapshotAt = formatFuelStockTimestamp(stockState.data?.snapshotAt);
+  const importedAt = formatFuelStockTimestamp(stockState.data?.importedAt);
+  const isLoadingInitial = stockState.status === "loading" && !stockState.data;
+  const isUnavailable = stockState.status === "error" && !stockState.data;
+  const hasAnyGroupData = groups.some((group) => group.hasData);
+  const isNoData = stockState.status === "no-data" || (stockState.status === "ready" && !hasAnyGroupData);
+
+  return (
+    <section
+      className="detail-section fuel-stock-section"
+      aria-labelledby="fuel-stock-title"
+      aria-busy={isLoadingInitial || stockState.refreshing}
+    >
+      <div className="fuel-stock-head">
+        <div>
+          <h3 id="fuel-stock-title">
+            <Fuel size={16} /> Остатки топлива
+          </h3>
+          <div className="fuel-stock-meta">
+            <span>
+              <Clock3 size={13} aria-hidden="true" />
+              {snapshotAt ? `Снимок ${snapshotAt}` : "Снимок не получен"}
+            </span>
+            {importedAt && <span>Импорт {importedAt}</span>}
+          </div>
+        </div>
+        {stockState.refreshing && (
+          <span className="fuel-stock-refreshing" role="status">
+            <RefreshCw size={13} aria-hidden="true" /> Обновление
+          </span>
+        )}
+      </div>
+
+      {isLoadingInitial && <FuelStockSkeleton />}
+
+      {isUnavailable && (
+        <div className="kpi-message warning fuel-stock-message" role="alert">
+          <AlertTriangle size={16} aria-hidden="true" />
+          <span>Остатки временно недоступны</span>
+          <button className="fuel-stock-retry" type="button" onClick={() => refresh(false)}>
+            <RefreshCw size={14} aria-hidden="true" /> Повторить
+          </button>
+        </div>
+      )}
+
+      {isNoData && (
+        <div className="kpi-message fuel-stock-message" role="status">
+          <Gauge size={16} aria-hidden="true" />
+          <span>Нет данных об остатках для этой АЗС</span>
+        </div>
+      )}
+
+      {stockState.data?.stale && (
+        <div className="fuel-stock-inline-warning" role="alert">
+          <AlertTriangle size={15} aria-hidden="true" />
+          <span>Данные устарели: проверьте актуальность перед операционным решением.</span>
+        </div>
+      )}
+
+      {stockState.error && !isUnavailable && (
+        <div className="fuel-stock-inline-warning" role="status">
+          <AlertTriangle size={15} aria-hidden="true" />
+          <span>{stockState.error}</span>
+        </div>
+      )}
+
+      {!isLoadingInitial && groups.length > 0 && <FuelStockCarousel groups={groups} />}
+    </section>
+  );
+}
+
+function StationFuelOutages({ ksss }) {
+  const reduceMotion = useReducedMotion();
+  const { outageState, refresh } = useFuelOutages(ksss);
+  const [expanded, setExpanded] = useState(false);
+  const items = useMemo(
+    () => [...(Array.isArray(outageState.data?.items) ? outageState.data.items : [])].sort(compareOutageItems),
+    [outageState.data],
+  );
+  const reportAvailable = Boolean(outageState.data?.importedAt) || Number(outageState.data?.rowCount) > 0;
+  const liveActiveCount = items.filter((item) => !String(item?.endTime || "").trim()).length;
+  const dayEndCount = items.filter(isOutageDayEnd).length;
+  const activeCount = liveActiveCount + dayEndCount;
+  const totalHours = items.reduce((total, item) => total + (numericOrNull(item?.hours) || 0), 0);
+  const expectedSales = items.reduce((total, item) => total + (numericOrNull(item?.expectedSalesLiters) || 0), 0);
+  const visibleItems = expanded ? items : items.slice(0, 3);
+  const reportTimestamp = formatFuelStockTimestamp(
+    outageState.data?.sourceReceivedAt || outageState.data?.importedAt,
+  );
+
+  useEffect(() => {
+    setExpanded(false);
+  }, [ksss]);
+
+  const stateMotion = reduceMotion
+    ? { initial: false, animate: {}, exit: {}, transition: { duration: 0 } }
+    : {
+        initial: { opacity: 0, y: 8 },
+        animate: { opacity: 1, y: 0 },
+        exit: { opacity: 0, y: -5 },
+        transition: { duration: 0.2, ease: "easeOut" },
+      };
+
+  return (
+    <section
+      className="detail-section fuel-outage-section"
+      aria-labelledby="fuel-outage-title"
+      aria-busy={outageState.status === "loading"}
+    >
+      <div className="fuel-outage-head">
+        <div>
+          <h3 id="fuel-outage-title">
+            <Clock3 size={16} aria-hidden="true" /> Простои топлива
+          </h3>
+          {reportAvailable && reportTimestamp && (
+            <span className="fuel-outage-report-meta">Отчет получен {reportTimestamp}</span>
+          )}
+        </div>
+        {outageState.status === "ready" && reportAvailable && (
+          <span className={`fuel-outage-state ${liveActiveCount ? "active" : dayEndCount ? "recorded" : items.length ? "recorded" : "clear"}`}>
+            {liveActiveCount
+              ? `Не завершены ${activeCount}`
+              : dayEndCount
+                ? `На конец суток ${dayEndCount}`
+                : items.length
+                  ? formatOutageCount(items.length)
+                  : "Без простоев"}
+          </span>
+        )}
+      </div>
+
+      <AnimatePresence mode="wait" initial={false}>
+        {outageState.status === "loading" && (
+          <motion.div className="fuel-outage-loading" key="loading" role="status" {...stateMotion}>
+            <i />
+            <span><b /><small /></span>
+          </motion.div>
+        )}
+
+        {outageState.status === "error" && (
+          <motion.div className="fuel-outage-message error" key="error" role="alert" {...stateMotion}>
+            <AlertTriangle size={18} aria-hidden="true" />
+            <span>
+              <strong>Простои временно недоступны</strong>
+              <small>Не удалось получить актуальный отчет.</small>
+            </span>
+            <motion.button
+              type="button"
+              onClick={refresh}
+              whileTap={reduceMotion ? undefined : { scale: 0.96 }}
+            >
+              <RefreshCw size={14} aria-hidden="true" /> Повторить
+            </motion.button>
+          </motion.div>
+        )}
+
+        {outageState.status === "ready" && !reportAvailable && (
+          <motion.div className="fuel-outage-message neutral" key="no-report" role="status" {...stateMotion}>
+            <Clock3 size={18} aria-hidden="true" />
+            <span>
+              <strong>Отчет о простоях еще не загружен</strong>
+              <small>Блок заполнится после первого импорта из почты.</small>
+            </span>
+          </motion.div>
+        )}
+
+        {outageState.status === "ready" && reportAvailable && items.length === 0 && (
+          <motion.div className="fuel-outage-message clear" key="clear" role="status" {...stateMotion}>
+            <CheckCircle2 size={19} aria-hidden="true" />
+            <span>
+              <strong>Простоев топлива на АЗС нет</strong>
+              <small>В актуальном отчете события по этому объекту не зафиксированы.</small>
+            </span>
+          </motion.div>
+        )}
+
+        {outageState.status === "ready" && reportAvailable && items.length > 0 && (
+          <motion.div className="fuel-outage-content" key="events" {...stateMotion}>
+            <dl className="fuel-outage-summary" aria-label="Сводка по простоям">
+              <div>
+                <dt>События</dt>
+                <dd>{asInt(items.length)}</dd>
+              </div>
+              <div>
+                <dt>Суммарный простой</dt>
+                <dd>{formatOutageDuration(totalHours)}</dd>
+              </div>
+              <div>
+                <dt>Ожид. реализация</dt>
+                <dd>{formatOutageSales(expectedSales)}</dd>
+              </div>
+            </dl>
+
+            <ul className="fuel-outage-list" aria-label="События простоев">
+              <AnimatePresence initial={false}>
+                {visibleItems.map((item, index) => {
+                  const dayEnd = isOutageDayEnd(item);
+                  const active = !String(item?.endTime || "").trim();
+                  const statusClass = active ? "active" : dayEnd ? "day-end" : "completed";
+                  const statusLabel = active ? "Идет сейчас" : dayEnd ? "На конец суток" : "Завершен";
+                  return (
+                    <motion.li
+                      className={`fuel-outage-event ${statusClass}`}
+                      key={`${item.date || "date"}-${item.startTime || "time"}-${item.product || "fuel"}-${index}`}
+                      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -5 }}
+                      transition={reduceMotion ? { duration: 0 } : { duration: 0.2, delay: Math.min(index * 0.035, 0.14) }}
+                    >
+                      <span className="fuel-outage-marker" aria-hidden="true">
+                        {active ? <AlertTriangle size={14} /> : dayEnd ? <Clock3 size={14} /> : <CheckCircle2 size={14} />}
+                      </span>
+                      <div className="fuel-outage-event-body">
+                        <div className="fuel-outage-event-head">
+                          <strong>{item.product || "Топливо не указано"}</strong>
+                          <span>{statusLabel}</span>
+                        </div>
+                        <div className="fuel-outage-event-time">
+                          <span>{formatOutageDate(item.date)}</span>
+                          <i aria-hidden="true" />
+                          <span>{outageTimeRange(item)}</span>
+                        </div>
+                        <div className="fuel-outage-event-facts">
+                          <span>
+                            <small>Длительность</small>
+                            <b>{formatOutageDuration(item.hours)}</b>
+                          </span>
+                          <span>
+                            <small>Ожид. реализация</small>
+                            <b>{formatOutageSales(item.expectedSalesLiters)}</b>
+                          </span>
+                        </div>
+                      </div>
+                    </motion.li>
+                  );
+                })}
+              </AnimatePresence>
+            </ul>
+
+            {items.length > 3 && (
+              <motion.button
+                className="fuel-outage-more"
+                type="button"
+                onClick={() => setExpanded((current) => !current)}
+                whileTap={reduceMotion ? undefined : { scale: 0.98 }}
+                aria-expanded={expanded}
+              >
+                {expanded ? "Свернуть" : `Показать еще ${items.length - 3}`}
+                <motion.span animate={{ rotate: expanded ? 180 : 0 }} transition={{ duration: reduceMotion ? 0 : 0.18 }}>
+                  <ChevronDown size={17} aria-hidden="true" />
+                </motion.span>
+              </motion.button>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </section>
+  );
+}
+
+function FuelStockCarousel({ groups }) {
+  const reduceMotion = useReducedMotion();
+  const trackRef = useRef(null);
+  const frameRef = useRef(0);
+  const [navigation, setNavigation] = useState({ activeIndex: 0, canBack: false, canForward: groups.length > 1 });
+
+  const updateNavigation = useCallback(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    const cards = Array.from(track.querySelectorAll("[data-fuel-stock-card]"));
+    const trackLeft = track.getBoundingClientRect().left;
+    let activeIndex = 0;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    cards.forEach((card, index) => {
+      const distance = Math.abs(card.getBoundingClientRect().left - trackLeft);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        activeIndex = index;
+      }
+    });
+    const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+    setNavigation({
+      activeIndex,
+      canBack: track.scrollLeft > 4,
+      canForward: track.scrollLeft < maxScroll - 4,
+    });
+  }, []);
+
+  const scheduleNavigationUpdate = useCallback(() => {
+    cancelAnimationFrame(frameRef.current);
+    frameRef.current = requestAnimationFrame(updateNavigation);
+  }, [updateNavigation]);
+
+  useEffect(() => {
+    scheduleNavigationUpdate();
+    const track = trackRef.current;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleNavigationUpdate);
+    if (track) observer?.observe(track);
+    window.addEventListener("resize", scheduleNavigationUpdate);
+    return () => {
+      cancelAnimationFrame(frameRef.current);
+      observer?.disconnect();
+      window.removeEventListener("resize", scheduleNavigationUpdate);
+    };
+  }, [groups.length, scheduleNavigationUpdate]);
+
+  const move = useCallback((direction) => {
+    const track = trackRef.current;
+    if (!track) return;
+    const cards = Array.from(track.querySelectorAll("[data-fuel-stock-card]"));
+    const targetIndex = Math.max(0, Math.min(cards.length - 1, navigation.activeIndex + direction));
+    const firstOffset = cards[0]?.offsetLeft || 0;
+    const target = cards[targetIndex];
+    if (!target) return;
+    track.scrollTo({
+      left: Math.max(0, target.offsetLeft - firstOffset),
+      behavior: reduceMotion ? "auto" : "smooth",
+    });
+  }, [navigation.activeIndex, reduceMotion]);
+
+  const handleKeyDown = (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    move(event.key === "ArrowLeft" ? -1 : 1);
+  };
+
+  return (
+    <div className="fuel-stock-carousel">
+      <div className="fuel-stock-carousel-nav">
+        <span>{navigation.activeIndex + 1} из {groups.length}</span>
+        <div>
+          <motion.button
+            type="button"
+            className="fuel-stock-nav-button"
+            disabled={!navigation.canBack}
+            onClick={() => move(-1)}
+            whileTap={reduceMotion ? undefined : { scale: 0.94 }}
+            aria-label="Предыдущий вид топлива"
+            title="Назад"
+          >
+            <ChevronLeft size={18} aria-hidden="true" />
+          </motion.button>
+          <motion.button
+            type="button"
+            className="fuel-stock-nav-button"
+            disabled={!navigation.canForward}
+            onClick={() => move(1)}
+            whileTap={reduceMotion ? undefined : { scale: 0.94 }}
+            aria-label="Следующий вид топлива"
+            title="Вперед"
+          >
+            <ChevronRight size={18} aria-hidden="true" />
+          </motion.button>
+        </div>
+      </div>
+      <div
+        ref={trackRef}
+        className="fuel-stock-track-list"
+        role="region"
+        aria-label="Остатки по видам топлива. Используйте стрелки для прокрутки."
+        tabIndex={groups.length > 1 ? 0 : -1}
+        onScroll={scheduleNavigationUpdate}
+        onKeyDown={handleKeyDown}
+      >
+        {groups.map((group, index) => (
+          <FuelStockCard group={group} index={index} reduceMotion={reduceMotion} key={group.key} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FuelStockSkeleton() {
+  return (
+    <div className="fuel-stock-track-list loading" aria-label="Загрузка остатков топлива">
+      {[0, 1, 2].map((item) => (
+        <article className="fuel-stock-card loading" key={item}>
+          <i />
+          <b />
+          <small />
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function FuelStockCard({ group, index, reduceMotion }) {
+  const item = group.item || {};
+  const available = fuelAvailableTons(item);
+  const fill = clampFuelPercent(group.percentage);
+  const StatusIcon = group.tone === "green" ? CheckCircle2 : group.tone === "empty" ? Gauge : AlertTriangle;
+  const stateLabel = group.onDeadStock
+    ? ", отсутствует, доступен только технологический остаток"
+    : group.capacityExceeded
+      ? ", исходный объем DWH выше емкости"
+      : group.isLow
+        ? ", низкий остаток"
+        : "";
+  const ariaLabel = `${group.label}: доступно ${formatFuelTons(available)}, заполненность ${formatFuelPercent(group.percentage)}${stateLabel}`;
+
+  return (
+    <motion.article
+      data-fuel-stock-card
+      className={`fuel-stock-card tone-${group.tone} ${group.hasData ? "" : "no-data"} ${group.isLow ? "low" : ""} ${group.capacityExceeded ? "capacity-exceeded" : ""} ${group.onDeadStock ? "on-dead-stock" : ""}`}
+      style={{ "--fuel-stock-fill": fill / 100 }}
+      aria-label={ariaLabel}
+      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 320, damping: 28, delay: Math.min(index * 0.04, 0.2) }}
+    >
+      <div className="fuel-stock-card-head">
+        <strong>{group.label}</strong>
+        <span className={`fuel-stock-band tone-${group.tone}`}>
+          <StatusIcon size={13} aria-hidden="true" />
+          {fuelStockToneLabel(group)}
+        </span>
+      </div>
+
+      <div className="fuel-stock-value">
+        <span>Доступно</span>
+        <strong>
+          {formatFuelTons(available)}
+          <small>{formatFuelPercent(group.percentage)}</small>
+        </strong>
+      </div>
+
+      <div className="fuel-stock-track" aria-hidden="true">
+        <i />
+      </div>
+
+      {group.capacityExceeded && (
+        <div className="fuel-stock-low capacity-warning">
+          <AlertTriangle size={13} aria-hidden="true" />
+          <span>DWH: объем выше емкости</span>
+        </div>
+      )}
+
+      {group.onDeadStock && (
+        <div className="fuel-stock-low dead-stock">
+          <AlertTriangle size={13} aria-hidden="true" />
+          <span>Только технологический остаток</span>
+        </div>
+      )}
+
+    </motion.article>
+  );
+}
+
 function StationKpis({ ksss }) {
-  const period = useMemo(() => currentMonthPeriod(), []);
+  const reduceMotion = useReducedMotion();
+  const [period, setPeriod] = useState(() => currentMonthPeriod());
+  const [periods, setPeriods] = useState([]);
   const [kpiState, setKpiState] = useState({ status: "idle", data: null, error: "" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchJson("/api/kpis/periods", controller.signal)
+      .then((data) => {
+        const available = Array.isArray(data?.periods) ? data.periods : [];
+        setPeriods(available);
+        if (available.length && !available.includes(period)) {
+          setPeriod(available[available.length - 1]);
+        }
+      })
+      .catch(() => {});
+
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!ksss) {
@@ -3170,7 +4598,7 @@ function StationKpis({ ksss }) {
       })
       .then((data) => {
         if (!data || !Array.isArray(data.metrics) || data.metrics.length === 0) {
-          setKpiState({ status: "ready", data: demoKpiPayload(ksss, period, "no-data"), error: "" });
+          setKpiState({ status: "no-data", data: null, error: "" });
           return;
         }
         setKpiState({ status: "ready", data, error: "" });
@@ -3178,7 +4606,7 @@ function StationKpis({ ksss }) {
       .catch((error) => {
         if (error.name === "AbortError") return;
         if (error.message === "AUTH_REQUIRED") return;
-        setKpiState({ status: "ready", data: demoKpiPayload(ksss, period, error.message), error: "" });
+        setKpiState({ status: "error", data: null, error: error.message });
       });
 
     return () => controller.abort();
@@ -3190,7 +4618,7 @@ function StationKpis({ ksss }) {
         <h3>
           <BarChart3 size={16} /> Показатели месяца
         </h3>
-        <span>{formatPeriod(period)}</span>
+        <PeriodNavigator periods={periods} period={period} onChange={setPeriod} />
       </div>
 
       {kpiState.status === "loading" && (
@@ -3213,31 +4641,46 @@ function StationKpis({ ksss }) {
       )}
 
       {kpiState.status === "no-data" && (
-        <div className="kpi-message">
-          <CircleDot size={16} />
-          <span>По этой АЗС пока нет данных за месяц</span>
-        </div>
+        <>
+          <div className="kpi-source">Нет информации по этой АЗС за выбранный месяц</div>
+          <div className="kpi-grid">
+            {noInfoKpiMetrics.map((metric) => (
+              <article className="kpi-card no-info" key={metric.id}>
+                <span>{metric.label}</span>
+                <strong>{formatKpiValue(metric.value, metric.unit)}</strong>
+                <small>нет инфы</small>
+              </article>
+            ))}
+          </div>
+        </>
       )}
 
       {kpiState.status === "ready" && (
         <>
           <div className="kpi-source">
-            {kpiState.data.source === "placeholder"
-              ? "Заглушка показателей до подключения API"
-              : kpiState.data.source === "mock"
-                ? "Демо-данные API до подключения SQL"
+            {kpiState.data.source === "mock"
+              ? "Демо-данные API до подключения SQL"
+              : kpiState.data.source === "local"
+                ? `Агрегаты DWH · обновлено ${formatMetaDate(kpiState.data)}`
                 : "Данные из БД"}
           </div>
           <div className="kpi-grid">
-            {kpiState.data.metrics.map((metric) => (
-              <article className="kpi-card" key={metric.id}>
+            {kpiState.data.metrics.map((metric, index) => (
+              <motion.article
+                className="kpi-card"
+                key={metric.id}
+                initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ type: "spring", stiffness: 240, damping: 28, delay: reduceMotion ? 0 : index * 0.065 }}
+                whileHover={reduceMotion ? undefined : { y: -2, transition: { duration: 0.15 } }}
+              >
                 <span>{metric.label}</span>
                 <strong>{formatKpiValue(metric.value, metric.unit)}</strong>
                 <div className="kpi-deltas">
                   <small className={deltaTone(metric.momPct)}>MoM {formatDelta(metric.momPct)}</small>
                   <small className={deltaTone(metric.yoyPct)}>YoY {formatDelta(metric.yoyPct)}</small>
                 </div>
-              </article>
+              </motion.article>
             ))}
           </div>
         </>
@@ -3249,6 +4692,7 @@ function StationKpis({ ksss }) {
 function StationStaff({ ksss }) {
   const [period, setPeriod] = useState(() => currentMonthPeriod());
   const [periods, setPeriods] = useState([]);
+  const [periodsStatus, setPeriodsStatus] = useState("loading");
   const [staffState, setStaffState] = useState({ status: "idle", data: null, error: "" });
   const calendarRef = useRef(null);
   const activeDayRef = useRef(null);
@@ -3262,13 +4706,21 @@ function StationStaff({ ksss }) {
         if (available.length && !available.includes(period)) {
           setPeriod(available[available.length - 1]);
         }
+        setPeriodsStatus("ready");
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setPeriodsStatus("error");
+      });
 
     return () => controller.abort();
   }, []);
 
   useEffect(() => {
+    if (periodsStatus !== "ready" || periods.length === 0) {
+      return undefined;
+    }
+
     if (!ksss) {
       setStaffState({ status: "no-data", data: null, error: "" });
       return undefined;
@@ -3280,21 +4732,21 @@ function StationStaff({ ksss }) {
     fetchJson(`/api/stations/${encodeURIComponent(ksss)}/staff?period=${period}`, controller.signal)
       .then((data) => {
         if (!data || !Array.isArray(data.days) || !data.days.length) {
-          setStaffState({ status: "ready", data: demoStaffPayload(ksss, period, "no-data"), error: "" });
+          setStaffState({ status: "no-data", data: noInfoStaffPayload(ksss, period), error: "" });
           return;
         }
         setStaffState({ status: "ready", data, error: "" });
       })
       .catch((error) => {
         if (error.name === "AbortError") return;
-        setStaffState({ status: "ready", data: demoStaffPayload(ksss, period, error.message), error: "" });
+        setStaffState({ status: "error", data: null, error: error.message });
       });
 
     return () => controller.abort();
-  }, [ksss, period]);
+  }, [ksss, period, periodsStatus, periods.length]);
 
   useEffect(() => {
-    if (staffState.status !== "ready") return undefined;
+    if (!["ready", "no-data"].includes(staffState.status)) return undefined;
 
     const frame = window.requestAnimationFrame(() => {
       const calendar = calendarRef.current;
@@ -3310,26 +4762,20 @@ function StationStaff({ ksss }) {
     return () => window.cancelAnimationFrame(frame);
   }, [staffState.status, staffState.data?.ksss, staffState.data?.period, staffState.data?.today?.date]);
 
+  if (periodsStatus === "ready" && periods.length === 0) {
+    return null;
+  }
+
   return (
     <section className="detail-section staff-section">
       <div className="kpi-head">
         <h3>
-          <Users size={16} /> Персонал
+          <Users size={16} /> Рекомендации по персоналу
         </h3>
-        {periods.length > 1 ? (
-          <select className="period-select" value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Период рекомендаций">
-            {periods.map((item) => (
-              <option key={item} value={item}>
-                {formatPeriod(item)}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span>{formatPeriod(period)}</span>
-        )}
+        <PeriodNavigator periods={periods} period={period} onChange={setPeriod} label="Период рекомендаций" />
       </div>
 
-      {staffState.status === "loading" && (
+      {(periodsStatus === "loading" || staffState.status === "loading") && (
         <div className="staff-loading">
           <div className="kpi-card loading">
             <i />
@@ -3344,7 +4790,7 @@ function StationStaff({ ksss }) {
         </div>
       )}
 
-      {staffState.status === "error" && (
+      {(periodsStatus === "error" || staffState.status === "error") && (
         <div className="kpi-message warning">
           <AlertTriangle size={16} />
           <span>Данные по персоналу временно недоступны</span>
@@ -3352,18 +4798,38 @@ function StationStaff({ ksss }) {
       )}
 
       {staffState.status === "no-data" && (
-        <div className="kpi-message">
-          <CircleDot size={16} />
-          <span>По этой АЗС пока нет данных по персоналу</span>
-        </div>
+        <>
+          <div className="kpi-source">Нет рекомендаций по этой АЗС за выбранный месяц</div>
+          <div className="staff-summary no-info">
+            <article>
+              <span>Максимум за сутки</span>
+              <strong>{formatStaffValue(staffState.data?.staffTotal)} чел.</strong>
+            </article>
+            <article>
+              <span>Выбранный день</span>
+              <strong>{formatStaffValue(staffState.data?.today?.day)} днем · {formatStaffValue(staffState.data?.today?.night)} ночью</strong>
+            </article>
+          </div>
+          <div className="staff-calendar" ref={calendarRef} aria-label="Рекомендации по сменам на месяц">
+            {(staffState.data?.days || []).map((day) => {
+              const active = day.date === staffState.data?.today?.date;
+              return (
+                <article className={`staff-day no-info ${active ? "active" : ""}`} ref={active ? activeDayRef : null} key={day.date}>
+                  <span>{formatShortDate(day.date)}</span>
+                  <small>{formatWeekday(day.date)}</small>
+                  <b>{formatStaffValue(day.day)}</b>
+                  <em>{formatStaffValue(day.night)}</em>
+                </article>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {staffState.status === "ready" && (
         <>
           <div className="kpi-source">
-            {staffState.data.source === "placeholder"
-              ? "Заглушка персонала до подключения API"
-              : staffState.data.source === "mock"
+            {staffState.data.source === "mock"
               ? "Демо-рекомендации до подключения SQL"
               : staffState.data.source === "file"
                 ? "Рекомендации из Excel"
@@ -3435,7 +4901,7 @@ function Contact({ title, name, phone }) {
       <CircleDot size={15} />
       <div>
         <span>{title}</span>
-        <strong>{name || "—"}</strong>
+        <strong>{formatPersonName(name)}</strong>
       </div>
       {phone && <a href={`tel:${phone}`}>{phone}</a>}
     </div>
@@ -3456,6 +4922,9 @@ function FilterSheet({ filters, options, setFilter, onClose, onReset }) {
     <div className="sheet-backdrop" onClick={onClose}>
       <div
         className="filter-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Фильтры"
         onClick={(event) => event.stopPropagation()}
         onTouchStart={(event) => setTouchStart(event.touches[0]?.clientY ?? null)}
         onTouchEnd={handleTouchEnd}

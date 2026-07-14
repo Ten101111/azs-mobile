@@ -1,0 +1,43 @@
+# === Secrets — NEVER commit these files ===
+# .env.local holds real SMTP credentials and API keys.
+# The SMTP password in .env.local MUST be rotated if this file was ever committed
+# to version control (check `git log --all -- .env.local`).
+.env.local
+.env.*.local
+.env
+deploy/env.production
+deploy/.server
+
+# === Databases ===
+data/auth.sqlite3
+data/auth.sqlite3-wal
+data/auth.sqlite3-shm
+data/kpi_metrics.sqlite3
+data/kpi_metrics.sqlite3-wal
+data/kpi_metrics.sqlite3-shm
+data/fuel_stock.sqlite3
+data/fuel_stock.sqlite3-wal
+data/fuel_stock.sqlite3-shm
+
+# === Private station data ===
+data/stations.json
+data/staff/
+data/fuel_outages_latest.json
+data/fuel_outages_latest.xlsx
+data/fuel_outages_latest.server.xlsx
+data/mail/
+
+# === Build artifacts ===
+dist/
+node_modules/
+.vite/
+logs/
+artifacts/
+
+# === OS / editor artifacts ===
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

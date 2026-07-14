@@ -3,6 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Content Security Policy for the frontend PWA.
+      • script-src: allow Yandex Maps API (loaded dynamically by main.jsx).
+      • style-src: 'unsafe-inline' is required because React renders inline style objects.
+      • img-src: blob: covers map tiles generated in-memory; https: covers Yandex tile CDN.
+      • connect-src: Yandex geocoder and suggest APIs used by the map widget.
+      • worker-src: Vite PWA service worker.
+      • frame-ancestors is IGNORED inside a <meta> tag — set it in the HTTP response
+        header on your nginx/Caddy/reverse-proxy layer instead.
+      In production also add the HSTS and X-Frame-Options headers on the static server.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self';
+      script-src 'self' https://api-maps.yandex.ru https://yandex.ru https://yastatic.net;
+      style-src 'self' 'unsafe-inline' https://yastatic.net;
+      img-src 'self' data: blob: https:;
+      connect-src 'self' https://*.yandex.ru https://*.yandex.net https://yastatic.net;
+      font-src 'self' data: https://yastatic.net;
+      worker-src 'self' blob:;
+      object-src 'none';
+      base-uri 'self'
+    " />
     <meta name="description" content="Классификатор АЗС ЛУКОЙЛ: реестр объектов, карта, аналитика, контроль качества данных и карточки АЗС." />
     <meta name="application-name" content="АЗС ЛУКОЙЛ" />
     <meta name="theme-color" content="#f7f8fa" />
