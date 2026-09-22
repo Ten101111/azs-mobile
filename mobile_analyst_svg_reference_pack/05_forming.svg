@@ -1,0 +1,25 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-label="Forming">
+
+<defs>
+ <radialGradient id="core" cx="42%" cy="35%" r="70%"><stop offset="0" stop-color="#34373C"/><stop offset=".72" stop-color="#090A0C"/><stop offset="1" stop-color="#050607"/></radialGradient>
+ <linearGradient id="red"><stop stop-color="#FF4147"/><stop offset=".48" stop-color="#E31E24"/><stop offset="1" stop-color="#72070B"/></linearGradient>
+ <linearGradient id="white" x2="0" y2="1"><stop stop-color="#FFF"/><stop offset="1" stop-color="#BFC2C5"/></linearGradient>
+ <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="10" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+
+<circle cx="512" cy="512" r="245" fill="url(#core)" stroke="#292C31" stroke-width="5"/>
+<g fill="none" stroke-linecap="round">
+ <circle cx="512" cy="512" r="337" stroke="url(#red)" stroke-width="88" stroke-dasharray="460 85 320 1253" transform="rotate(-40 512 512)" filter="url(#glow)"/>
+ <circle cx="512" cy="512" r="286" stroke="#B00B11" stroke-width="25" stroke-dasharray="300 65 210 1222" transform="rotate(122 512 512)"/>
+</g>
+<g stroke="#E31E24" fill="none" opacity=".55">
+ <path d="M242 512 C355 512 390 512 425 560"/>
+ <path d="M782 512 C669 512 634 512 599 430"/>
+ <path d="M512 226 C512 340 512 390 512 465"/>
+</g>
+<g fill="url(#white)" >
+    <rect x="425" y="530" width="46" height="118" rx="14"/>
+    <rect x="489" y="465" width="46" height="183" rx="14"/>
+    <rect x="553" y="382" width="46" height="266" rx="14"/></g>
+
+</svg>

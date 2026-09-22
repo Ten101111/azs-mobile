@@ -8,12 +8,15 @@
     "app": "python3 scripts/run_app.py --mode pwa",
     "dev:full": "python3 scripts/run_app.py --mode dev",
     "dev": "vite --host 0.0.0.0 --port 5174 --strictPort",
-    "backend": "python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload",
+    "backend": "./scripts/python.sh -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0 --port 5174 --strictPort",
     "test:e2e:auth": "node tests/auth-access.e2e.mjs",
-    "prepare-data": "python3 scripts/prepare_data.py",
-    "prepare-staff": "python3 scripts/prepare_staff_data.py"
+    "test:backend": "./scripts/python.sh -m unittest discover backend/tests",
+    "prepare-data": "./scripts/python.sh scripts/prepare_data.py",
+    "prepare-staff": "./scripts/python.sh scripts/prepare_staff_data.py",
+    "sync-kpi": "./scripts/python.sh scripts/sync_kpi_metrics.py",
+    "sync-fuel-stock": "./scripts/python.sh scripts/sync_fuel_stock.py"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",

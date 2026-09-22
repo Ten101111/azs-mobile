@@ -1,12 +1,17 @@
+import ipaddress
 import json
 import hashlib
 import html
+import logging
 import os
 import re
 import secrets
 import smtplib
 import sqlite3
 import time
+import urllib.error
+import urllib.request
+import uuid
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -21,7 +26,35 @@ except ImportError:  # pragma: no cover - optional local convenience
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+
+from backend import roles
+from backend.fuel_stock import (
+    CANONICAL_FUELS,
+    FuelStockAvailabilityResponse,
+    FuelStockFuelOptionsResponse,
+    FuelStockImportError,
+    FuelStockImportPayload,
+    FuelStockImportResponse,
+    FuelStockStationResponse,
+    fuel_stock_health,
+    get_station_fuel_stock,
+    init_fuel_stock_db,
+    list_fuel_stock_options,
+    list_stations_with_available_fuel,
+    replace_fuel_stock_snapshot,
+)
+from backend.fuel_outages import (
+    FuelOutageImportError,
+    aggregate_outage_snapshot,
+    get_outage_snapshot,
+    is_outage_ongoing,
+    outage_health,
+    outage_xlsx_path,
+    replace_outage_snapshot,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
@@ -32,6 +65,7 @@ if load_dotenv:
     load_dotenv(PROJECT_DIR / ".env.local", override=True)
 
 AUTH_DB_PATH = DATA_DIR / "auth.sqlite3"
+KPI_DB_PATH = DATA_DIR / "kpi_metrics.sqlite3"
 AUTH_ALLOWLIST_PATH = DATA_DIR / "auth_allowlist.json"
 PRIVATE_STATIONS_PATH = DATA_DIR / "stations.json"
 STATIONS_PATH = PROJECT_DIR / "public" / "stations.json"
@@ -45,13 +79,36 @@ SIMILAR_SQL_TEMPLATE = APP_DIR / "sql" / "station_similar.sql"
 COMPARE_SQL_TEMPLATE = APP_DIR / "sql" / "analytics_compare.sql"
 DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174"
 DEFAULT_ALLOWED_EMAIL_DOMAINS = "lukoil.com,lukoil.ru,licard.com,spb.lukoil.com,ynp.lukoil.com"
+ALLOWED_STATION_STATUSES = frozenset(
+    {
+        "Действующая",
+        "CODO",
+        "Реконструкция",
+        "Консервация",
+        "Арендованные",
+        "Временная приостановка работы",
+    }
+)
 SESSION_COOKIE_NAME = "azs_session"
 SESSION_TTL_SECONDS = int(os.getenv("AUTH_SESSION_TTL_SECONDS", str(60 * 60 * 12)))
+# A visit ends after this much inactivity (no heartbeat/events from the client).
+ANALYTICS_VISIT_GAP_SECONDS = int(os.getenv("ANALYTICS_VISIT_GAP_SECONDS", str(30 * 60)))
+DEFAULT_ADMIN_EMAILS = "artem.manokhin@lukoil.com"
 PASSWORD_ITERATIONS = int(os.getenv("AUTH_PASSWORD_ITERATIONS", "260000"))
 EMAIL_CODE_TTL_SECONDS = int(os.getenv("AUTH_EMAIL_CODE_TTL_SECONDS", str(10 * 60)))
 EMAIL_CODE_LENGTH = int(os.getenv("AUTH_EMAIL_CODE_LENGTH", "6"))
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUTH_RATE_LIMIT: dict[str, list[float]] = {}
+# How many trusted proxy hops sit in front of this server.
+# 0  = no proxy; ignore X-Forwarded-For entirely and use the TCP peer IP.
+# N>0 = trust the N rightmost entries in X-Forwarded-For (added by trusted proxies);
+#       use the entry just to the left of those as the real client IP.
+# Incorrect values allow IP-spoofing attacks on rate-limit counters.
+TRUSTED_PROXY_DEPTH = int(os.getenv("TRUSTED_PROXY_DEPTH", "0"))
+_RATE_LIMIT_CLEANUP_COUNTER: int = 0
+
+logger = logging.getLogger("azs-api")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
 class KpiMetric(BaseModel):
@@ -59,8 +116,8 @@ class KpiMetric(BaseModel):
     label: str
     value: float
     unit: str
-    momPct: float
-    yoyPct: float
+    momPct: Optional[float] = None
+    yoyPct: Optional[float] = None
 
 
 class StationKpiResponse(BaseModel):
@@ -172,10 +229,113 @@ class AuthUser(BaseModel):
     id: int
     email: str
     name: str = ""
+    isAdmin: bool = False
+    role: str = ""
+    roleTitle: str = "Роль не назначена"
+    roleBinding: str = ""
+    scopeLabel: str = "роль не назначена"
+    scopeStations: int = 0
+    unrestricted: bool = False
+    aiDialog: bool = False
+    scopeProblems: list[str] = Field(default_factory=list)
 
 
 class AuthResponse(BaseModel):
     user: AuthUser
+
+
+class MetricsDevice(BaseModel):
+    ua: str = Field(default="", max_length=400)
+    platform: str = Field(default="", max_length=80)
+    screen: str = Field(default="", max_length=20)
+    pwa: bool = False
+    lang: str = Field(default="", max_length=20)
+    tz: str = Field(default="", max_length=60)
+
+
+class MetricsBeatRequest(BaseModel):
+    screen: str = Field(default="", max_length=80)
+    device: Optional[MetricsDevice] = None
+
+
+class UsageEventIn(BaseModel):
+    event: str = Field(min_length=1, max_length=40)
+    screen: str = Field(default="", max_length=80)
+    detail: str = Field(default="", max_length=200)
+
+
+class MetricsEventsRequest(BaseModel):
+    events: list[UsageEventIn] = Field(default_factory=list, max_length=50)
+    device: Optional[MetricsDevice] = None
+
+
+class AdminUserStats(BaseModel):
+    id: int
+    email: str
+    name: str = ""
+    createdAt: int = 0
+    emailVerifiedAt: int = 0
+    lastLoginAt: int = 0
+    lastSeenAt: int = 0
+    visitCount: int = 0
+    totalSeconds: int = 0
+    avgSeconds: int = 0
+    eventCount: int = 0
+    isAdmin: bool = False
+    role: str = ""
+    roleTitle: str = "Роль не назначена"
+    roleBinding: str = ""
+    scopeLabel: str = ""
+    scopeStations: int = 0
+
+
+class AdminUsersResponse(BaseModel):
+    users: list[AdminUserStats]
+    totalUsers: int = 0
+    activeLast7d: int = 0
+
+
+class AdminDailyActivity(BaseModel):
+    date: str
+    visits: int = 0
+    users: int = 0
+    totalSeconds: int = 0
+
+
+class AdminScreenStat(BaseModel):
+    screen: str
+    views: int = 0
+    users: int = 0
+
+
+class AdminActionStat(BaseModel):
+    event: str
+    count: int = 0
+
+
+class AdminDeviceStat(BaseModel):
+    label: str
+    count: int = 0
+
+
+class AdminAuthEvent(BaseModel):
+    email: str
+    event: str
+    reason: str = ""
+    ip: str = ""
+    createdAt: int = 0
+
+
+class AdminActivityResponse(BaseModel):
+    days: int
+    daily: list[AdminDailyActivity]
+    screens: list[AdminScreenStat]
+    actions: list[AdminActionStat]
+    deviceTypes: list[AdminDeviceStat]
+    browsers: list[AdminDeviceStat]
+    pwaVisits: int = 0
+    totalVisits: int = 0
+    recentAuthEvents: list[AdminAuthEvent]
 
 
 class AuthFlowResponse(BaseModel):
@@ -192,12 +352,133 @@ class AuthPolicyResponse(BaseModel):
     emailVerificationRequired: bool = True
 
 
-app = FastAPI(title="AZS KPI API", version="0.2.0")
+class KpiPeriodsResponse(BaseModel):
+    source: str
+    updatedAt: str
+    periods: list[str]
+
+
+class KpiImportRecord(BaseModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    ksss: str = Field(min_length=1, max_length=32)
+    revenue: float
+    revenueNtu: Optional[float] = None
+    revenue_ntu: Optional[float] = None
+    fuelVolume: Optional[float] = None
+    fuel_volume: Optional[float] = None
+    checks: float
+    checksNtu: Optional[float] = None
+    checks_ntu: Optional[float] = None
+    avgCheck: Optional[float] = None
+    avg_check: Optional[float] = None
+    updatedAt: Optional[str] = Field(default=None, max_length=80)
+
+
+class KpiImportPayload(BaseModel):
+    source: str = Field(default="dwh-sync", max_length=120)
+    period: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    replacePeriod: bool = False
+    records: list[KpiImportRecord] = Field(min_length=1)
+
+
+class KpiImportResponse(BaseModel):
+    ok: bool
+    imported: int
+    period: str
+    periods: list[str]
+    updatedAt: str
+
+
+class FuelOutageItem(BaseModel):
+    npo: str = ""
+    region: str = ""
+    station: str = ""
+    ksss: str = ""
+    product: str = ""
+    hours: Optional[float] = None
+    date: str = ""
+    startTime: str = ""
+    endTime: str = ""
+    expectedSalesLiters: Optional[float] = None
+
+
+class FuelOutageImportResponse(BaseModel):
+    ok: bool = True
+    unchanged: bool
+    imported: int
+    stations: int
+    active: int
+    importedAt: str
+    sourceReceivedAt: str = ""
+
+
+class FuelOutageResponse(BaseModel):
+    source: str = "email-fuel-outage-report"
+    sourceMessageId: str = ""
+    sourceReceivedAt: str = ""
+    sourceEmailFrom: str = ""
+    importedAt: str = ""
+    rowCount: int = 0
+    stationCount: int = 0
+    activeCount: int = 0
+    totalHours: float = 0
+    expectedSalesLiters: float = 0
+    total: int = 0
+    offset: int = 0
+    limit: int = 0
+    items: list[FuelOutageItem] = Field(default_factory=list)
+
+
+class FuelOutageAnalyticsTotals(BaseModel):
+    eventCount: int = 0
+    stationCount: int = 0
+    productCount: int = 0
+    ongoingCount: int = 0
+    totalHours: float = 0
+    expectedSalesLiters: float = 0
+
+
+class FuelOutageAnalyticsRow(FuelOutageAnalyticsTotals):
+    id: str
+    label: str
+
+
+class FuelOutageAnalyticsResponse(BaseModel):
+    source: str = "email-fuel-outage-report"
+    sourceReceivedAt: str = ""
+    importedAt: str = ""
+    reportDate: str = ""
+    groupBy: str
+    unmatchedStationCount: int = 0
+    totals: FuelOutageAnalyticsTotals
+    rows: list[FuelOutageAnalyticsRow] = Field(default_factory=list)
+
+
+class StreamFriendlyGZip(GZipMiddleware):
+    """GZip для всего, кроме потока событий.
+
+    Сжатие копит байты во внутреннем буфере компрессора, поэтому этапы
+    рассуждения доезжали бы до браузера одной пачкой в самом конце — ровно
+    то, ради чего поток и заводился.
+    """
+
+    NO_COMPRESS = ("/ask/stream",)
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path", "").endswith(self.NO_COMPRESS):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+app = FastAPI(title="AZS KPI API", version="0.4.1")
+app.add_middleware(StreamFriendlyGZip, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if origin.strip()],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    # PATCH и DELETE нужны диалогам ИИ: переименование, закрепление, удаление.
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -205,6 +486,19 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     init_auth_db()
+    init_kpi_db()
+    init_fuel_stock_db()
+    _sec = logging.getLogger("azs.security")
+    if not auth_enabled():
+        _sec.critical(
+            "AUTH_DISABLED is set — ALL authentication checks are bypassed. "
+            "This MUST NEVER be used in production."
+        )
+    if email_dev_mode():
+        _sec.warning(
+            "AUTH_EMAIL_DEV_MODE is active — OTP codes are returned in API responses. "
+            "This MUST NEVER be used in production."
+        )
 
 
 @app.middleware("http")
@@ -214,9 +508,45 @@ async def add_security_headers(request, call_next):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Permissions-Policy", "geolocation=(self), camera=(), microphone=()")
-    if request.url.scheme == "https":
+    # API endpoints return JSON only — forbid all executable content at the CSP level.
+    # The frontend HTML/JS is served by the static server (Vite / nginx) and must set
+    # its own, more permissive CSP that allows Yandex Maps scripts.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'none'; frame-ancestors 'none'",
+    )
+    # Use request_is_https() instead of request.url.scheme so the HSTS header is
+    # also sent when the app sits behind a TLS-terminating reverse proxy.
+    if request_is_https(request):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    request_id = str(uuid.uuid4())[:8]
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = round((time.perf_counter() - start) * 1000)
+    logger.info(
+        "[%s] %s %s -> %s (%dms)",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled exception: %s: %s", type(exc).__name__, exc, exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 def current_period() -> str:
@@ -330,6 +660,16 @@ def init_auth_db():
             conn.execute("UPDATE users SET email_verified_at = created_at WHERE email_verified_at = 0")
         if "last_login_at" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN last_login_at INTEGER NOT NULL DEFAULT 0")
+        # Ролевая модель: роль и привязка к объектам назначаются администратором.
+        for column, ddl in (
+            ("role", "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT ''"),
+            ("role_binding", "ALTER TABLE users ADD COLUMN role_binding TEXT NOT NULL DEFAULT ''"),
+            ("role_assigned_at", "ALTER TABLE users ADD COLUMN role_assigned_at INTEGER NOT NULL DEFAULT 0"),
+            ("role_assigned_by", "ALTER TABLE users ADD COLUMN role_assigned_by TEXT NOT NULL DEFAULT ''"),
+            ("summary_tiles", "ALTER TABLE users ADD COLUMN summary_tiles TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in user_columns:
+                conn.execute(ddl)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email_verified ON users(email_verified_at)")
         conn.execute(
@@ -396,13 +736,109 @@ def init_auth_db():
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_events_email ON auth_events(email)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_events_created ON auth_events(created_at)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                ended_at INTEGER NOT NULL DEFAULT 0,
+                duration_seconds INTEGER NOT NULL DEFAULT 0,
+                ip TEXT NOT NULL DEFAULT '',
+                device_type TEXT NOT NULL DEFAULT '',
+                os TEXT NOT NULL DEFAULT '',
+                browser TEXT NOT NULL DEFAULT '',
+                screen_size TEXT NOT NULL DEFAULT '',
+                pwa INTEGER NOT NULL DEFAULT 0,
+                language TEXT NOT NULL DEFAULT '',
+                timezone TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_user ON visits(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_started ON visits(started_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_open ON visits(user_id, ended_at)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                visit_id INTEGER NOT NULL DEFAULT 0,
+                event TEXT NOT NULL,
+                screen TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user ON usage_events(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_event ON usage_events(event)")
+
+
+def kpi_connection():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(KPI_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_kpi_db():
+    with kpi_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS station_kpi_daily (
+                metric_date TEXT NOT NULL CHECK (length(metric_date) = 10),
+                period TEXT NOT NULL CHECK (length(period) = 7),
+                ksss TEXT NOT NULL,
+                revenue REAL NOT NULL DEFAULT 0,
+                revenue_ntu REAL,
+                fuel_volume REAL NOT NULL DEFAULT 0,
+                checks REAL NOT NULL DEFAULT 0,
+                checks_ntu REAL,
+                avg_check REAL,
+                updated_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (metric_date, ksss)
+            )
+            """
+        )
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(station_kpi_daily)").fetchall()}
+        for column in ("revenue_ntu", "checks_ntu", "avg_check"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE station_kpi_daily ADD COLUMN {column} REAL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_station_kpi_daily_period ON station_kpi_daily(period)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_station_kpi_daily_ksss_period ON station_kpi_daily(ksss, period)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_station_kpi_daily_updated ON station_kpi_daily(updated_at)")
 
 
 def request_ip(request: Optional[Request] = None) -> str:
+    """Return the real client IP, respecting TRUSTED_PROXY_DEPTH.
+
+    With TRUSTED_PROXY_DEPTH=0 (default) X-Forwarded-For is ignored entirely
+    and the direct TCP peer address is returned — the only spoofing-safe choice
+    when there is no trusted proxy in front of this server.
+    """
     if not request:
         return ""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
+    if TRUSTED_PROXY_DEPTH > 0:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        ips = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
+        if ips:
+            # Peel off the rightmost TRUSTED_PROXY_DEPTH entries (added by trusted
+            # proxies) and take the first entry to the left of them.
+            index = max(len(ips) - TRUSTED_PROXY_DEPTH, 0)
+            candidate = ips[index]
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate
+            except ValueError:
+                pass
+    return request.client.host if request.client else ""
 
 
 def request_is_https(request: Request) -> bool:
@@ -439,8 +875,59 @@ def smtp_configured() -> bool:
     return bool(os.getenv("SMTP_HOST") and os.getenv("SMTP_FROM_EMAIL"))
 
 
+def resend_configured() -> bool:
+    return bool(os.getenv("RESEND_API_KEY") and os.getenv("RESEND_FROM_EMAIL"))
+
+
+def email_configured() -> bool:
+    return smtp_configured() or resend_configured()
+
+
 def email_dev_mode() -> bool:
-    return env_bool("AUTH_EMAIL_DEV_MODE", default=not smtp_configured())
+    return env_bool("AUTH_EMAIL_DEV_MODE", default=not email_configured())
+
+
+def _send_via_resend(to: str, subject: str, html_content: str, text_content: str) -> None:
+    from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
+    from_email = os.getenv("RESEND_FROM_EMAIL", "").strip()
+    api_key = os.getenv("RESEND_API_KEY", "")
+
+    if api_key.startswith("xkeysib-"):
+        # Brevo API
+        payload = json.dumps({
+            "sender": {"name": from_name, "email": from_email},
+            "to": [{"email": to}],
+            "subject": subject,
+            "htmlContent": html_content,
+            "textContent": text_content,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=payload,
+            headers={"api-key": api_key, "Content-Type": "application/json"},
+            method="POST",
+        )
+    else:
+        # Resend API
+        payload = json.dumps({
+            "from": f"{from_name} <{from_email}>",
+            "to": [to],
+            "subject": subject,
+            "html": html_content,
+            "text": text_content,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status not in (200, 201):
+                raise RuntimeError(f"Email API HTTP {resp.status}")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Email API error {exc.code}: {exc.read().decode()}") from exc
 
 
 def app_public_url() -> str:
@@ -473,7 +960,7 @@ def render_verification_email_html(code: str, email: str, name: str = "") -> str
         <td align="center">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e2e7ee;border-radius:16px;overflow:hidden;">
             <tr>
-              <td style="padding:22px 24px;background:#c91d32;color:#ffffff;">
+              <td style="padding:22px 24px;background:#E31E24;color:#ffffff;">
                 <div style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.86;">Корпоративный доступ</div>
                 <div style="margin-top:8px;font-size:24px;line-height:1.15;font-weight:800;">Классификатор АЗС</div>
               </td>
@@ -488,7 +975,7 @@ def render_verification_email_html(code: str, email: str, name: str = "") -> str
               <td style="padding:12px 24px 8px;">
                 <div style="border:1px solid #f1ccd1;background:#fff1f3;border-radius:14px;padding:18px;text-align:center;">
                   <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#8f1425;">Ваш код</div>
-                  <div style="margin-top:8px;font-size:38px;line-height:1;font-weight:900;letter-spacing:.18em;color:#c91d32;">{safe_code}</div>
+                  <div style="margin-top:8px;font-size:38px;line-height:1;font-weight:900;letter-spacing:.18em;color:#E31E24;">{safe_code}</div>
                 </div>
               </td>
             </tr>
@@ -542,7 +1029,7 @@ def render_password_reset_email_html(code: str, email: str, name: str = "") -> s
         <td align="center">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e2e7ee;border-radius:16px;overflow:hidden;">
             <tr>
-              <td style="padding:22px 24px;background:#c91d32;color:#ffffff;">
+              <td style="padding:22px 24px;background:#E31E24;color:#ffffff;">
                 <div style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.86;">Корпоративный доступ</div>
                 <div style="margin-top:8px;font-size:24px;line-height:1.15;font-weight:800;">Классификатор АЗС</div>
               </td>
@@ -557,7 +1044,7 @@ def render_password_reset_email_html(code: str, email: str, name: str = "") -> s
               <td style="padding:12px 24px 8px;">
                 <div style="border:1px solid #f1ccd1;background:#fff1f3;border-radius:14px;padding:18px;text-align:center;">
                   <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#8f1425;">Код восстановления</div>
-                  <div style="margin-top:8px;font-size:38px;line-height:1;font-weight:900;letter-spacing:.18em;color:#c91d32;">{safe_code}</div>
+                  <div style="margin-top:8px;font-size:38px;line-height:1;font-weight:900;letter-spacing:.18em;color:#E31E24;">{safe_code}</div>
                 </div>
               </td>
             </tr>
@@ -592,30 +1079,36 @@ def render_password_reset_email_text(code: str, email: str) -> str:
 
 
 def send_verification_email(email: str, code: str, name: str = ""):
-    if not smtp_configured():
+    if not email_configured():
         if email_dev_mode():
             print(f"[auth] verification code for {email}: {code}", flush=True)
             return
-        raise HTTPException(status_code=500, detail="SMTP не настроен для отправки кода подтверждения")
+        raise HTTPException(status_code=500, detail="Email не настроен для отправки кода подтверждения")
 
-    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
-    from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "587"))
-    timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
-    use_ssl = env_bool("SMTP_USE_SSL", False)
-    use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
-
-    message = EmailMessage()
-    message["Subject"] = "Код подтверждения для Классификатора АЗС"
-    message["From"] = f"{from_name} <{from_email}>"
-    message["To"] = email
-    message.set_content(render_verification_email_text(code, email))
-    message.add_alternative(render_verification_email_html(code, email, name), subtype="html")
+    subject = "Код подтверждения для Классификатора АЗС"
+    html_content = render_verification_email_html(code, email, name)
+    text_content = render_verification_email_text(code, email)
 
     try:
+        if resend_configured():
+            _send_via_resend(email, subject, html_content, text_content)
+            return
+
+        from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
+        from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
+        username = os.getenv("SMTP_USERNAME", "").strip()
+        password = os.getenv("SMTP_PASSWORD", "")
+        host = os.getenv("SMTP_HOST", "").strip()
+        port = int(os.getenv("SMTP_PORT", "587"))
+        timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
+        use_ssl = env_bool("SMTP_USE_SSL", False)
+        use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = f"{from_name} <{from_email}>"
+        message["To"] = email
+        message.set_content(text_content)
+        message.add_alternative(html_content, subtype="html")
         if use_ssl:
             with smtplib.SMTP_SSL(host, port, timeout=timeout) as smtp:
                 if username or password:
@@ -635,30 +1128,36 @@ def send_verification_email(email: str, code: str, name: str = ""):
 
 
 def send_password_reset_email(email: str, code: str, name: str = ""):
-    if not smtp_configured():
+    if not email_configured():
         if email_dev_mode():
             print(f"[auth] password reset code for {email}: {code}", flush=True)
             return
-        raise HTTPException(status_code=500, detail="SMTP не настроен для отправки кода восстановления")
+        raise HTTPException(status_code=500, detail="Email не настроен для отправки кода восстановления")
 
-    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
-    from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "587"))
-    timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
-    use_ssl = env_bool("SMTP_USE_SSL", False)
-    use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
-
-    message = EmailMessage()
-    message["Subject"] = "Код восстановления пароля для Классификатора АЗС"
-    message["From"] = f"{from_name} <{from_email}>"
-    message["To"] = email
-    message.set_content(render_password_reset_email_text(code, email))
-    message.add_alternative(render_password_reset_email_html(code, email, name), subtype="html")
+    subject = "Код восстановления пароля для Классификатора АЗС"
+    html_content = render_password_reset_email_html(code, email, name)
+    text_content = render_password_reset_email_text(code, email)
 
     try:
+        if resend_configured():
+            _send_via_resend(email, subject, html_content, text_content)
+            return
+
+        from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
+        from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
+        username = os.getenv("SMTP_USERNAME", "").strip()
+        password = os.getenv("SMTP_PASSWORD", "")
+        host = os.getenv("SMTP_HOST", "").strip()
+        port = int(os.getenv("SMTP_PORT", "587"))
+        timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
+        use_ssl = env_bool("SMTP_USE_SSL", False)
+        use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = f"{from_name} <{from_email}>"
+        message["To"] = email
+        message.set_content(text_content)
+        message.add_alternative(html_content, subtype="html")
         if use_ssl:
             with smtplib.SMTP_SSL(host, port, timeout=timeout) as smtp:
                 if username or password:
@@ -766,19 +1265,36 @@ def hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def get_client_ip(request: Request) -> str:
+    """Return the real client IP for rate-limiting purposes.
+
+    Delegates to request_ip() so that TRUSTED_PROXY_DEPTH is the single
+    source of truth for XFF handling across the whole codebase.
+    """
+    return request_ip(request) or "unknown"
+
+
 def client_key(request: Request, scope: str) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    host = forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
-    return f"{scope}:{host}"
+    return f"{scope}:{get_client_ip(request)}"
 
 
 def enforce_rate_limit_key(key: str, limit: int, window_seconds: int = 60):
+    global _RATE_LIMIT_CLEANUP_COUNTER
     now = time.time()
     recent = [item for item in AUTH_RATE_LIMIT.get(key, []) if now - item < window_seconds]
     if len(recent) >= limit:
         raise HTTPException(status_code=429, detail="Слишком много попыток. Повторите позже.")
     recent.append(now)
     AUTH_RATE_LIMIT[key] = recent
+    # Periodically evict stale entries to prevent unbounded memory growth
+    # when the server is hit by many distinct IPs (e.g. a distributed attack).
+    _RATE_LIMIT_CLEANUP_COUNTER += 1
+    if _RATE_LIMIT_CLEANUP_COUNTER >= 500:
+        _RATE_LIMIT_CLEANUP_COUNTER = 0
+        cutoff = now - 600  # keep at most 10 min of history
+        stale = [k for k, v in list(AUTH_RATE_LIMIT.items()) if not v or all(t < cutoff for t in v)]
+        for k in stale:
+            AUTH_RATE_LIMIT.pop(k, None)
 
 
 def enforce_rate_limit(request: Request, scope: str, limit: int, window_seconds: int = 60):
@@ -790,8 +1306,175 @@ def enforce_email_rate_limit(email: str, scope: str, limit: int, window_seconds:
     enforce_rate_limit_key(f"{scope}:email:{email_key}", limit, window_seconds)
 
 
+def admin_emails() -> set[str]:
+    raw = os.getenv("ADMIN_EMAILS", DEFAULT_ADMIN_EMAILS)
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def is_admin_email(email: str) -> bool:
+    return email.strip().lower() in admin_emails()
+
+
 def user_from_row(row: sqlite3.Row) -> AuthUser:
-    return AuthUser(id=int(row["id"]), email=str(row["email"]), name=str(row["name"] or ""))
+    """Собирает профиль вместе с ролью и областью данных.
+
+    Область вычисляется здесь и только здесь: ниже по стеку её уже нельзя
+    ни расширить параметром запроса, ни подменить текстом вопроса к ИИ.
+    """
+    email = str(row["email"])
+    is_admin = is_admin_email(email)
+
+    keys = row.keys()
+    role = str(row["role"] or "") if "role" in keys else ""
+    binding = str(row["role_binding"] or "") if "role_binding" in keys else ""
+    # Администратор по списку почт остаётся администратором независимо от записи.
+    if is_admin and role not in {"admin", "subadmin"}:
+        role, binding = "admin", ""
+
+    scope = roles.resolve(role, binding)
+    spec = roles.describe(role)
+    return AuthUser(
+        id=int(row["id"]),
+        email=email,
+        name=str(row["name"] or ""),
+        isAdmin=is_admin,
+        role=role,
+        roleTitle=spec["title"],
+        roleBinding=binding,
+        scopeLabel=scope.label,
+        scopeStations=scope.stations,
+        unrestricted=scope.unrestricted,
+        aiDialog=bool(spec["aiDialog"]),
+        scopeProblems=scope.problems,
+    )
+
+
+def parse_user_agent(ua: str) -> tuple[str, str, str]:
+    """Very small server-side UA classifier: (device_type, os, browser)."""
+    value = (ua or "").lower()
+    if "ipad" in value or ("android" in value and "mobile" not in value) or "tablet" in value:
+        device = "tablet"
+    elif "iphone" in value or "android" in value or "mobile" in value:
+        device = "mobile"
+    else:
+        device = "desktop"
+
+    if "iphone" in value or "ipad" in value or "ios" in value:
+        os_name = "iOS"
+    elif "android" in value:
+        os_name = "Android"
+    elif "mac os" in value or "macintosh" in value:
+        os_name = "macOS"
+    elif "windows" in value:
+        os_name = "Windows"
+    elif "linux" in value:
+        os_name = "Linux"
+    else:
+        os_name = "other"
+
+    if "yabrowser" in value:
+        browser = "Yandex"
+    elif "edg/" in value or "edge" in value:
+        browser = "Edge"
+    elif "opr/" in value or "opera" in value:
+        browser = "Opera"
+    elif "firefox" in value:
+        browser = "Firefox"
+    elif "chrome" in value or "crios" in value:
+        browser = "Chrome"
+    elif "safari" in value:
+        browser = "Safari"
+    else:
+        browser = "other"
+    return device, os_name, browser
+
+
+_METRIC_TEXT_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def clean_metric_text(value: str, limit: int) -> str:
+    return _METRIC_TEXT_PATTERN.sub("", str(value or "")).strip()[:limit]
+
+
+def touch_visit(
+    conn: sqlite3.Connection,
+    user_id: int,
+    ip: str,
+    user_agent: str,
+    device: Optional[MetricsDevice],
+    now: Optional[int] = None,
+) -> int:
+    """Extend the user's open visit or start a new one after a period of inactivity."""
+    now = int(now or time.time())
+    row = conn.execute(
+        "SELECT id, started_at, last_seen_at, device_type FROM visits WHERE user_id = ? AND ended_at = 0 ORDER BY id DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+
+    if row and now - int(row["last_seen_at"]) <= ANALYTICS_VISIT_GAP_SECONDS and now >= int(row["started_at"]):
+        visit_id = int(row["id"])
+        conn.execute(
+            "UPDATE visits SET last_seen_at = ?, duration_seconds = ? WHERE id = ?",
+            (now, now - int(row["started_at"]), visit_id),
+        )
+        if device and not str(row["device_type"] or ""):
+            device_type, os_name, browser = parse_user_agent(device.ua or user_agent)
+            conn.execute(
+                """
+                UPDATE visits
+                SET device_type = ?, os = ?, browser = ?, screen_size = ?, pwa = ?, language = ?, timezone = ?, user_agent = ?
+                WHERE id = ?
+                """,
+                (
+                    device_type,
+                    os_name,
+                    browser,
+                    clean_metric_text(device.screen, 20),
+                    1 if device.pwa else 0,
+                    clean_metric_text(device.lang, 20),
+                    clean_metric_text(device.tz, 60),
+                    clean_metric_text(device.ua or user_agent, 400),
+                    visit_id,
+                ),
+            )
+        return visit_id
+
+    # Close any stale open visits before starting a new one.
+    for stale in conn.execute(
+        "SELECT id, started_at, last_seen_at FROM visits WHERE user_id = ? AND ended_at = 0",
+        (user_id,),
+    ).fetchall():
+        last_seen = int(stale["last_seen_at"])
+        conn.execute(
+            "UPDATE visits SET ended_at = ?, duration_seconds = ? WHERE id = ?",
+            (last_seen, max(0, last_seen - int(stale["started_at"])), int(stale["id"])),
+        )
+
+    ua_source = (device.ua if device and device.ua else user_agent) or ""
+    device_type, os_name, browser = parse_user_agent(ua_source)
+    cursor = conn.execute(
+        """
+        INSERT INTO visits (
+            user_id, started_at, last_seen_at, ended_at, duration_seconds, ip,
+            device_type, os, browser, screen_size, pwa, language, timezone, user_agent
+        ) VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            now,
+            now,
+            clean_metric_text(ip, 64),
+            device_type,
+            os_name,
+            browser,
+            clean_metric_text(device.screen if device else "", 20),
+            1 if (device and device.pwa) else 0,
+            clean_metric_text(device.lang if device else "", 20),
+            clean_metric_text(device.tz if device else "", 60),
+            clean_metric_text(ua_source, 400),
+        ),
+    )
+    return int(cursor.lastrowid)
 
 
 def create_session(response: Response, request: Request, user_id: int):
@@ -810,7 +1493,7 @@ def create_session(response: Response, request: Request, user_id: int):
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         secure=request_is_https(request),
-        samesite="lax",
+        samesite="strict",  # strict prevents the cookie from being sent on cross-site navigations
         path="/",
     )
 
@@ -820,12 +1503,12 @@ def clear_session(response: Response, request: Request):
     if token:
         with auth_connection() as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (hash_session_token(token),))
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/", samesite="lax")
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/", samesite="strict")
 
 
 def current_user_from_request(request: Request) -> Optional[AuthUser]:
     if not auth_enabled():
-        return AuthUser(id=0, email="dev@local", name="Dev mode")
+        return AuthUser(id=0, email="dev@local", name="Dev mode", isAdmin=True)
 
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
@@ -859,12 +1542,32 @@ def require_user(request: Request) -> AuthUser:
     return user
 
 
+def require_admin(request: Request) -> AuthUser:
+    user = require_user(request)
+    if not user.isAdmin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+    return user
+
+
 def validate_period(period: str) -> str:
     try:
         datetime.strptime(period, "%Y-%m")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="period must use YYYY-MM format") from exc
     return period
+
+
+# KSSS identifiers are alphanumeric codes up to 32 characters.
+# Rejecting anything outside this pattern blocks path-traversal sequences
+# (../../, %2F, etc.) and injection payloads before they reach any data layer.
+_KSSS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$")
+
+
+def validate_ksss(ksss: str) -> str:
+    """Validate and return a station identifier, or raise HTTP 422."""
+    if not ksss or not _KSSS_PATTERN.match(ksss):
+        raise HTTPException(status_code=422, detail="Некорректный идентификатор станции")
+    return ksss
 
 
 def period_bounds(period: str) -> dict[str, date]:
@@ -887,6 +1590,232 @@ def period_bounds(period: str) -> dict[str, date]:
     }
 
 
+def previous_period(period: str) -> str:
+    bounds = period_bounds(period)
+    return bounds["previous_period_start"].strftime("%Y-%m")
+
+
+def previous_year_period(period: str) -> str:
+    bounds = period_bounds(period)
+    return bounds["previous_year_start"].strftime("%Y-%m")
+
+
+def validate_metric_date(value: str) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD format") from exc
+
+
+def kpi_import_max_records() -> int:
+    try:
+        return max(1, int(os.getenv("KPI_IMPORT_MAX_RECORDS", "10000")))
+    except ValueError:
+        return 10000
+
+
+def fuel_stock_import_max_records() -> int:
+    try:
+        return max(1, int(os.getenv("FUEL_STOCK_IMPORT_MAX_RECORDS", "10000")))
+    except ValueError:
+        return 10000
+
+
+def fuel_stock_import_max_body_bytes() -> int:
+    try:
+        return max(1024, int(os.getenv("FUEL_STOCK_IMPORT_MAX_BODY_BYTES", str(5 * 1024 * 1024))))
+    except ValueError:
+        return 5 * 1024 * 1024
+
+
+def fuel_outage_import_max_body_bytes() -> int:
+    try:
+        return max(1024, int(os.getenv("FUEL_OUTAGE_IMPORT_MAX_BODY_BYTES", str(10 * 1024 * 1024))))
+    except ValueError:
+        return 10 * 1024 * 1024
+
+
+def _require_bearer_token(request: Request, token: str, token_hash: str, label: str):
+    if not token and not token_hash:
+        raise HTTPException(status_code=503, detail=f"{label} token is not configured")
+
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, provided_token = auth_header.partition(" ")
+    provided_token = provided_token.strip()
+    if scheme.lower() != "bearer" or not provided_token:
+        raise HTTPException(status_code=401, detail=f"{label} token is required")
+
+    if token and secrets.compare_digest(provided_token, token):
+        return
+
+    provided_hash = hashlib.sha256(provided_token.encode("utf-8")).hexdigest()
+    if token_hash and secrets.compare_digest(provided_hash, token_hash):
+        return
+
+    raise HTTPException(status_code=403, detail=f"{label} token is invalid")
+
+
+def require_kpi_import_token(request: Request):
+    configured_token = os.getenv("KPI_IMPORT_TOKEN", "")
+    configured_hash = os.getenv("KPI_IMPORT_TOKEN_SHA256", "").strip().lower()
+    _require_bearer_token(request, configured_token, configured_hash, "KPI import")
+
+
+def require_fuel_stock_import_token(request: Request):
+    configured_token = os.getenv("FUEL_STOCK_IMPORT_TOKEN", "")
+    configured_hash = os.getenv("FUEL_STOCK_IMPORT_TOKEN_SHA256", "").strip().lower()
+    _require_bearer_token(request, configured_token, configured_hash, "Fuel stock import")
+
+
+def require_fuel_outage_import_token(request: Request):
+    configured_token = os.getenv("FUEL_OUTAGE_IMPORT_TOKEN", "")
+    configured_hash = os.getenv("FUEL_OUTAGE_IMPORT_TOKEN_SHA256", "").strip().lower()
+    _require_bearer_token(request, configured_token, configured_hash, "Fuel outage import")
+
+
+def validate_import_body_size(request: Request, payload: BaseModel, max_bytes: int):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(status_code=413, detail="Import payload body is too large")
+        except ValueError:
+            pass
+    if len(payload.model_dump_json().encode("utf-8")) > max_bytes:
+        raise HTTPException(status_code=413, detail="Import payload body is too large")
+
+
+def kpi_periods() -> list[str]:
+    init_kpi_db()
+    with kpi_connection() as conn:
+        rows = conn.execute("SELECT DISTINCT period FROM station_kpi_daily ORDER BY period").fetchall()
+    return [str(row["period"]) for row in rows]
+
+
+def latest_kpi_updated_at(conn: sqlite3.Connection, period: Optional[str] = None, ksss_values: Optional[list[str]] = None) -> str:
+    params: list[str] = []
+    clauses = []
+    if period:
+        clauses.append("period = ?")
+        params.append(period)
+    if ksss_values:
+        placeholders = ",".join("?" for _ in ksss_values)
+        clauses.append(f"ksss IN ({placeholders})")
+        params.extend(ksss_values)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    row = conn.execute(f"SELECT MAX(updated_at) AS updated_at FROM station_kpi_daily {where}", params).fetchone()
+    return str(row["updated_at"] or datetime.now(timezone.utc).isoformat(timespec="seconds")) if row else datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def empty_kpi_values(has_data: bool = False) -> dict[str, object]:
+    return {"revenue": 0, "fuelVolume": 0, "checks": 0, "avgCheck": 0, "hasData": has_data}
+
+
+def period_metric_values(
+    conn: sqlite3.Connection,
+    period: str,
+    ksss_values: Optional[list[str]] = None,
+    through_day: Optional[int] = None,
+) -> dict[str, object]:
+    validate_period(period)
+    params: list[str] = [period]
+    clauses = ["period = ?"]
+    if ksss_values is not None:
+        normalized = [validate_ksss(str(ksss)) for ksss in ksss_values if str(ksss).strip()]
+        if not normalized:
+            return empty_kpi_values()
+        placeholders = ",".join("?" for _ in normalized)
+        clauses.append(f"ksss IN ({placeholders})")
+        params.extend(normalized)
+    if through_day is not None:
+        year, month = (int(part) for part in period.split("-"))
+        cutoff_day = min(max(int(through_day), 1), monthrange(year, month)[1])
+        clauses.append("metric_date <= ?")
+        params.append(f"{period}-{cutoff_day:02d}")
+
+    row = conn.execute(
+        f"""
+        SELECT
+            COUNT(*) AS row_count,
+            SUM(revenue) AS revenue,
+            SUM(revenue_ntu) AS revenue_ntu,
+            SUM(fuel_volume) AS fuel_volume,
+            SUM(checks) AS checks,
+            SUM(checks_ntu) AS checks_ntu,
+            COUNT(checks_ntu) AS ntu_row_count,
+            AVG(avg_check) AS imported_avg_check,
+            MAX(metric_date) AS max_date
+        FROM station_kpi_daily
+        WHERE {' AND '.join(clauses)}
+        """,
+        params,
+    ).fetchone()
+
+    if not row or int(row["row_count"] or 0) == 0:
+        return empty_kpi_values()
+
+    revenue = float(row["revenue"] or 0)
+    fuel_volume = float(row["fuel_volume"] or 0)
+    checks = float(row["checks"] or 0)
+    checks_ntu = float(row["checks_ntu"] or 0)
+    if int(row["ntu_row_count"] or 0) > 0:
+        avg_check = round(float(row["revenue_ntu"] or 0) / checks_ntu) if checks_ntu else 0
+    elif row["imported_avg_check"] is not None:
+        avg_check = round(float(row["imported_avg_check"]))
+    else:
+        avg_check = round(revenue / checks) if checks else 0
+    return {
+        "revenue": revenue,
+        "fuelVolume": fuel_volume,
+        "checks": checks,
+        "avgCheck": avg_check,
+        "hasData": True,
+        "maxDate": str(row["max_date"] or ""),
+    }
+
+
+def pct_delta(current: float, baseline: float, baseline_has_data: bool) -> Optional[float]:
+    if not baseline_has_data or not baseline:
+        return None
+    return round(((current - baseline) / abs(baseline)) * 100, 1)
+
+
+def kpi_deltas(current: dict[str, object], previous: dict[str, object], year: dict[str, object]) -> dict[str, Optional[float]]:
+    return {
+        f"{metric_id}_mom_pct": pct_delta(
+            float(current.get(metric_id, 0)),
+            float(previous.get(metric_id, 0)),
+            bool(previous.get("hasData")),
+        )
+        for metric_id in ("revenue", "fuelVolume", "checks", "avgCheck")
+    } | {
+        f"{metric_id}_yoy_pct": pct_delta(
+            float(current.get(metric_id, 0)),
+            float(year.get(metric_id, 0)),
+            bool(year.get("hasData")),
+        )
+        for metric_id in ("revenue", "fuelVolume", "checks", "avgCheck")
+    }
+
+
+def local_metric_set(
+    conn: sqlite3.Connection,
+    period: str,
+    ksss_values: list[str],
+) -> tuple[dict[str, object], dict[str, Optional[float]]]:
+    current = period_metric_values(conn, period, ksss_values)
+    max_date = str(current.get("maxDate") or "")
+    through_day: Optional[int] = None
+    if max_date:
+        period_year, period_month = (int(part) for part in period.split("-"))
+        loaded_day = int(max_date[-2:])
+        if loaded_day < monthrange(period_year, period_month)[1]:
+            through_day = loaded_day
+    previous = period_metric_values(conn, previous_period(period), ksss_values, through_day)
+    year = period_metric_values(conn, previous_year_period(period), ksss_values, through_day)
+    return current, kpi_deltas(current, previous, year)
+
+
 @lru_cache(maxsize=1)
 def load_station_payload() -> dict:
     path = PRIVATE_STATIONS_PATH if PRIVATE_STATIONS_PATH.exists() else STATIONS_PATH if STATIONS_PATH.exists() else STATIONS_SAMPLE_PATH
@@ -896,7 +1825,61 @@ def load_station_payload() -> dict:
 
 
 def load_stations() -> list[dict]:
-    return load_station_payload().get("stations", [])
+    return [
+        station
+        for station in load_station_payload().get("stations", [])
+        if str(station.get("status") or "").strip() in ALLOWED_STATION_STATUSES
+    ]
+
+
+def visible_station_payload() -> dict:
+    payload = load_station_payload()
+    meta = dict(payload.get("meta") or {})
+    stations = load_stations()
+    meta["count"] = len(stations)
+    return {"meta": meta, "stations": stations}
+
+
+# --- Область данных пользователя ------------------------------------------
+# Считается на сервере по роли из учётной записи. Запрос её не расширяет:
+# параметры эндпоинтов могут только сузить то, что и так разрешено.
+
+@lru_cache(maxsize=256)
+def _scope_cached(role: str, binding: str) -> tuple:
+    scope = roles.resolve(role, binding)
+    return (scope.unrestricted, tuple(scope.ksss), scope.label)
+
+
+def user_scope(user: "AuthUser") -> tuple[bool, set[str], str]:
+    unrestricted, ksss, label = _scope_cached(user.role or "", user.roleBinding or "")
+    return unrestricted, set(ksss), label
+
+
+def allowed_ksss(user: "AuthUser") -> Optional[set[str]]:
+    """None — ограничений нет. Пустое множество — пользователю не видно ничего."""
+    unrestricted, ksss, _ = user_scope(user)
+    return None if unrestricted else ksss
+
+
+def stations_in_scope(user: "AuthUser") -> list[dict]:
+    allowed = allowed_ksss(user)
+    stations = load_stations()
+    if allowed is None:
+        return stations
+    return [station for station in stations if str(station.get("ksss")) in allowed]
+
+
+def ensure_station_in_scope(ksss: str, user: "AuthUser") -> None:
+    allowed = allowed_ksss(user)
+    if allowed is not None and str(ksss) not in allowed:
+        raise HTTPException(status_code=403, detail="Объект вне вашей области данных")
+
+
+def ksss_in_scope(ksss_list: list[str], user: "AuthUser") -> list[str]:
+    allowed = allowed_ksss(user)
+    if allowed is None:
+        return ksss_list
+    return [value for value in ksss_list if str(value) in allowed]
 
 
 def station_by_ksss(ksss: str) -> Optional[dict]:
@@ -987,21 +1970,28 @@ def mock_metric_values(ksss: str, period: str) -> dict[str, float]:
     }
 
 
-def make_metrics(values: dict[str, float], period: str, seed_key: str) -> list[KpiMetric]:
+def make_metrics(
+    values: dict[str, float],
+    period: str,
+    seed_key: str,
+    deltas: Optional[dict[str, Optional[float]]] = None,
+) -> list[KpiMetric]:
     metrics = [
         ("revenue", "Выручка", values.get("revenue", 0), "₽"),
         ("fuelVolume", "Объем топлива", values.get("fuelVolume", 0), "л"),
         ("checks", "Чеки", values.get("checks", 0), "шт"),
         ("avgCheck", "Средний чек", values.get("avgCheck", 0), "₽"),
     ]
+    use_mock_deltas = deltas is None
+    resolved_deltas = deltas or {}
     return [
         KpiMetric(
             id=metric_id,
             label=label,
             value=value,
             unit=unit,
-            momPct=mock_pct(seed_key, period, metric_id, "mom"),
-            yoyPct=mock_pct(seed_key, period, metric_id, "yoy"),
+            momPct=(mock_pct(seed_key, period, metric_id, "mom") if use_mock_deltas else resolved_deltas.get(f"{metric_id}_mom_pct")),
+            yoyPct=(mock_pct(seed_key, period, metric_id, "yoy") if use_mock_deltas else resolved_deltas.get(f"{metric_id}_yoy_pct")),
         )
         for metric_id, label, value, unit in metrics
     ]
@@ -1027,7 +2017,9 @@ def db_kpis(ksss: str, period: str) -> StationKpiResponse:
     required = ["DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"]
     missing = [name for name in required if not os.getenv(name)]
     if missing:
-        raise HTTPException(status_code=500, detail=f"Missing DB env vars: {', '.join(missing)}")
+        # Log the specific variable names server-side only; never expose them to the client.
+        logger.error("Missing required database configuration keys: %s", ", ".join(missing))
+        raise HTTPException(status_code=500, detail="Database configuration is incomplete. Check server logs.")
 
     if not SQL_TEMPLATE.exists():
         raise HTTPException(status_code=500, detail="SQL template not found")
@@ -1063,6 +2055,23 @@ def db_kpis(ksss: str, period: str) -> StationKpiResponse:
             KpiMetric(id="checks", label="Чеки", value=float(row.get("checks") or 0), unit="шт", momPct=float(row.get("checks_mom_pct") or 0), yoyPct=float(row.get("checks_yoy_pct") or 0)),
             KpiMetric(id="avgCheck", label="Средний чек", value=float(row.get("avg_check") or 0), unit="₽", momPct=float(row.get("avg_check_mom_pct") or 0), yoyPct=float(row.get("avg_check_yoy_pct") or 0)),
         ],
+    )
+
+
+def local_kpis(ksss: str, period: str) -> StationKpiResponse:
+    init_kpi_db()
+    with kpi_connection() as conn:
+        values, deltas = local_metric_set(conn, period, [ksss])
+        if not values.get("hasData"):
+            raise HTTPException(status_code=404, detail="KPI data not found")
+        updated_at = latest_kpi_updated_at(conn, period, [ksss])
+
+    return StationKpiResponse(
+        ksss=ksss,
+        period=period,
+        source="local",
+        updatedAt=updated_at,
+        metrics=make_metrics(values, period, ksss, deltas),
     )
 
 
@@ -1169,6 +2178,54 @@ def mock_overview(period: str, group_by: str) -> AnalyticsOverviewResponse:
     )
 
 
+def overview_group_getter(group_by: str):
+    getter_map = {
+        "territoryManager": lambda station: station.get("territoryManager") or "ТМ не заполнен",
+        "regionalManager": lambda station: station.get("regionalManager") or "РУ не заполнен",
+        "station": lambda station: station_name(station),
+    }
+    if group_by not in getter_map:
+        raise HTTPException(status_code=422, detail="groupBy must be territoryManager, regionalManager or station")
+    return getter_map[group_by]
+
+
+def local_overview(period: str, group_by: str,
+                   stations_source: Optional[list[dict]] = None) -> AnalyticsOverviewResponse:
+    getter = overview_group_getter(group_by)
+    groups: dict[str, list[dict]] = {}
+    for station in (load_stations() if stations_source is None else stations_source):
+        if not station.get("ksss"):
+            continue
+        groups.setdefault(getter(station), []).append(station)
+
+    rows = []
+    init_kpi_db()
+    with kpi_connection() as conn:
+        updated_at = latest_kpi_updated_at(conn, period)
+        for label, stations in groups.items():
+            ksss_values = [str(station.get("ksss")) for station in stations if station.get("ksss")]
+            values, deltas = local_metric_set(conn, period, ksss_values)
+            if not values.get("hasData"):
+                continue
+            rows.append(
+                AnalyticsOverviewRow(
+                    id=label,
+                    label=label,
+                    count=len(stations),
+                    metrics=make_metrics(values, period, f"{group_by}:{label}", deltas),
+                )
+            )
+
+    rows.sort(key=lambda row: next((metric.value for metric in row.metrics if metric.id == "revenue"), 0), reverse=True)
+    return AnalyticsOverviewResponse(
+        period=period,
+        groupBy=group_by,
+        source="local",
+        updatedAt=updated_at,
+        rows=rows[:30],
+    )
+
+
 def station_similarity(base: dict, candidate: dict, period: str) -> tuple[int, list[str]]:
     score = 42
     reasons = []
@@ -1206,6 +2263,50 @@ def station_similarity(base: dict, candidate: dict, period: str) -> tuple[int, l
     return min(score, 100), reasons[:4] or ["экономический профиль"]
 
 
+def stations_share_region(base: dict, candidate: dict) -> bool:
+    base_region = str(base.get("subject") or "").strip().casefold()
+    candidate_region = str(candidate.get("subject") or "").strip().casefold()
+    return bool(base_region and candidate_region and base_region == candidate_region)
+
+
+def local_station_similarity(base: dict, candidate: dict, base_values: dict[str, object], candidate_values: dict[str, object]) -> tuple[int, list[str]]:
+    score = 42
+    reasons = []
+
+    for field, label, points in [
+        ("formatLevel2", "формат", 14),
+        ("location", "локация", 12),
+        ("subject", "регион", 8),
+        ("serviceCluster", "сервисный кластер", 8),
+        ("paymentType", "тип оплаты", 6),
+    ]:
+        if base.get(field) and base.get(field) == candidate.get(field):
+            score += points
+            reasons.append(label)
+
+    base_flags = base.get("flags", {})
+    candidate_flags = candidate.get("flags", {})
+    for flag, label in [("hasCafe", "кафе"), ("hasShop", "магазин"), ("hasToilet", "санузел")]:
+        if base_flags.get(flag) and candidate_flags.get(flag):
+            score += 4
+            reasons.append(label)
+
+    base_revenue = float(base_values.get("revenue", 0))
+    base_volume = float(base_values.get("fuelVolume", 0))
+    if base_revenue and candidate_values.get("hasData"):
+        revenue_delta = abs(base_revenue - float(candidate_values.get("revenue", 0))) / max(base_revenue, 1)
+        if revenue_delta < 0.18:
+            score += 10
+            reasons.append("близкая выручка")
+    if base_volume and candidate_values.get("hasData"):
+        volume_delta = abs(base_volume - float(candidate_values.get("fuelVolume", 0))) / max(base_volume, 1)
+        if volume_delta < 0.18:
+            score += 10
+            reasons.append("близкий объем")
+
+    return min(score, 100), reasons[:4] or ["экономический профиль"]
+
+
 def mock_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
     base = station_by_ksss(ksss)
     if not base:
@@ -1218,7 +2319,7 @@ def mock_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
             continue
         score, reasons = station_similarity(base, candidate, period)
         items.append(
-            SimilarStation(
+            (stations_share_region(base, candidate), SimilarStation(
                 ksss=candidate_ksss,
                 stationNumber=str(candidate.get("stationNumber") or ""),
                 name=station_name(candidate),
@@ -1226,16 +2327,54 @@ def mock_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
                 score=score,
                 reasons=reasons,
                 metrics=make_metrics(mock_metric_values(candidate_ksss, period), period, candidate_ksss),
-            )
+            ))
         )
 
-    items.sort(key=lambda item: item.score, reverse=True)
+    items.sort(key=lambda pair: (not pair[0], -pair[1].score, pair[1].name.casefold(), pair[1].ksss))
     return SimilarStationsResponse(
         ksss=ksss,
         period=period,
         source="mock",
         updatedAt=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        items=items[:limit],
+        items=[item for _, item in items[:limit]],
+    )
+
+
+def local_similar(ksss: str, period: str, limit: int) -> SimilarStationsResponse:
+    base = station_by_ksss(ksss)
+    if not base:
+        raise HTTPException(status_code=404, detail="Station not found")
+
+    items = []
+    init_kpi_db()
+    with kpi_connection() as conn:
+        updated_at = latest_kpi_updated_at(conn, period)
+        base_values = period_metric_values(conn, period, [str(base.get("ksss"))])
+        for candidate in load_stations():
+            candidate_ksss = str(candidate.get("ksss") or "")
+            if not candidate_ksss or candidate_ksss == str(ksss):
+                continue
+            candidate_values, candidate_deltas = local_metric_set(conn, period, [candidate_ksss])
+            score, reasons = local_station_similarity(base, candidate, base_values, candidate_values)
+            items.append(
+                (stations_share_region(base, candidate), SimilarStation(
+                    ksss=candidate_ksss,
+                    stationNumber=str(candidate.get("stationNumber") or ""),
+                    name=station_name(candidate),
+                    subject=str(candidate.get("subject") or candidate.get("address") or ""),
+                    score=score,
+                    reasons=reasons,
+                    metrics=make_metrics(candidate_values, period, candidate_ksss, candidate_deltas),
+                ))
+            )
+
+    items.sort(key=lambda pair: (not pair[0], -pair[1].score, pair[1].name.casefold(), pair[1].ksss))
+    return SimilarStationsResponse(
+        ksss=ksss,
+        period=period,
+        source="local",
+        updatedAt=updated_at,
+        items=[item for _, item in items[:limit]],
     )
 
 
@@ -1277,6 +2416,48 @@ def mock_compare(ksss_values: list[str], period: str) -> CompareResponse:
     )
 
 
+def local_compare(ksss_values: list[str], period: str) -> CompareResponse:
+    unique_ksss = []
+    for ksss in ksss_values:
+        if ksss and ksss not in unique_ksss:
+            unique_ksss.append(validate_ksss(ksss))
+    if len(unique_ksss) > 5:
+        raise HTTPException(status_code=422, detail="Compare supports up to 5 stations")
+
+    items = []
+    init_kpi_db()
+    with kpi_connection() as conn:
+        updated_at = latest_kpi_updated_at(conn, period, unique_ksss)
+        for ksss in unique_ksss:
+            station = station_by_ksss(ksss)
+            if not station:
+                continue
+            values, deltas = local_metric_set(conn, period, [ksss])
+            items.append(
+                CompareStation(
+                    ksss=ksss,
+                    stationNumber=str(station.get("stationNumber") or ""),
+                    name=station_name(station),
+                    subject=str(station.get("subject") or station.get("address") or ""),
+                    regionalManager=str(station.get("regionalManager") or ""),
+                    territoryManager=str(station.get("territoryManager") or ""),
+                    format=str(station.get("formatLevel2") or station.get("format") or ""),
+                    location=str(station.get("location") or ""),
+                    trkCount=station.get("trkCount"),
+                    postsCount=station.get("postsCount"),
+                    staffTotal=mock_staff_total(ksss, period),
+                    metrics=make_metrics(values, period, ksss, deltas),
+                )
+            )
+
+    return CompareResponse(
+        period=period,
+        source="local",
+        updatedAt=updated_at,
+        items=items,
+    )
+
+
 def db_extension_not_ready(template: Path):
     raise HTTPException(
         status_code=501,
@@ -1286,7 +2467,202 @@ def db_extension_not_ready(template: Path):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "mode": data_mode()}
+    db_ok = False
+    kpi_db_ok = False
+    fuel_stock_db_ok = False
+    active_sessions = 0
+    kpi_period_count = 0
+    kpi_updated_at = ""
+    fuel_stock = {"rows": 0, "stations": 0, "snapshotAt": "", "importedAt": "", "stale": True}
+    fuel_outages = {"rows": 0, "stations": 0, "active": 0, "importedAt": "", "stale": True}
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            db_ok = True
+            row = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE expires_at > ?",
+                (int(time.time()),),
+            ).fetchone()
+            active_sessions = row[0] if row else 0
+    except Exception:
+        pass
+    try:
+        init_kpi_db()
+        with sqlite3.connect(KPI_DB_PATH) as conn:
+            kpi_db_ok = True
+            row = conn.execute("SELECT COUNT(DISTINCT period), MAX(updated_at) FROM station_kpi_daily").fetchone()
+            if row:
+                kpi_period_count = int(row[0] or 0)
+                kpi_updated_at = str(row[1] or "")
+    except Exception:
+        pass
+    try:
+        fuel_stock = fuel_stock_health()
+        fuel_stock_db_ok = True
+    except Exception:
+        pass
+    try:
+        fuel_outages = outage_health()
+    except Exception:
+        pass
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "db": "ok" if db_ok else "error",
+        "kpiDb": "ok" if kpi_db_ok else "error",
+        "fuelStockDb": "ok" if fuel_stock_db_ok else "error",
+        "kpiPeriods": kpi_period_count,
+        "kpiUpdatedAt": kpi_updated_at,
+        "fuelStock": fuel_stock,
+        "fuelOutages": fuel_outages,
+        "activeSessions": active_sessions,
+        "mode": data_mode(),
+        "version": "0.5.0",
+    }
+
+
+@app.post("/api/internal/kpi/import", response_model=KpiImportResponse)
+def import_kpi_metrics(payload: KpiImportPayload, request: Request):
+    enforce_rate_limit(request, "kpi-import", 30, window_seconds=60)
+    require_kpi_import_token(request)
+
+    if len(payload.records) > kpi_import_max_records():
+        raise HTTPException(status_code=413, detail="Too many KPI records in one request")
+
+    period = validate_period(payload.period) if payload.period else ""
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    source = (payload.source or "dwh-sync").strip()[:120]
+    rows = []
+
+    for record in payload.records:
+        metric_date = validate_metric_date(record.date)
+        record_period = metric_date.strftime("%Y-%m")
+        if period and record_period != period:
+            raise HTTPException(status_code=422, detail="All KPI records must belong to the requested period")
+        if not period:
+            period = record_period
+
+        fuel_volume = record.fuelVolume if record.fuelVolume is not None else record.fuel_volume
+        if fuel_volume is None:
+            raise HTTPException(status_code=422, detail="fuelVolume is required")
+        revenue_ntu = record.revenueNtu if record.revenueNtu is not None else record.revenue_ntu
+        checks_ntu = record.checksNtu if record.checksNtu is not None else record.checks_ntu
+        avg_check = record.avgCheck if record.avgCheck is not None else record.avg_check
+
+        rows.append(
+            (
+                metric_date.isoformat(),
+                record_period,
+                validate_ksss(record.ksss),
+                float(record.revenue),
+                float(revenue_ntu) if revenue_ntu is not None else None,
+                float(fuel_volume),
+                float(record.checks),
+                float(checks_ntu) if checks_ntu is not None else None,
+                float(avg_check) if avg_check is not None else None,
+                (record.updatedAt or now_iso)[:80],
+                source,
+            )
+        )
+
+    init_kpi_db()
+    with kpi_connection() as conn:
+        if payload.replacePeriod and period:
+            conn.execute("DELETE FROM station_kpi_daily WHERE period = ?", (period,))
+        conn.executemany(
+            """
+            INSERT INTO station_kpi_daily (
+                metric_date, period, ksss, revenue, revenue_ntu, fuel_volume,
+                checks, checks_ntu, avg_check, updated_at, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(metric_date, ksss) DO UPDATE SET
+                period = excluded.period,
+                revenue = excluded.revenue,
+                revenue_ntu = excluded.revenue_ntu,
+                fuel_volume = excluded.fuel_volume,
+                checks = excluded.checks,
+                checks_ntu = excluded.checks_ntu,
+                avg_check = excluded.avg_check,
+                updated_at = excluded.updated_at,
+                source = excluded.source
+            """,
+            rows,
+        )
+        periods = [str(row["period"]) for row in conn.execute("SELECT DISTINCT period FROM station_kpi_daily ORDER BY period").fetchall()]
+
+    logger.info("Imported %d KPI aggregate rows for period %s from %s", len(rows), period, source)
+    return KpiImportResponse(
+        ok=True,
+        imported=len(rows),
+        period=period,
+        periods=periods,
+        updatedAt=now_iso,
+    )
+
+
+@app.post("/api/internal/fuel-stock/import", response_model=FuelStockImportResponse)
+def import_fuel_stock_snapshot(payload: FuelStockImportPayload, request: Request):
+    enforce_rate_limit(request, "fuel-stock-import", 20, window_seconds=60)
+    require_fuel_stock_import_token(request)
+    validate_import_body_size(request, payload, fuel_stock_import_max_body_bytes())
+
+    if len(payload.records) > fuel_stock_import_max_records():
+        raise HTTPException(status_code=413, detail="Too many fuel stock records in one request")
+
+    try:
+        response = replace_fuel_stock_snapshot(payload)
+    except FuelStockImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    logger.info(
+        "Imported fuel stock snapshot accountDate=%s snapshotAt=%s rows=%d stations=%d unchanged=%s",
+        response.accountDate,
+        response.snapshotAt,
+        response.imported,
+        response.stations,
+        response.unchanged,
+    )
+    return response
+
+
+@app.post("/api/internal/fuel-outages/import", response_model=FuelOutageImportResponse)
+async def import_fuel_outage_report(request: Request):
+    enforce_rate_limit(request, "fuel-outage-import", 12, window_seconds=60)
+    require_fuel_outage_import_token(request)
+    max_body_bytes = fuel_outage_import_max_body_bytes()
+    content_length = request.headers.get("content-length", "")
+    if content_length.isdigit() and int(content_length) > max_body_bytes:
+        raise HTTPException(status_code=413, detail="Fuel outage XLSX is too large")
+
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=422, detail="Fuel outage XLSX is empty")
+    if len(content) > max_body_bytes:
+        raise HTTPException(status_code=413, detail="Fuel outage XLSX is too large")
+
+    try:
+        result = replace_outage_snapshot(
+            content,
+            source_message_id=request.headers.get("x-source-message-id", ""),
+            source_received_at=request.headers.get("x-source-received-at", ""),
+            source_email_from=request.headers.get("x-source-email-from", ""),
+        )
+    except FuelOutageImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    logger.info(
+        "Imported fuel outage report rows=%d stations=%d active=%d unchanged=%s",
+        result["rowCount"],
+        result["stationCount"],
+        result["activeCount"],
+        result["unchanged"],
+    )
+    return FuelOutageImportResponse(
+        unchanged=bool(result["unchanged"]),
+        imported=int(result["rowCount"]),
+        stations=int(result["stationCount"]),
+        active=int(result["activeCount"]),
+        importedAt=str(result["importedAt"]),
+        sourceReceivedAt=str(result.get("sourceReceivedAt", "")),
+    )
 
 
 @app.get("/api/auth/me", response_model=AuthResponse)
@@ -1564,9 +2940,277 @@ def auth_logout(request: Request, response: Response):
     return {"ok": True}
 
 
+@app.post("/api/metrics/beat")
+def metrics_beat(payload: MetricsBeatRequest, request: Request, user: AuthUser = Depends(require_user)):
+    enforce_rate_limit(request, "metrics-beat", 60)
+    if user.id <= 0:
+        return {"ok": True, "visitId": 0}
+    with auth_connection() as conn:
+        visit_id = touch_visit(
+            conn,
+            user.id,
+            request_ip(request),
+            request.headers.get("user-agent", ""),
+            payload.device,
+        )
+    return {"ok": True, "visitId": visit_id}
+
+
+@app.post("/api/metrics/events")
+def metrics_events(payload: MetricsEventsRequest, request: Request, user: AuthUser = Depends(require_user)):
+    enforce_rate_limit(request, "metrics-events", 60)
+    if user.id <= 0:
+        return {"ok": True, "accepted": 0}
+    now = int(time.time())
+    with auth_connection() as conn:
+        visit_id = touch_visit(
+            conn,
+            user.id,
+            request_ip(request),
+            request.headers.get("user-agent", ""),
+            payload.device,
+            now,
+        )
+        accepted = 0
+        for item in payload.events[:50]:
+            event = clean_metric_text(item.event, 40)
+            if not event:
+                continue
+            conn.execute(
+                "INSERT INTO usage_events (user_id, visit_id, event, screen, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    user.id,
+                    visit_id,
+                    event,
+                    clean_metric_text(item.screen, 80),
+                    clean_metric_text(item.detail, 200),
+                    now,
+                ),
+            )
+            accepted += 1
+    return {"ok": True, "accepted": accepted, "visitId": visit_id}
+
+
+def _role_columns(row: sqlite3.Row) -> dict:
+    """Роль и область данных пользователя для админского списка."""
+    keys = row.keys()
+    role = str(row["role"] or "") if "role" in keys else ""
+    binding = str(row["role_binding"] or "") if "role_binding" in keys else ""
+    if is_admin_email(str(row["email"])) and role not in {"admin", "subadmin"}:
+        role, binding = "admin", ""
+    scope = roles.resolve(role, binding)
+    return {
+        "role": role,
+        "roleTitle": roles.describe(role)["title"],
+        "roleBinding": binding,
+        "scopeLabel": scope.label,
+        "scopeStations": scope.stations,
+    }
+
+
+@app.get("/api/admin/users", response_model=AdminUsersResponse)
+def admin_users(_admin: AuthUser = Depends(require_admin)):
+    now = int(time.time())
+    week_ago = now - 7 * 24 * 3600
+    with auth_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                u.id, u.email, u.name, u.created_at, u.email_verified_at, u.last_login_at,
+                u.role, u.role_binding,
+                COUNT(v.id) AS visit_count,
+                COALESCE(SUM(v.duration_seconds), 0) AS total_seconds,
+                COALESCE(MAX(v.last_seen_at), 0) AS last_seen_at
+            FROM users u
+            LEFT JOIN visits v ON v.user_id = u.id
+            GROUP BY u.id
+            ORDER BY last_seen_at DESC, u.last_login_at DESC, u.created_at DESC
+            """
+        ).fetchall()
+        event_counts = {
+            int(row["user_id"]): int(row["cnt"])
+            for row in conn.execute(
+                "SELECT user_id, COUNT(*) AS cnt FROM usage_events WHERE event != 'heartbeat' GROUP BY user_id"
+            ).fetchall()
+        }
+        active_last_7d = int(
+            conn.execute(
+                "SELECT COUNT(DISTINCT user_id) AS cnt FROM visits WHERE last_seen_at >= ?",
+                (week_ago,),
+            ).fetchone()["cnt"]
+        )
+
+    users: list[AdminUserStats] = []
+    for row in rows:
+        visit_count = int(row["visit_count"] or 0)
+        total_seconds = int(row["total_seconds"] or 0)
+        users.append(
+            AdminUserStats(
+                id=int(row["id"]),
+                email=str(row["email"]),
+                name=str(row["name"] or ""),
+                createdAt=int(row["created_at"] or 0),
+                emailVerifiedAt=int(row["email_verified_at"] or 0),
+                lastLoginAt=int(row["last_login_at"] or 0),
+                lastSeenAt=int(row["last_seen_at"] or 0),
+                visitCount=visit_count,
+                totalSeconds=total_seconds,
+                avgSeconds=(total_seconds // visit_count) if visit_count else 0,
+                eventCount=event_counts.get(int(row["id"]), 0),
+                isAdmin=is_admin_email(str(row["email"])),
+                **_role_columns(row),
+            )
+        )
+    return AdminUsersResponse(users=users, totalUsers=len(users), activeLast7d=active_last_7d)
+
+
+@app.get("/api/admin/activity", response_model=AdminActivityResponse)
+def admin_activity(days: int = 30, _admin: AuthUser = Depends(require_admin)):
+    days = max(1, min(90, int(days)))
+    since = int(time.time()) - days * 24 * 3600
+    with auth_connection() as conn:
+        daily = [
+            AdminDailyActivity(
+                date=str(row["day"]),
+                visits=int(row["visits"] or 0),
+                users=int(row["users"] or 0),
+                totalSeconds=int(row["total_seconds"] or 0),
+            )
+            for row in conn.execute(
+                """
+                SELECT date(started_at, 'unixepoch', 'localtime') AS day,
+                       COUNT(*) AS visits,
+                       COUNT(DISTINCT user_id) AS users,
+                       COALESCE(SUM(duration_seconds), 0) AS total_seconds
+                FROM visits
+                WHERE started_at >= ?
+                GROUP BY day
+                ORDER BY day
+                """,
+                (since,),
+            ).fetchall()
+        ]
+        screens = [
+            AdminScreenStat(screen=str(row["screen"] or "—"), views=int(row["views"]), users=int(row["users"]))
+            for row in conn.execute(
+                """
+                SELECT screen, COUNT(*) AS views, COUNT(DISTINCT user_id) AS users
+                FROM usage_events
+                WHERE event = 'screen_view' AND created_at >= ?
+                GROUP BY screen
+                ORDER BY views DESC
+                LIMIT 30
+                """,
+                (since,),
+            ).fetchall()
+        ]
+        actions = [
+            AdminActionStat(event=str(row["event"]), count=int(row["cnt"]))
+            for row in conn.execute(
+                """
+                SELECT event, COUNT(*) AS cnt
+                FROM usage_events
+                WHERE event NOT IN ('screen_view', 'heartbeat') AND created_at >= ?
+                GROUP BY event
+                ORDER BY cnt DESC
+                LIMIT 30
+                """,
+                (since,),
+            ).fetchall()
+        ]
+        device_types = [
+            AdminDeviceStat(label=str(row["device_type"] or "неизвестно"), count=int(row["cnt"]))
+            for row in conn.execute(
+                "SELECT device_type, COUNT(*) AS cnt FROM visits WHERE started_at >= ? GROUP BY device_type ORDER BY cnt DESC",
+                (since,),
+            ).fetchall()
+        ]
+        browsers = [
+            AdminDeviceStat(label=str(row["browser"] or "неизвестно"), count=int(row["cnt"]))
+            for row in conn.execute(
+                "SELECT browser, COUNT(*) AS cnt FROM visits WHERE started_at >= ? GROUP BY browser ORDER BY cnt DESC",
+                (since,),
+            ).fetchall()
+        ]
+        totals = conn.execute(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(pwa), 0) AS pwa FROM visits WHERE started_at >= ?",
+            (since,),
+        ).fetchone()
+        recent_auth = [
+            AdminAuthEvent(
+                email=str(row["email"]),
+                event=str(row["event"]),
+                reason=str(row["reason"] or ""),
+                ip=str(row["ip"] or ""),
+                createdAt=int(row["created_at"] or 0),
+            )
+            for row in conn.execute(
+                "SELECT email, event, reason, ip, created_at FROM auth_events ORDER BY id DESC LIMIT 50"
+            ).fetchall()
+        ]
+
+    return AdminActivityResponse(
+        days=days,
+        daily=daily,
+        screens=screens,
+        actions=actions,
+        deviceTypes=device_types,
+        browsers=browsers,
+        pwaVisits=int(totals["pwa"] or 0),
+        totalVisits=int(totals["total"] or 0),
+        recentAuthEvents=recent_auth,
+    )
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: int, request: Request, admin: AuthUser = Depends(require_admin)):
+    """Полное удаление пользователя из БД.
+
+    Каскадно удаляются (через FOREIGN KEY ... ON DELETE CASCADE):
+    сессии, коды подтверждения/восстановления, визиты и события использования.
+    Журнал auth_events по email чистится явно, после чего пишется
+    итоговая запись user_deleted с указанием, кто удалил.
+    """
+    enforce_rate_limit(request, "admin-delete-user", 30)
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="Нельзя удалить собственный аккаунт")
+
+    with auth_connection() as conn:
+        row = conn.execute("SELECT id, email, name FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+        email = str(row["email"])
+        if is_admin_email(email):
+            raise HTTPException(
+                status_code=400,
+                detail="Нельзя удалить администратора. Сначала уберите его адрес из ADMIN_EMAILS.",
+            )
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.execute("DELETE FROM auth_events WHERE email = ?", (email,))
+        insert_auth_event(conn, email, "user_deleted", f"by:{admin.email}", request_ip(request))
+
+    logger.info("admin %s deleted user %s (id=%s)", admin.email, email, user_id)
+    return {"ok": True, "deletedId": user_id, "deletedEmail": email}
+
+
 @app.get("/api/stations")
-def stations_payload(_user: AuthUser = Depends(require_user)):
-    return load_station_payload()
+def stations_payload(response: Response, user: AuthUser = Depends(require_user)):
+    response.headers["Cache-Control"] = "private, no-cache"
+    response.headers["Vary"] = "Cookie"
+    payload = visible_station_payload()
+    stations = stations_in_scope(user)
+    unrestricted, _, label = user_scope(user)
+    meta = dict(payload.get("meta") or {})
+    meta["count"] = len(stations)
+    meta["scope"] = {
+        "role": user.role,
+        "roleTitle": user.roleTitle,
+        "label": label,
+        "unrestricted": unrestricted,
+        "stations": len(stations),
+        "problems": user.scopeProblems,
+    }
+    return {"meta": meta, "stations": stations}
 
 
 @app.get("/api/staff/periods")
@@ -1579,17 +3223,34 @@ def available_staff_periods(_user: AuthUser = Depends(require_user)):
     }
 
 
+@app.get("/api/kpis/periods", response_model=KpiPeriodsResponse)
+def available_kpi_periods(_user: AuthUser = Depends(require_user)):
+    mode = data_mode().lower()
+    periods = kpi_periods() if mode in {"local", "file"} else []
+    with kpi_connection() as conn:
+        updated_at = latest_kpi_updated_at(conn) if periods else datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return KpiPeriodsResponse(
+        source="local" if periods else mode,
+        updatedAt=updated_at,
+        periods=periods,
+    )
+
+
 @app.get("/api/stations/{ksss}/kpis", response_model=StationKpiResponse)
 def station_kpis(
     ksss: str,
     period: str = Query(default_factory=current_period, pattern=r"^\d{4}-\d{2}$"),
-    _user: AuthUser = Depends(require_user),
+    user: AuthUser = Depends(require_user),
 ):
+    ksss = validate_ksss(ksss)
+    ensure_station_in_scope(ksss, user)
     period = validate_period(period)
     mode = data_mode().lower()
 
     if mode == "mock":
         return mock_kpis(ksss, period)
+    if mode in {"local", "file"}:
+        return local_kpis(ksss, period)
     if mode == "db":
         return db_kpis(ksss, period)
 
@@ -1600,8 +3261,10 @@ def station_kpis(
 def station_staff(
     ksss: str,
     period: str = Query(default_factory=current_period, pattern=r"^\d{4}-\d{2}$"),
-    _user: AuthUser = Depends(require_user),
+    user: AuthUser = Depends(require_user),
 ):
+    ksss = validate_ksss(ksss)
+    ensure_station_in_scope(ksss, user)
     period = validate_period(period)
     mode = data_mode().lower()
 
@@ -1618,17 +3281,134 @@ def station_staff(
     raise HTTPException(status_code=500, detail=f"Unsupported APP_DATA_MODE: {mode}")
 
 
+@app.get("/api/stations/{ksss}/fuel-stock", response_model=FuelStockStationResponse)
+def station_fuel_stock(
+    ksss: str,
+    user: AuthUser = Depends(require_user),
+):
+    ksss = validate_ksss(ksss)
+    ensure_station_in_scope(ksss, user)
+    stock = get_station_fuel_stock(ksss)
+    if not stock:
+        raise HTTPException(status_code=404, detail="Fuel stock data not found")
+    return stock
+
+
+@app.get("/api/fuel-stock/fuels", response_model=FuelStockFuelOptionsResponse)
+def fuel_stock_fuel_options(
+    minPercent: Optional[float] = Query(None, ge=0, le=100),
+    _user: AuthUser = Depends(require_user),
+):
+    try:
+        return list_fuel_stock_options(minPercent)
+    except FuelStockImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@app.get("/api/fuel-stock/available", response_model=FuelStockAvailabilityResponse)
+def fuel_stock_available_stations(
+    fuel: list[str] = Query(..., min_length=1, max_length=40),
+    minPercent: Optional[float] = Query(None, ge=0, le=100),
+    _user: AuthUser = Depends(require_user),
+):
+    """Stations stocking every requested fuel above the availability threshold.
+
+    Repeat the parameter to require several fuels at once (?fuel=ДТ&fuel=АБ95).
+    The percentage is measured against the dispensable capacity (tank capacity minus
+    the dead rest), so a station on dead stock never appears here.
+    """
+    if len(fuel) > len(CANONICAL_FUELS):
+        raise HTTPException(status_code=422, detail="Too many fuels requested")
+    try:
+        return list_stations_with_available_fuel(fuel, minPercent)
+    except FuelStockImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@app.get("/api/fuel-outages", response_model=FuelOutageResponse)
+def fuel_outages(
+    ksss: str = Query("", max_length=32),
+    npo: str = Query("", max_length=120),
+    region: str = Query("", max_length=160),
+    product: str = Query("", max_length=160),
+    activeOnly: bool = Query(False),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(250, ge=1, le=1000),
+    _user: AuthUser = Depends(require_user),
+):
+    snapshot = get_outage_snapshot() or {}
+    items = list(snapshot.get("items") or [])
+    filters = {
+        "ksss": ksss.strip().casefold(),
+        "npo": npo.strip().casefold(),
+        "region": region.strip().casefold(),
+        "product": product.strip().casefold(),
+    }
+    for key, expected in filters.items():
+        if expected:
+            items = [item for item in items if str(item.get(key, "")).strip().casefold() == expected]
+    if activeOnly:
+        items = [item for item in items if is_outage_ongoing(item)]
+
+    total = len(items)
+    return FuelOutageResponse(
+        source=str(snapshot.get("source", "email-fuel-outage-report")),
+        sourceMessageId=str(snapshot.get("sourceMessageId", "")),
+        sourceReceivedAt=str(snapshot.get("sourceReceivedAt", "")),
+        sourceEmailFrom=str(snapshot.get("sourceEmailFrom", "")),
+        importedAt=str(snapshot.get("importedAt", "")),
+        rowCount=int(snapshot.get("rowCount", 0)),
+        stationCount=int(snapshot.get("stationCount", 0)),
+        activeCount=sum(1 for item in snapshot.get("items") or [] if is_outage_ongoing(item)),
+        totalHours=float(snapshot.get("totalHours", 0)),
+        expectedSalesLiters=float(snapshot.get("expectedSalesLiters", 0)),
+        total=total,
+        offset=offset,
+        limit=limit,
+        items=items[offset : offset + limit],
+    )
+
+
+@app.get("/api/analytics/fuel-outages", response_model=FuelOutageAnalyticsResponse)
+def fuel_outage_analytics(
+    groupBy: str = Query("region"),
+    _user: AuthUser = Depends(require_user),
+):
+    try:
+        return aggregate_outage_snapshot(get_outage_snapshot(), load_stations(), groupBy)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="groupBy must be region, regionalManager or territoryManager",
+        ) from exc
+
+
+@app.get("/api/fuel-outages/export.xlsx")
+def fuel_outages_export(_user: AuthUser = Depends(require_user)):
+    path = outage_xlsx_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Fuel outage XLSX not found")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="fuel_outages_latest.xlsx",
+    )
+
+
 @app.get("/api/analytics/overview", response_model=AnalyticsOverviewResponse)
 def analytics_overview(
     period: str = Query(default_factory=current_period, pattern=r"^\d{4}-\d{2}$"),
     groupBy: str = Query("territoryManager"),
-    _user: AuthUser = Depends(require_user),
+    user: AuthUser = Depends(require_user),
 ):
     period = validate_period(period)
+    stations = stations_in_scope(user)
     mode = data_mode().lower()
 
     if mode == "mock":
         return mock_overview(period, groupBy)
+    if mode in {"local", "file"}:
+        return local_overview(period, groupBy, stations)
     if mode == "db":
         db_extension_not_ready(ANALYTICS_SQL_TEMPLATE)
 
@@ -1640,13 +3420,17 @@ def station_similar(
     ksss: str,
     period: str = Query(default_factory=current_period, pattern=r"^\d{4}-\d{2}$"),
     limit: int = Query(10, ge=1, le=30),
-    _user: AuthUser = Depends(require_user),
+    user: AuthUser = Depends(require_user),
 ):
+    ksss = validate_ksss(ksss)
+    ensure_station_in_scope(ksss, user)
     period = validate_period(period)
     mode = data_mode().lower()
 
     if mode == "mock":
         return mock_similar(ksss, period, limit)
+    if mode in {"local", "file"}:
+        return local_similar(ksss, period, limit)
     if mode == "db":
         db_extension_not_ready(SIMILAR_SQL_TEMPLATE)
 
@@ -1657,14 +3441,45 @@ def station_similar(
 def analytics_compare(
     period: str = Query(default_factory=current_period, pattern=r"^\d{4}-\d{2}$"),
     ksss: list[str] = Query(default_factory=list),
-    _user: AuthUser = Depends(require_user),
+    user: AuthUser = Depends(require_user),
 ):
     period = validate_period(period)
+    ksss = ksss_in_scope(ksss, user)
     mode = data_mode().lower()
 
     if mode == "mock":
         return mock_compare(ksss, period)
+    if mode in {"local", "file"}:
+        return local_compare(ksss, period)
     if mode == "db":
         db_extension_not_ready(COMPARE_SQL_TEMPLATE)
 
     raise HTTPException(status_code=500, detail=f"Unsupported APP_DATA_MODE: {mode}")
+
+
+# --- Демонстрационный контур ИИ -------------------------------------------
+# Раздел включается признаком AI_DEMO_ENABLED и доступен только администраторам.
+# Сбой импорта не должен ронять приложение: без контура остальное работает.
+try:
+    from backend.summary_api import build_router as _build_summary_router
+
+    app.include_router(_build_summary_router(require_user, auth_connection))
+    logger.info("Summary router mounted")
+except Exception as _summary_err:  # noqa: BLE001
+    logger.warning("Summary router not mounted: %s", _summary_err)
+
+try:
+    from backend.roles_api import build_router as _build_roles_router
+
+    app.include_router(_build_roles_router(require_admin, require_user, auth_connection, user_from_row))
+    logger.info("Roles router mounted")
+except Exception as _roles_err:  # noqa: BLE001
+    logger.warning("Roles router not mounted: %s", _roles_err)
+
+try:
+    from backend.ai.api import build_router as _build_ai_router
+
+    app.include_router(_build_ai_router(require_admin, require_user))
+    logger.info("AI demo router mounted")
+except Exception as _ai_err:  # noqa: BLE001
+    logger.warning("AI demo router not mounted: %s", _ai_err)

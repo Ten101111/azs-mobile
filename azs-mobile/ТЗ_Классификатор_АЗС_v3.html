@@ -1,0 +1,593 @@
+<title>ТЗ — Классификатор АЗС: план развития v3.0</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --red:#C00000; --ink:#111111; --mid:#595959; --pale:#F4F4F4;
+  --bpink:#FBEDEF; --border:#D9D9D9; --green:#14945f; --amber:#C47A00;
+  --blue:#1A4F8A; --purple:#5B3FA0; --page:#FAFAFA;
+}
+body { font-family:Tahoma,'Segoe UI',Arial,sans-serif; background:var(--page); color:var(--ink); font-size:13px; line-height:1.6; }
+.page-wrap { max-width:940px; margin:0 auto; padding:40px 48px 80px; }
+
+/* Cover */
+.cover { border-top:6px solid var(--red); padding:32px 0 24px; margin-bottom:28px; border-bottom:1px solid var(--border); }
+.cover-eye { font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--red); margin-bottom:8px; }
+.cover-title { font-size:21px; font-weight:700; line-height:1.25; text-transform:uppercase; letter-spacing:.03em; margin-bottom:14px; max-width:720px; }
+.cover-meta { display:flex; gap:28px; flex-wrap:wrap; }
+.cmi { display:flex; flex-direction:column; gap:2px; }
+.cmi-l { font-size:9.5px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#999; }
+.cmi-v { font-size:12px; color:var(--mid); }
+
+/* Context strip */
+.ctx-strip { display:grid; grid-template-columns:repeat(5,1fr); gap:1px; background:var(--border); border:1px solid var(--border); margin-bottom:30px; }
+.ctx-cell { background:#fff; padding:10px 12px; }
+.ctx-l { font-size:9px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#999; margin-bottom:3px; }
+.ctx-v { font-size:12.5px; font-weight:700; color:var(--ink); }
+.ctx-s { font-size:10px; color:var(--mid); margin-top:1px; }
+
+/* Sections */
+.section { margin-bottom:36px; }
+.sec-eye { font-size:9.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--red); margin-bottom:5px; }
+.sec-title { font-size:15px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink); margin-bottom:12px; padding-bottom:9px; border-bottom:2px solid var(--red); }
+
+/* Timeline */
+.timeline { display:flex; gap:0; margin:16px 0 8px; }
+.tl { flex:1; padding:9px 12px 9px 14px; position:relative; }
+.tl:not(:first-child)::before { content:''; position:absolute; left:0; top:8px; bottom:8px; width:0; border-left:1px solid rgba(255,255,255,.2); }
+.t-prep { background:#EBEBEB; }
+.t-data { background:var(--purple); }
+.t-etl  { background:var(--red); }
+.t-rbac { background:var(--blue); }
+.t-ai   { background:var(--green); }
+.tl-ph { font-size:8px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; margin-bottom:2px; }
+.t-prep .tl-ph { color:#888; }
+.t-data .tl-ph,.t-etl .tl-ph,.t-rbac .tl-ph,.t-ai .tl-ph { color:rgba(255,255,255,.6); }
+.tl-name { font-size:11px; font-weight:700; }
+.t-prep .tl-name { color:var(--ink); }
+.t-data .tl-name,.t-etl .tl-name,.t-rbac .tl-name,.t-ai .tl-name { color:#fff; }
+.tl-dur { font-size:10px; margin-top:1px; }
+.t-prep .tl-dur { color:#888; }
+.t-data .tl-dur,.t-etl .tl-dur,.t-rbac .tl-dur,.t-ai .tl-dur { color:rgba(255,255,255,.5); }
+
+/* Phase headers */
+.phase-hdr { display:flex; align-items:baseline; gap:14px; padding:9px 14px; margin-bottom:12px; }
+.ph-prep { background:var(--pale); border-left:4px solid #999; }
+.ph-data { background:#F5EEF9; border-left:4px solid var(--purple); }
+.ph-etl  { background:var(--bpink); border-left:4px solid var(--red); }
+.ph-rbac { background:#EFF4FB; border-left:4px solid var(--blue); }
+.ph-ai   { background:#EDF7F2; border-left:4px solid var(--green); }
+.ph-num  { font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.ph-prep .ph-num { color:#888; }
+.ph-data .ph-num { color:var(--purple); }
+.ph-etl  .ph-num { color:var(--red); }
+.ph-rbac .ph-num { color:var(--blue); }
+.ph-ai   .ph-num { color:var(--green); }
+.ph-name { font-size:13.5px; font-weight:700; color:var(--ink); }
+.ph-time { margin-left:auto; font-size:10.5px; color:var(--mid); white-space:nowrap; }
+
+/* Tasks */
+.task-list { display:flex; flex-direction:column; gap:3px; margin-bottom:8px; }
+.task { display:grid; grid-template-columns:26px 1fr; gap:0 10px; padding:10px 12px; border:1px solid var(--border); background:#fff; align-items:start; }
+.task:nth-child(even) { background:var(--pale); }
+.tn { width:22px; height:22px; border-radius:50%; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0; margin-top:1px; }
+.g { background:#AAA; } .p { background:var(--purple); } .r { background:var(--red); }
+.b { background:var(--blue); } .gr { background:var(--green); }
+.t-title { font-size:12.5px; font-weight:700; color:var(--ink); margin-bottom:3px; }
+.t-desc  { font-size:11.5px; color:var(--mid); line-height:1.5; }
+.t-tech  { margin-top:5px; display:flex; flex-wrap:wrap; gap:4px; }
+.badge { font-size:9.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; padding:2px 7px; border:1px solid var(--border); background:var(--pale); color:var(--mid); }
+.br { background:var(--bpink); color:var(--red); border-color:#F0B0B0; }
+.bb { background:#EFF4FB; color:var(--blue); border-color:#B0C8E8; }
+.bg { background:#EDF7F2; color:var(--green); border-color:#9FD8BC; }
+.bp { background:#F5EEF9; color:var(--purple); border-color:#C9A8E0; }
+.ba { background:#FFFBEE; color:var(--amber); border-color:#E8D48A; }
+
+/* Callouts */
+.note { background:var(--bpink); border-left:3px solid var(--red); padding:10px 14px; font-size:12px; color:var(--ink); line-height:1.5; margin:10px 0; }
+.warn { background:#FFFBEE; border-left:3px solid var(--amber); padding:10px 14px; font-size:12px; color:var(--ink); line-height:1.5; margin:10px 0; }
+.info { background:#EFF4FB; border-left:3px solid var(--blue); padding:10px 14px; font-size:12px; color:var(--ink); line-height:1.5; margin:10px 0; }
+.tip  { background:#EDF7F2; border-left:3px solid var(--green); padding:10px 14px; font-size:12px; color:var(--ink); line-height:1.5; margin:10px 0; }
+.sec-note { background:#F5EEF9; border-left:3px solid var(--purple); padding:10px 14px; font-size:12px; color:var(--ink); line-height:1.5; margin:10px 0; }
+
+/* Tables */
+.dtable { width:100%; border-collapse:collapse; font-size:12px; margin:10px 0; }
+.dtable th { padding:7px 10px; text-align:left; font-size:10px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; background:var(--ink); color:#fff; }
+.dtable td { padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top; line-height:1.45; }
+.dtable tr:nth-child(even) td { background:var(--pale); }
+.dtable td:first-child { font-weight:700; color:var(--ink); }
+
+/* Budget cards */
+.budget-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin:12px 0; }
+.bcard { border:1px solid var(--border); padding:12px 14px; }
+.bcard.rec { border-color:var(--green); background:#EDF7F2; }
+.bcard.cloud { border-color:var(--blue); background:#EFF4FB; }
+.bc-tag { font-size:8.5px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; margin-bottom:6px; }
+.bcard .bc-tag { color:var(--mid); }
+.bcard.rec .bc-tag { color:var(--green); }
+.bcard.cloud .bc-tag { color:var(--blue); }
+.bc-name { font-size:12.5px; font-weight:700; color:var(--ink); margin-bottom:6px; }
+.bc-price { font-size:20px; font-weight:700; color:var(--red); font-variant-numeric:tabular-nums; line-height:1; margin-bottom:4px; }
+.bc-sub { font-size:10.5px; color:var(--mid); line-height:1.4; }
+
+/* User management boxes */
+.um-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:10px 0; }
+.um-box { border:1px solid var(--border); padding:12px 14px; }
+.um-box.curr { border-color:var(--red); background:var(--bpink); }
+.um-box.next { border-color:var(--blue); background:#EFF4FB; }
+.um-tag { font-size:8.5px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; margin-bottom:6px; }
+.um-box.curr .um-tag { color:var(--red); }
+.um-box.next .um-tag { color:var(--blue); }
+.um-title { font-size:12.5px; font-weight:700; color:var(--ink); margin-bottom:6px; }
+.um-item { font-size:11.5px; color:var(--mid); padding:3px 0; border-bottom:1px solid var(--border); }
+.um-item:last-child { border-bottom:none; }
+
+/* Schema steps */
+.schema-steps { display:flex; flex-direction:column; gap:3px; }
+.ss { display:flex; gap:12px; padding:10px 12px; border:1px solid var(--border); background:#fff; align-items:flex-start; }
+.ss:nth-child(even) { background:var(--pale); }
+.ss-n { width:24px; height:24px; border-radius:50%; background:var(--purple); color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.ss-body { flex:1; }
+.ss-t { font-size:12.5px; font-weight:700; color:var(--ink); margin-bottom:3px; }
+.ss-d { font-size:11.5px; color:var(--mid); line-height:1.45; }
+.ss-time { font-size:10px; color:var(--red); font-weight:700; margin-top:3px; }
+
+/* Code */
+.code { background:#1A1A2E; color:#CDD6F4; padding:12px 16px; font-family:monospace; font-size:11px; line-height:1.65; margin:8px 0; overflow-x:auto; }
+.kw { color:#89B4FA; } .cm { color:#6C7086; } .st { color:#A6E3A1; } .fn { color:#F38BA8; }
+
+/* Risk rows */
+.risk-row { display:flex; align-items:flex-start; gap:10px; padding:8px 12px; border:1px solid var(--border); margin-bottom:3px; }
+.risk-row:nth-child(even) { background:var(--pale); }
+.sev { font-size:9px; font-weight:700; padding:2px 8px; text-transform:uppercase; letter-spacing:.07em; flex-shrink:0; margin-top:2px; }
+.sev-h { background:#FDECEA; color:#B71C1C; }
+.sev-m { background:#FFFBEE; color:#8A5A00; }
+.sev-l { background:#EDF7F2; color:#0D7A48; }
+.risk-title { font-size:12px; font-weight:700; color:var(--ink); }
+.risk-mit   { font-size:11px; color:var(--mid); margin-top:2px; }
+
+/* Scale strip */
+.scale-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border); border:1px solid var(--border); margin:10px 0; }
+.sc { background:#fff; padding:10px 12px; }
+.sc-l { font-size:9px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:#999; margin-bottom:3px; }
+.sc-v { font-size:22px; font-weight:700; color:var(--red); font-variant-numeric:tabular-nums; line-height:1; }
+.sc-s { font-size:10px; color:var(--mid); margin-top:2px; }
+
+/* Footer */
+.doc-ftr { margin-top:56px; padding-top:14px; border-top:1px solid var(--border); display:flex; justify-content:space-between; font-size:10px; color:#ABABAB; letter-spacing:.06em; text-transform:uppercase; }
+</style>
+
+<div class="page-wrap">
+
+  <!-- COVER -->
+  <div class="cover">
+    <div class="cover-eye">Техническое задание · Версия 3.0 — актуальный</div>
+    <div class="cover-title">Классификатор АЗС ОНПО<br>Архитектура и план развития платформы</div>
+    <div class="cover-meta">
+      <div class="cmi"><div class="cmi-l">Версия</div><div class="cmi-v">3.0 — июль 2026</div></div>
+      <div class="cmi"><div class="cmi-l">Команда</div><div class="cmi-v">1 full-stack разработчик</div></div>
+      <div class="cmi"><div class="cmi-l">DWH</div><div class="cmi-v">PostgreSQL, обновл. 1 раз/час</div></div>
+      <div class="cmi"><div class="cmi-l">Описание схемы DWH</div><div class="cmi-v">Отсутствует — делаем сами</div></div>
+      <div class="cmi"><div class="cmi-l">ИИ-модели</div><div class="cmi-v">Только локальные</div></div>
+    </div>
+  </div>
+
+  <!-- CONTEXT -->
+  <div class="ctx-strip">
+    <div class="ctx-cell"><div class="ctx-l">Источник данных</div><div class="ctx-v">DWH PG</div><div class="ctx-s">Часовое обновление</div></div>
+    <div class="ctx-cell"><div class="ctx-l">Аудитория</div><div class="ctx-v">≤ 1 000</div><div class="ctx-s">Пилот 10–15 чел.</div></div>
+    <div class="ctx-cell"><div class="ctx-l">Документация DWH</div><div class="ctx-v">0%</div><div class="ctx-s">Создаём с нуля</div></div>
+    <div class="ctx-cell"><div class="ctx-l">GPU-сервер</div><div class="ctx-v">Нет</div><div class="ctx-s">Нужно заложить ~350к₽</div></div>
+    <div class="ctx-cell"><div class="ctx-l">Безопасность ИИ</div><div class="ctx-v">Local only</div><div class="ctx-s">Никаких внешних API</div></div>
+  </div>
+
+  <!-- TIMELINE -->
+  <div class="section">
+    <div class="sec-eye">Общий план · 5 этапов</div>
+    <div class="sec-title">Дорожная карта</div>
+    <div class="timeline">
+      <div class="tl t-prep"><div class="tl-ph">Основа</div><div class="tl-name">Инфраструктура</div><div class="tl-dur">1–2 нед.</div></div>
+      <div class="tl t-data"><div class="tl-ph">Этап 1 — Фундамент</div><div class="tl-name">Описание данных DWH</div><div class="tl-dur">3–5 нед.</div></div>
+      <div class="tl t-etl"><div class="tl-ph">Этап 2</div><div class="tl-name">ETL + реальные данные</div><div class="tl-dur">2–3 нед.</div></div>
+      <div class="tl t-rbac"><div class="tl-ph">Этап 3</div><div class="tl-name">RBAC + Алерты + Пилот</div><div class="tl-dur">3–4 нед.</div></div>
+      <div class="tl t-ai"><div class="tl-ph">Этап 4</div><div class="tl-name">Локальный ИИ Text-to-SQL</div><div class="tl-dur">6–8 нед.</div></div>
+    </div>
+    <div class="note"><strong>Главный сдвиг v3.0:</strong> Этап 1 расширен — описание архитектуры DWH без какой-либо существующей документации требует 3–5 недель системной работы. Это не потеря времени: артефакт сразу используется и ETL (Этап 2), и ИИ (Этап 4). Часовое обновление DWH — хороший ритм, данные будут свежими.</div>
+  </div>
+
+  <!-- PHASE 0 -->
+  <div class="section">
+    <div class="sec-eye">Подготовка · 1–2 недели</div>
+    <div class="sec-title">Инфраструктура</div>
+    <div class="phase-hdr ph-prep">
+      <div class="ph-num">Этап 0</div>
+      <div class="ph-name">PostgreSQL + Redis + PgBouncer + Docker</div>
+      <div class="ph-time">До старта всего остального</div>
+    </div>
+    <div class="task-list">
+      <div class="task">
+        <div class="tn g">1</div>
+        <div><div class="t-title">Docker Compose: всё в контейнерах</div>
+        <div class="t-desc">Nginx + FastAPI + PostgreSQL (app) + Redis + Ollama (позже). Файлы .env для local/staging/production. Один <code>docker-compose up</code> поднимает всё.</div>
+        <div class="t-tech"><span class="badge">Docker</span><span class="badge">Nginx</span><span class="badge">docker-compose</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn g">2</div>
+        <div><div class="t-title">Миграция SQLite → PostgreSQL + PgBouncer</div>
+        <div class="t-desc">1 000 пользователей = 1 000 потенциальных одновременных подключений. PostgreSQL не выдержит — нужен PgBouncer как connection pooler (держит 20–50 реальных соединений и «раздаёт» их всем).</div>
+        <div class="t-tech"><span class="badge">PostgreSQL 16</span><span class="badge">PgBouncer</span><span class="badge">Alembic</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn g">3</div>
+        <div><div class="t-title">Redis: кеш + сессии пользователей</div>
+        <div class="t-desc">Сессии хранить в Redis (быстро, не нагружает БД). Кешировать тяжёлые агрегаты KPI с TTL 30 минут — при часовом обновлении DWH это оптимально. Снизит нагрузку на DWH в 10–20 раз.</div>
+        <div class="t-tech"><span class="badge">Redis 7</span><span class="badge">fastapi-cache2</span><span class="badge br">30 мин TTL = свежесть ок</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn g">4</div>
+        <div><div class="t-title">Read-only подключение к DWH</div>
+        <div class="t-desc">Попросить DWH-команду создать пользователя с правами только SELECT. Проверить подключение. Зафиксировать: имена схем, к которым есть доступ. Это нужно для Этапа 1.</div>
+        <div class="t-tech"><span class="badge bp">DWH PostgreSQL</span><span class="badge">SQLAlchemy</span><span class="badge">Read-only user</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 1 — DATA DESCRIPTION -->
+  <div class="section">
+    <div class="sec-eye">Этап 1 · 3–5 недель · КРИТИЧЕСКИЙ ФУНДАМЕНТ</div>
+    <div class="sec-title">Описание архитектуры данных DWH с нуля</div>
+    <div class="phase-hdr ph-data">
+      <div class="ph-num">Этап 1 — Самый важный</div>
+      <div class="ph-name">Без этого ETL — угадывание, а ИИ — бесполезен</div>
+      <div class="ph-time">3–5 недель (без существующей документации)</div>
+    </div>
+
+    <div class="sec-note">Описание данных DWH — это не просто документация. Это одновременно: (1) техническое задание для ETL, (2) system-prompt для локального ИИ, (3) общий язык с DWH-командой. Один раз сделать хорошо — экономит недели в будущем.</div>
+
+    <p style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--mid);margin:14px 0 8px">Пошаговый процесс описания:</p>
+    <div class="schema-steps">
+      <div class="ss">
+        <div class="ss-n">1</div>
+        <div class="ss-body">
+          <div class="ss-t">Автоматически выгрузить структуру всех таблиц</div>
+          <div class="ss-d">Python-скрипт обходит information_schema и выгружает: список всех таблиц и схем, все колонки с типами данных, внешние ключи, существующие комментарии (если есть). Результат — базовый YAML с «скелетом» без смысла.</div>
+          <div class="ss-time">⏱ 1–2 дня</div>
+        </div>
+      </div>
+      <div class="ss">
+        <div class="ss-n">2</div>
+        <div class="ss-body">
+          <div class="ss-t">Разведочный анализ данных (EDA) по каждой таблице</div>
+          <div class="ss-d">Для каждой таблицы выполнить: COUNT(*), MAX/MIN по дате, образцы данных (LIMIT 20), кардинальность ключевых полей. Это позволяет понять что хранится в таблице даже без документации — по реальным данным.</div>
+          <div class="ss-time">⏱ 3–5 дней (на 50–100 таблиц)</div>
+        </div>
+      </div>
+      <div class="ss">
+        <div class="ss-n">3</div>
+        <div class="ss-body">
+          <div class="ss-t">Смысловое описание каждой таблицы (самое трудоёмкое)</div>
+          <div class="ss-d">Для каждой нужной таблицы заполнить: что это за сущность, какой бизнес-процесс отражает, что означает каждая колонка, единицы измерения, список возможных значений для статусов и кодов. Формат — YAML, по одному файлу на таблицу.</div>
+          <div class="ss-time">⏱ 1–2 недели (основная работа)</div>
+        </div>
+      </div>
+      <div class="ss">
+        <div class="ss-n">4</div>
+        <div class="ss-body">
+          <div class="ss-t">Построить ER-диаграмму связей между ключевыми сущностями</div>
+          <div class="ss-d">Нарисовать связи: АЗС-справочник → KPI-метрики → проверки → персонал. Определить ключи: azs_id, region_code, npo_code. Инструмент: dbdiagram.io (бесплатно) или draw.io.</div>
+          <div class="ss-time">⏱ 2–3 дня</div>
+        </div>
+      </div>
+      <div class="ss">
+        <div class="ss-n">5</div>
+        <div class="ss-body">
+          <div class="ss-t">Зафиксировать «контракт данных» для ETL</div>
+          <div class="ss-d">Таблица маппинга: поле в DWH → поле в приложении → трансформация (если нужна). Это граница ответственности: если DWH-команда переименует колонку — вы сразу знаете что сломается.</div>
+          <div class="ss-time">⏱ 1–2 дня</div>
+        </div>
+      </div>
+      <div class="ss">
+        <div class="ss-n">6</div>
+        <div class="ss-body">
+          <div class="ss-t">Валидация с владельцем данных</div>
+          <div class="ss-d">Показать описание аналитику или DWH-инженеру компании — убедиться, что вы правильно поняли смысл полей. Особенно важно для финансовых метрик (выручка gross/net, с НДС/без) и статусных кодов АЗС.</div>
+          <div class="ss-time">⏱ 1–2 встречи</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="code">
+<span class="cm"># Скрипт автовыгрузки структуры DWH → базовый YAML</span>
+<span class="kw">import</span> psycopg2, yaml
+
+conn = psycopg2.connect(<span class="st">"host=dwh-host dbname=dwh user=ro_user password=..."</span>)
+cur  = conn.cursor()
+
+cur.execute(<span class="st">"""
+  SELECT t.table_schema, t.table_name, c.column_name,
+         c.data_type, c.is_nullable,
+         col_description(
+           (t.table_schema||'.'||t.table_name)::regclass::oid,
+           c.ordinal_position
+         ) AS comment
+  FROM information_schema.tables t
+  JOIN information_schema.columns c USING (table_schema, table_name)
+  WHERE t.table_schema NOT IN ('information_schema','pg_catalog','pg_toast')
+  ORDER BY t.table_schema, t.table_name, c.ordinal_position
+"""</span>)
+
+schema = {}
+<span class="kw">for</span> schema_n, table_n, col, dtype, nullable, comment <span class="kw">in</span> cur.fetchall():
+    key = <span class="fn">f</span><span class="st">"{schema_n}.{table_n}"</span>
+    <span class="kw">if</span> key <span class="kw">not in</span> schema: schema[key] = {<span class="st">"description"</span>: <span class="st">"TODO"</span>, <span class="st">"columns"</span>: {}}
+    schema[key][<span class="st">"columns"</span>][col] = {
+        <span class="st">"type"</span>: dtype, <span class="st">"nullable"</span>: nullable == <span class="st">"YES"</span>,
+        <span class="st">"description"</span>: comment <span class="kw">or</span> <span class="st">"TODO"</span>
+    }
+
+<span class="kw">with</span> <span class="fn">open</span>(<span class="st">"dwh_schema_draft.yaml"</span>, <span class="st">"w"</span>, encoding=<span class="st">"utf-8"</span>) <span class="kw">as</span> f:
+    yaml.dump(schema, f, allow_unicode=<span class="kw">True</span>, default_flow_style=<span class="kw">False</span>)
+</div>
+
+    <div class="sec-note"><strong>Итог Этапа 1:</strong> YAML-файл 30–100 страниц с полным описанием DWH. Он используется: Этапом 2 как «карта ETL», Этапом 4 как system-prompt ИИ. Без него оба этапа идут вслепую.</div>
+  </div>
+
+  <!-- PHASE 2 — ETL -->
+  <div class="section">
+    <div class="sec-eye">Этап 2 · 2–3 недели</div>
+    <div class="sec-title">ETL: синхронизация DWH → App каждый час</div>
+    <div class="phase-hdr ph-etl">
+      <div class="ph-num">Этап 2</div>
+      <div class="ph-name">PostgreSQL → PostgreSQL: самый простой возможный ETL</div>
+      <div class="ph-time">После завершения описания схемы</div>
+    </div>
+
+    <div class="tip">DWH обновляется каждый час. ETL-сервис запускается через 15 минут после обновления DWH (например, в :15 каждого часа) — данные в приложении отстают не более чем на 1 час 15 минут. Это отличная свежесть для оперативного управления.</div>
+
+    <div class="task-list">
+      <div class="task">
+        <div class="tn r">1</div>
+        <div><div class="t-title">Инкрементальный ETL: только изменения, не весь объём</div>
+        <div class="t-desc">Стратегия: каждый час забирать только строки, где updated_at > время последнего запуска. Ночная полная перезагрузка раз в сутки. Это намного быстрее и не нагружает DWH.</div>
+        <div class="t-tech"><span class="badge br">APScheduler</span><span class="badge">SQLAlchemy</span><span class="badge">INSERT … ON CONFLICT DO UPDATE</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn r">2</div>
+        <div><div class="t-title">Материализованные представления для дашбордов</div>
+        <div class="t-desc">Топ АЗС по выручке, среднее по НПО, динамика за квартал — считать «на лету» при каждом запросе медленно. Создать materialized views в app PostgreSQL, обновлять каждый час после ETL. Дашборды откроются мгновенно.</div>
+        <div class="t-tech"><span class="badge br">PostgreSQL Matviews</span><span class="badge">REFRESH CONCURRENTLY</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn r">3</div>
+        <div><div class="t-title">Мониторинг свежести данных</div>
+        <div class="t-desc">Таблица etl_log (таблица, время запуска, строк загружено, ошибка). Эндпоинт /api/data-health. На фронте — плашка «Данные актуальны на: 47 минут назад». Алерт на email если ETL не запускался &gt;2 часов.</div>
+        <div class="t-tech"><span class="badge br">FastAPI</span><span class="badge">etl_log table</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn r">4</div>
+        <div><div class="t-title">Показать первые реальные данные пилоту (10–15 человек)</div>
+        <div class="t-desc">После первого успешного ETL — разослать приглашения пилотным пользователям. Собрать обратную связь: верные ли данные, понятен ли интерфейс, что мешает. Это критически важно до разработки RBAC.</div>
+        <div class="t-tech"><span class="badge ba">Пилот</span><span class="badge">Feedback форма</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 3 — RBAC + USERS -->
+  <div class="section">
+    <div class="sec-eye">Этап 3 · 3–4 недели</div>
+    <div class="sec-title">Управление пользователями, роли и алерты</div>
+    <div class="phase-hdr ph-rbac">
+      <div class="ph-num">Этап 3</div>
+      <div class="ph-name">RBAC, управление 1 000 аккаунтов и уведомления</div>
+      <div class="ph-time">Параллельно с концом Этапа 2</div>
+    </div>
+
+    <!-- USER MANAGEMENT EXPLANATION -->
+    <p style="font-size:13px;font-weight:700;color:var(--ink);margin:0 0 8px">Что такое «управление пользователями» — простое объяснение</p>
+    <p style="font-size:12px;color:var(--mid);line-height:1.6;margin-bottom:12px">Представьте: завтра в компанию выходит новый менеджер по АЗС. Кто создаёт ему аккаунт в приложении? Кто назначает ему роль «Региональный менеджер ЦНП»? Когда он уволится — кто заблокирует его доступ? Это и есть «управление пользователями».</p>
+
+    <div class="um-grid">
+      <div class="um-box curr">
+        <div class="um-tag">Вариант А — Рекомендую на старте</div>
+        <div class="um-title">Ручная admin-панель</div>
+        <div class="um-item">Администратор (вы или назначенный IT-сотрудник) создаёт аккаунты вручную</div>
+        <div class="um-item">Форма: Email @lukoil.com → выбрать роль → выбрать НПО/регион</div>
+        <div class="um-item">Деактивация: кнопка «Заблокировать» в списке пользователей</div>
+        <div class="um-item">Журнал: кто и когда создал/изменил аккаунт</div>
+        <div class="um-item">Подходит для пилота 10–15 человек и роста до ~200 человек</div>
+      </div>
+      <div class="um-box next">
+        <div class="um-tag">Вариант Б — Для масштаба 1 000 человек</div>
+        <div class="um-title">Интеграция с Active Directory (AD)</div>
+        <div class="um-item">Active Directory — это корпоративная система IT, где уже есть все сотрудники ЛУКОЙЛ</div>
+        <div class="um-item">Новый сотрудник появился в AD → автоматически создаётся аккаунт в приложении</div>
+        <div class="um-item">Уволился → IT отключил в AD → доступ в приложении тоже закрылся</div>
+        <div class="um-item">Роль назначается по группе в AD (все из «АЗС_Директора» = роль Директора)</div>
+        <div class="um-item">Нужно уточнить у IT: есть ли в компании AD и можно ли к нему подключиться через LDAP</div>
+      </div>
+    </div>
+
+    <div class="info"><strong>Практический план:</strong> начать с Варианта А (ручная admin-панель — 3 дня разработки). Это сработает для пилота и даже для 200–300 человек, если изменения происходят редко. Если станет ясно что AD есть и IT готов дать доступ — добавить Вариант Б позже, это не переделка, а расширение.</div>
+
+    <div class="task-list">
+      <div class="task">
+        <div class="tn b">1</div>
+        <div><div class="t-title">Admin-панель: создание, редактирование, блокировка пользователей</div>
+        <div class="t-desc">Страница /admin/users: список всех пользователей, кнопки «Добавить», «Изменить роль», «Заблокировать». JWT-токен содержит роль — при каждом запросе сервер проверяет права. Роли: Директор НПО / Рег. менеджер / Менеджер качества / Оператор.</div>
+        <div class="t-tech"><span class="badge bb">JWT + роли</span><span class="badge">PostgreSQL RLS</span><span class="badge bb">3–4 дня разработки</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn b">2</div>
+        <div><div class="t-title">Row-Level Security в PostgreSQL: данные изолированы на уровне БД</div>
+        <div class="t-desc">RLS — это защита на уровне базы данных. Региональный менеджер не может увидеть данные другого НПО даже если в коде будет ошибка — БД просто не вернёт лишние строки. Это второй рубеж защиты после JWT.</div>
+        <div class="t-tech"><span class="badge bb">PostgreSQL RLS</span><span class="badge br">Критическая безопасность</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn b">3</div>
+        <div><div class="t-title">Push-алерты по KPI-порогам</div>
+        <div class="t-desc">Фоновый процесс раз в час (после ETL) проверяет пороги: выручка &lt;-10%, NPS &lt;4.0, укомплектованность &lt;80%. Алерт = Web Push в браузер + email. Журнал алертов в приложении с кнопкой «Принято к работе».</div>
+        <div class="t-tech"><span class="badge bb">Web Push API</span><span class="badge">VAPID</span><span class="badge">SMTP</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn b">4</div>
+        <div><div class="t-title">Экспорт Excel и PDF</div>
+        <div class="t-desc">Кнопка «Скачать» на любой аналитической странице. Excel: openpyxl с форматированием (красная шапка, чередование строк). PDF: WeasyPrint. Корпоративный стиль: Tahoma, #C00000.</div>
+        <div class="t-tech"><span class="badge">openpyxl</span><span class="badge">WeasyPrint</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 4 — AI -->
+  <div class="section">
+    <div class="sec-eye">Этап 4 · 6–8 недель · Требует GPU-сервер</div>
+    <div class="sec-title">Локальный ИИ Text-to-SQL (данные не покидают компанию)</div>
+    <div class="phase-hdr ph-ai">
+      <div class="ph-num">Этап 4</div>
+      <div class="ph-name">Ollama + Qwen2.5-Coder — 100% локально</div>
+      <div class="ph-time">После Этапа 2 (реальные данные обязательны)</div>
+    </div>
+
+    <div class="task-list">
+      <div class="task">
+        <div class="tn gr">1</div>
+        <div><div class="t-title">Развернуть Ollama на GPU-сервере</div>
+        <div class="t-desc">Ollama — один Docker-контейнер, который скачивает модель и отдаёт OpenAI-совместимый API на localhost:11434. Команда: <code>ollama pull qwen2.5-coder:14b</code>. 30 минут настройки. Никаких внешних запросов.</div>
+        <div class="t-tech"><span class="badge bg">Ollama</span><span class="badge bg">Qwen2.5-Coder-14B Q4</span><span class="badge">NVIDIA GPU</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn gr">2</div>
+        <div><div class="t-title">YAML-схема из Этапа 1 → system-prompt для ИИ</div>
+        <div class="t-desc">Файл описания данных буквально скармливается модели как контекст: «Ты помощник по данным АЗС. Вот схема БД: [YAML]. Переводи вопрос пользователя в SQL». Качество Этапа 1 напрямую = качество ИИ.</div>
+        <div class="t-tech"><span class="badge bg">Schema YAML → prompt</span><span class="badge br">Зависит от Этапа 1</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn gr">3</div>
+        <div><div class="t-title">Сервис Text-to-SQL с sandbox и очередью</div>
+        <div class="t-desc">POST /ai/query → LLM → SQL → проверка (только SELECT) → выполнение с таймаутом 5 сек → ответ. Очередь через Redis Queue: 1 000 пользователей не ждут друг друга — запросы встают в очередь, результат приходит через SSE.</div>
+        <div class="t-tech"><span class="badge bg">FastAPI + Ollama API</span><span class="badge bg">Redis Queue</span><span class="badge">SSE streaming</span><span class="badge br">sqlparse (только SELECT)</span></div></div>
+      </div>
+      <div class="task">
+        <div class="tn gr">4</div>
+        <div><div class="t-title">Чат-интерфейс + обратная связь для улучшения качества</div>
+        <div class="t-desc">Страница «Спросить ИИ»: поле ввода, история диалога, результат таблицей, кнопка «Экспорт в Excel». Кнопки «👍 Верно» / «👎 Неверно» под каждым ответом — собирают датасет для улучшения промптов.</div>
+        <div class="t-tech"><span class="badge bg">React</span><span class="badge">Feedback loop</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- GPU BUDGET SECTION -->
+  <div class="section">
+    <div class="sec-eye">Бюджет на оборудование · Данные рынка РФ, июль 2026</div>
+    <div class="sec-title">Стоимость GPU-сервера для локального ИИ</div>
+
+    <div class="scale-strip">
+      <div class="sc"><div class="sc-l">Минимум VRAM для 14B Q4</div><div class="sc-v">10</div><div class="sc-s">GB VRAM</div></div>
+      <div class="sc"><div class="sc-l">Скорость генерации SQL</div><div class="sc-v">15–25</div><div class="sc-s">токенов/сек</div></div>
+      <div class="sc"><div class="sc-l">Время ответа на запрос</div><div class="sc-v">&lt;5</div><div class="sc-s">секунд</div></div>
+      <div class="sc"><div class="sc-l">Параллельных ИИ-запросов</div><div class="sc-v">1–2</div><div class="sc-s">остальные в очереди</div></div>
+    </div>
+
+    <div class="budget-grid">
+      <div class="bcard">
+        <div class="bc-tag">Минимальный (прототип)</div>
+        <div class="bc-name">Workstation RTX 3090 24GB</div>
+        <div class="bc-price">≈ 280–380 тыс. ₽</div>
+        <div class="bc-sub">
+          RTX 3090 б/у 24GB: ~80–120 тыс. ₽<br>
+          CPU Ryzen 9 / i9: ~50–70 тыс. ₽<br>
+          RAM 64GB: ~20–25 тыс. ₽<br>
+          NVMe 2TB: ~15–20 тыс. ₽<br>
+          Материнка + БП + корпус: ~50–80 тыс. ₽<br>
+          <em>Подходит для пилота и тестирования</em>
+        </div>
+      </div>
+      <div class="bcard rec">
+        <div class="bc-tag">Рекомендуется (production)</div>
+        <div class="bc-name">Workstation RTX 4090 24GB</div>
+        <div class="bc-price">≈ 350–550 тыс. ₽</div>
+        <div class="bc-sub">
+          RTX 4090 новая 24GB: ~140–200 тыс. ₽<br>
+          CPU Ryzen 9 7950X / Xeon: ~60–90 тыс. ₽<br>
+          RAM 64–128GB DDR5: ~25–45 тыс. ₽<br>
+          NVMe 2TB: ~20 тыс. ₽<br>
+          Материнка + БП 1200W + корпус: ~60–100 тыс. ₽<br>
+          <em>Оптимально для 1 000 пользователей</em>
+        </div>
+      </div>
+      <div class="bcard cloud">
+        <div class="bc-tag">Альтернатива — облако РФ</div>
+        <div class="bc-name">Selectel / Яндекс Cloud GPU</div>
+        <div class="bc-price">≈ 15–45 тыс. ₽/мес</div>
+        <div class="bc-sub">
+          RTX 4090 аренда: от 75 ₽/час ≈ 54 тыс./мес<br>
+          T4 16GB (достаточно для 7B): ~20–30 тыс./мес<br>
+          Данные в дата-центрах РФ (152-ФЗ)<br>
+          <em>Требует согласования с ИБ — данные на внешнем сервере</em>
+        </div>
+      </div>
+    </div>
+
+    <div class="warn"><strong>Важно согласовать с ИБ:</strong> облачный GPU — данные обрабатываются в инфраструктуре провайдера, даже российского. Если политика ИБ компании требует обработку данных только на корпоративном железе — нужна покупка сервера. Если облако РФ допустимо — аренда дешевле на старте.</div>
+
+    <table class="dtable" style="margin-top:14px">
+      <thead><tr><th>Компонент сервера</th><th>Минимум</th><th>Рекомендуется</th><th>Цена (ориентир)</th></tr></thead>
+      <tbody>
+        <tr><td>GPU</td><td>RTX 3090 24GB (б/у)</td><td>RTX 4090 24GB (новая)</td><td>80–200 тыс. ₽</td></tr>
+        <tr><td>CPU</td><td>Intel i9-13900 / Ryzen 9 7900</td><td>Ryzen 9 7950X / Xeon W5-2400</td><td>50–90 тыс. ₽</td></tr>
+        <tr><td>RAM</td><td>32 GB DDR5</td><td>64–128 GB DDR5</td><td>15–45 тыс. ₽</td></tr>
+        <tr><td>Хранилище</td><td>1 TB NVMe SSD</td><td>2 TB NVMe SSD</td><td>10–22 тыс. ₽</td></tr>
+        <tr><td>Материнская плата</td><td>Совместимая с CPU</td><td>Server-grade, ECC RAM</td><td>25–70 тыс. ₽</td></tr>
+        <tr><td>Блок питания</td><td>850W 80+ Gold</td><td>1200W 80+ Platinum</td><td>12–25 тыс. ₽</td></tr>
+        <tr><td>Корпус + система охлаждения</td><td>Midi-tower</td><td>Server tower / rack 2U</td><td>10–30 тыс. ₽</td></tr>
+        <tr><td>ОС + CUDA + настройка</td><td>Ubuntu 22.04 LTS (бесплатно)</td><td>Ubuntu 22.04 LTS</td><td>0 ₽ (время разработчика)</td></tr>
+        <tr><td><strong>Итого (ориентир)</strong></td><td>280–380 тыс. ₽</td><td><strong>350–550 тыс. ₽</strong></td><td></td></tr>
+      </tbody>
+    </table>
+
+    <div class="note"><strong>Вывод по оборудованию:</strong> для production-внедрения на 1 000 пользователей заложить <strong>400–500 тыс. ₽</strong> на GPU-сервер. Для пилота (10–15 человек) можно временно использовать CPU-инференс (медленнее в 5–10 раз, но бесплатно) — решить до Этапа 4.</div>
+  </div>
+
+  <!-- RISKS -->
+  <div class="section">
+    <div class="sec-eye">Риски</div>
+    <div class="sec-title">Ключевые риски и митигация</div>
+    <div class="risk-row"><div class="sev sev-h">Высокий</div><div><div class="risk-title">Описание схемы DWH займёт больше времени, чем ожидалось</div><div class="risk-mit">Митигация: начать с 5–7 самых нужных таблиц (АЗС-справочник + KPI + NPS), это даёт уже работающий ETL. Остальные таблицы описывать итеративно, когда понадобятся.</div></div></div>
+    <div class="risk-row"><div class="sev sev-h">Высокий</div><div><div class="risk-title">Нет бюджета на GPU-сервер, а локальный ИИ критически важен</div><div class="risk-mit">Митигация: для пилота (10–15 человек) использовать CPU-инференс (Qwen2.5-Coder-7B Q2_K, ~5 tok/s, ответ за 15–30 сек). Это медленно, но рабочий прототип. Обосновать закупку GPU через экономию времени АУП.</div></div></div>
+    <div class="risk-row"><div class="sev sev-m">Средний</div><div><div class="risk-title">DWH-команда не даёт read-only доступ из-за политики безопасности</div><div class="risk-mit">Митигация: запросить доступ к специально выделенной схеме-витрине, которую DWH-команда сделает для приложения. Это стандартная практика разграничения доступа.</div></div></div>
+    <div class="risk-row"><div class="sev sev-m">Средний</div><div><div class="risk-title">Качество Text-to-SQL &lt;75% из-за неполного описания схемы</div><div class="risk-mit">Митигация: кнопка «👎 Неверно» в интерфейсе собирает реальные примеры ошибок → дополнить описание полей → качество растёт итеративно.</div></div></div>
+    <div class="risk-row"><div class="sev sev-l">Низкий</div><div><div class="risk-title">Один разработчик — риск блокировок на непрофильных задачах</div><div class="risk-mit">Митигация: строгая последовательность этапов (не начинать следующий, пока не закрыт текущий). Таймбоксы: если задача не решается за 3 дня — искать обходной путь, не застревать.</div></div></div>
+  </div>
+
+  <!-- OPEN QUESTIONS v3 -->
+  <div class="section">
+    <div class="sec-eye">Открытые вопросы v3.0</div>
+    <div class="sec-title">Требуют ответа до или в процессе разработки</div>
+    <div class="task-list">
+      <div class="task">
+        <div class="tn p">?</div>
+        <div><div class="t-title">Есть ли в ЛУКОЙЛ Active Directory (AD) — система управления аккаунтами сотрудников?</div>
+        <div class="t-desc">Если да — роли и пользователи могут синхронизироваться автоматически. Если нет — вполне достаточно ручной admin-панели. Уточнить у IT-отдела.</div></div>
+      </div>
+      <div class="task">
+        <div class="tn p">?</div>
+        <div><div class="t-title">Разрешает ли политика ИБ обработку данных на облачном GPU (Selectel/Яндекс Cloud)?</div>
+        <div class="t-desc">Если нет — нужна закупка собственного GPU-сервера (~400–500 тыс. ₽). Если да — можно начать с аренды без капитальных затрат. Это влияет на планирование бюджета Этапа 4.</div></div>
+      </div>
+      <div class="task">
+        <div class="tn p">?</div>
+        <div><div class="t-title">Есть ли в DWH поле updated_at / modified_at в ключевых таблицах?</div>
+        <div class="t-desc">Без этого поля инкрементальный ETL (только изменения за час) невозможен — придётся каждый раз загружать всю таблицу. Проверить при первом подключении к DWH.</div></div>
+      </div>
+      <div class="task">
+        <div class="tn p">?</div>
+        <div><div class="t-title">Кто в компании владеет данными АЗС в DWH и может подтвердить описание?</div>
+        <div class="t-desc">Для валидации описания схемы нужен человек, который знает что означают поля — аналитик данных, DWH-инженер или бизнес-аналитик. Без этой встречи высок риск неправильного понимания метрик.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="doc-ftr">
+    <span>Классификатор АЗС · ОНПО · ТЗ v3.0 — Июль 2026</span>
+    <span>Для внутреннего использования</span>
+  </div>
+
+</div>

@@ -36,7 +36,7 @@ export default defineConfig({
   ],
   server: {
     host: "0.0.0.0",
-    allowedHosts: [".loca.lt", ".lhr.life"],
+    allowedHosts: [".loca.lt", ".lhr.life", ".trycloudflare.com", ".ngrok-free.dev", ".ngrok.io", ".ngrok.app"],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",
@@ -46,12 +46,23 @@ export default defineConfig({
   },
   preview: {
     host: "0.0.0.0",
-    allowedHosts: [".loca.lt", ".lhr.life"],
+    allowedHosts: [".loca.lt", ".lhr.life", ".trycloudflare.com", ".ngrok-free.dev", ".ngrok.io", ".ngrok.app"],
+    // Security headers for `vite preview`. In production these MUST also be
+    // configured on the real static server (nginx / Caddy).
+    headers: {
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Permissions-Policy": "geolocation=(self), camera=(), microphone=()",
+    },
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
       },
     },
+  },
+  build: {
+    target: ["es2018", "safari13"],
   },
 });

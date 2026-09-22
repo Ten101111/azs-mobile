@@ -1,0 +1,27 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-label="Analyzing">
+
+<defs>
+ <radialGradient id="core" cx="42%" cy="35%" r="70%"><stop offset="0" stop-color="#34373C"/><stop offset=".72" stop-color="#090A0C"/><stop offset="1" stop-color="#050607"/></radialGradient>
+ <linearGradient id="red"><stop stop-color="#FF4147"/><stop offset=".48" stop-color="#E31E24"/><stop offset="1" stop-color="#72070B"/></linearGradient>
+ <linearGradient id="white" x2="0" y2="1"><stop stop-color="#FFF"/><stop offset="1" stop-color="#BFC2C5"/></linearGradient>
+ <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="10" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+
+<circle cx="512" cy="512" r="242" fill="url(#core)" stroke="#292C31" stroke-width="5"/>
+<g fill="none" stroke-linecap="round">
+ <circle cx="512" cy="512" r="342" stroke="url(#red)" stroke-width="74" stroke-dasharray="250 74 160 95 320 125 190 935" transform="rotate(-28 512 512)" filter="url(#glow)"/>
+ <circle cx="512" cy="512" r="295" stroke="#B10C12" stroke-width="47" stroke-dasharray="170 55 245 90 120 1173" transform="rotate(74 512 512)"/>
+ <circle cx="512" cy="512" r="253" stroke="#F03A40" stroke-width="22" stroke-dasharray="95 35 180 72 145 1063" transform="rotate(184 512 512)" opacity=".82"/>
+ <circle cx="512" cy="512" r="214" stroke="#71070B" stroke-width="14" stroke-dasharray="72 30 122 46 94 980" transform="rotate(266 512 512)"/>
+</g>
+<g stroke="#E31E24" fill="none" opacity=".6">
+ <path d="M305 403 C388 331 427 420 485 348 C548 269 593 398 704 320"/>
+ <path d="M281 582 C370 510 418 625 507 534 C588 451 640 585 754 510"/>
+ <path d="M351 704 C412 635 478 720 535 651 C600 572 642 674 696 630"/>
+</g>
+<g fill="url(#white)" >
+    <rect x="425" y="530" width="46" height="118" rx="14"/>
+    <rect x="489" y="465" width="46" height="183" rx="14"/>
+    <rect x="553" y="382" width="46" height="266" rx="14"/></g>
+
+</svg>

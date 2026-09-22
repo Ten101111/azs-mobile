@@ -22,3 +22,32 @@ azs-mobile/node_modules/
 .env
 .env.*
 !azs-mobile/.env.example
+
+# Local SSH keys and generated credentials
+classifier
+classifier.pub
+*.pem
+*.key
+id_*
+*.pub
+
+# --- Локальные инструменты и кэши (добавлено 22.09.2026) ---
+.venv/
+venv/
+__pycache__/
+.claude/
+.codex-*/
+*.inspect.ndjson
+outputs/
+Claude outputs/
+
+# --- Корпоративные материалы и выгрузки ОХД — не для GitHub ---
+Материалы/
+DWH_outputs/
+IT проекты - презы/
+Визуализации/
+azs-mobile/Архив/
+*.pptx
+*.docx
+*.xlsx
+~$*
