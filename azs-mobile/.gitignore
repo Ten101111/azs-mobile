@@ -59,3 +59,6 @@ __pycache__/
 *.pyc
 .claude/
 src/orb/_to_delete/
+
+# Временная папка переноса файлов (пустая)
+_incoming/

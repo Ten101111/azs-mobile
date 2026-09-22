@@ -36,6 +36,8 @@ class AskRequest(BaseModel):
     binding: str | None = Field(default=None, max_length=200)
     model: str | None = Field(default=None, max_length=120)
     dialogId: int | None = None
+    # auto — глубину выбирает разбор задачи; fast/analyze/deep — принудительно.
+    depth: str = Field(default="auto", max_length=10)
 
 
 class DialogRequest(BaseModel):
@@ -81,6 +83,17 @@ class AskResponse(BaseModel):
     dialogId: int | None = None
     messageId: int | None = None
     dialogTitle: str = ""
+    # Агент: глубина, тип задачи, структурированный вывод, графики, таблицы, шаги.
+    depth: str = "fast"
+    taskType: str = "lookup"
+    analysis: dict | None = None
+    charts: list[dict] = []
+    tables: list[dict] = []
+    steps: list[dict] = []
+    frame: dict = {}
+    plan: dict | None = None
+    grounding: dict | None = None
+    planMs: int = 0
 
 
 class Identity(BaseModel):
@@ -105,6 +118,57 @@ class StatusResponse(BaseModel):
     commentRequiredUpTo: int = dialog_store.COMMENT_REQUIRED_UPTO
     ownName: str = ""
     ownEmail: str = ""
+    agentEnabled: bool = False
+    depths: list[dict] = []
+
+
+DEPTH_OPTIONS = [
+    {"code": "auto", "title": "Авто", "hint": "глубину выбирает разбор задачи"},
+    {"code": "fast", "title": "Быстро", "hint": "один запрос и короткий ответ"},
+    {"code": "analyze", "title": "Анализ", "hint": "сравнения, динамика, несколько запросов"},
+    {"code": "deep", "title": "Глубокий анализ", "hint": "причины, аномалии, сценарии: серия запросов, Python, графики"},
+]
+
+
+def _strip_code(steps: list[dict]) -> list[dict]:
+    """Шаги без SQL и кода — для ролей, которым текст запроса не показывается."""
+    return [{k: v for k, v in step.items() if k not in {"sql", "code", "output"}} for step in steps]
+
+
+def _response(answer, show_sql: bool) -> "AskResponse":
+    steps = list(getattr(answer, "steps", []) or [])
+    return AskResponse(
+        ok=answer.ok,
+        question=answer.question,
+        scopeLabel=answer.scope_label,
+        summary=answer.summary,
+        # Запрос уходит на клиент только тем ролям, которым он разрешён:
+        # прятать его вёрсткой недостаточно — он был бы виден в трафике.
+        sql=answer.sql if show_sql else None,
+        sqlRaw=answer.sql_raw if show_sql else None,
+        columns=answer.columns,
+        rows=answer.rows,
+        notes=answer.notes,
+        truncated=answer.truncated,
+        model=answer.model,
+        modelMs=answer.model_ms,
+        narrateMs=answer.narrate_ms,
+        sqlMs=answer.sql_ms,
+        rowCount=len(answer.rows),
+        attempts=answer.attempts,
+        error=answer.error,
+        rule=answer.rule,
+        depth=getattr(answer, "depth", "fast"),
+        taskType=getattr(answer, "task_type", "lookup"),
+        analysis=getattr(answer, "analysis", None),
+        charts=list(getattr(answer, "charts", []) or []),
+        tables=list(getattr(answer, "tables", []) or []),
+        steps=steps if show_sql else _strip_code(steps),
+        frame=dict(getattr(answer, "frame", {}) or {}),
+        plan=getattr(answer, "plan", None),
+        grounding=getattr(answer, "grounding", None),
+        planMs=int(getattr(answer, "plan_ms", 0) or 0),
+    )
 
 
 ROLE_TITLES = {
@@ -197,6 +261,8 @@ def build_router(require_admin: Callable, require_user: Callable | None = None) 
             maySeeSql=_may_see_sql(user),
             ownName=getattr(user, "name", "") or "",
             ownEmail=getattr(user, "email", "") or "",
+            agentEnabled=pipeline.AGENT_ENABLED,
+            depths=DEPTH_OPTIONS if pipeline.AGENT_ENABLED else [],
         )
 
     def _identity(payload: AskRequest, user) -> tuple[str, str | None, str | None]:
@@ -224,6 +290,30 @@ def build_router(require_admin: Callable, require_user: Callable | None = None) 
             )
         return role, binding, actor
 
+    def _history(payload: AskRequest, user) -> list[dict]:
+        """Прошлые ходы того же диалога — только своего: чужой диалог даёт 404."""
+        if payload.dialogId is None:
+            return []
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return []
+        try:
+            turns = dialog_store.messages(int(payload.dialogId), int(user_id))
+        except dialog_store.NotFound as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        history = []
+        for turn in turns[-8:]:
+            answer = turn.get("answer") or {}
+            history.append({"question": turn.get("question", ""), "answer": answer,
+                            "frame": answer.get("frame") or {}})
+        return history
+
+    def _depth(payload: AskRequest) -> str:
+        depth = (payload.depth or "auto").strip().lower()
+        if depth not in pipeline.DEPTHS:
+            raise HTTPException(status_code=400, detail="depth: auto, fast, analyze или deep")
+        return depth
+
     def _persist(response: AskResponse, answer, payload: AskRequest, user) -> AskResponse:
         """Положить вопрос и ответ в диалог владельца."""
         user_id = getattr(user, "id", None)
@@ -247,37 +337,18 @@ def build_router(require_admin: Callable, require_user: Callable | None = None) 
     @router.post("/ask", response_model=AskResponse)
     def ai_ask(payload: AskRequest, user=Depends(guard)):
         role, binding, actor = _identity(payload, user)
+        depth = _depth(payload)
+        history = _history(payload, user)
         try:
             answer = pipeline.ask(
                 payload.question, role, binding, actor,
                 model=(payload.model or "").strip() or None,
+                depth=depth, history=history,
             )
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
 
-        show_sql = _may_see_sql(user)
-        response = AskResponse(
-            ok=answer.ok,
-            question=answer.question,
-            scopeLabel=answer.scope_label,
-            summary=answer.summary,
-            # Запрос уходит на клиент только тем ролям, которым он разрешён:
-            # прятать его вёрсткой недостаточно — он был бы виден в трафике.
-            sql=answer.sql if show_sql else None,
-            sqlRaw=answer.sql_raw if show_sql else None,
-            columns=answer.columns,
-            rows=answer.rows,
-            notes=answer.notes,
-            truncated=answer.truncated,
-            model=answer.model,
-            modelMs=answer.model_ms,
-            narrateMs=answer.narrate_ms,
-            sqlMs=answer.sql_ms,
-            rowCount=len(answer.rows),
-            attempts=answer.attempts,
-            error=answer.error,
-            rule=answer.rule,
-        )
+        response = _response(answer, _may_see_sql(user))
         return _persist(response, answer, payload, user)
 
     @router.post("/ask/stream")
@@ -290,6 +361,8 @@ def build_router(require_admin: Callable, require_user: Callable | None = None) 
         role, binding, actor = _identity(payload, user)
         show_sql = _may_see_sql(user)
         model = (payload.model or "").strip() or None
+        depth = _depth(payload)
+        history = _history(payload, user)
 
         events: queue.Queue = queue.Queue()
         FINISHED = object()
@@ -299,27 +372,9 @@ def build_router(require_admin: Callable, require_user: Callable | None = None) 
                 answer = pipeline.ask(
                     payload.question, role, binding, actor, model=model,
                     on_stage=lambda event: events.put(("stage", event)),
+                    depth=depth, history=history,
                 )
-                response = AskResponse(
-                    ok=answer.ok,
-                    question=answer.question,
-                    scopeLabel=answer.scope_label,
-                    summary=answer.summary,
-                    sql=answer.sql if show_sql else None,
-                    sqlRaw=answer.sql_raw if show_sql else None,
-                    columns=answer.columns,
-                    rows=answer.rows,
-                    notes=answer.notes,
-                    truncated=answer.truncated,
-                    model=answer.model,
-                    modelMs=answer.model_ms,
-                    narrateMs=answer.narrate_ms,
-                    sqlMs=answer.sql_ms,
-                    rowCount=len(answer.rows),
-                    attempts=answer.attempts,
-                    error=answer.error,
-                    rule=answer.rule,
-                )
+                response = _response(answer, show_sql)
                 events.put(("answer", _persist(response, answer, payload, user).model_dump()))
             except HTTPException as err:
                 events.put(("failed", {"detail": err.detail}))

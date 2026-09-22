@@ -57,7 +57,7 @@ class _User:
         self.aiDialog = True
 
 
-def _fake_ask(question, role, binding, actor, model=None, on_stage=None):
+def _fake_ask(question, role, binding, actor, model=None, on_stage=None, **kwargs):
     for key in ("draft", "check", "read", "write"):
         on_stage({"key": key, "state": "active", "label": f"Идёт {key}"})
         on_stage({"key": key, "state": "done", "label": f"Готов {key}", "ms": 100})

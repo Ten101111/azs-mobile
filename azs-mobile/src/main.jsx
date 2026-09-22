@@ -7,6 +7,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 // Орб на WebGL: крупные места — пустой экран и блок ожидания. Мелкие места
 // остаются на SVG-знаке AiMark, как требует спецификация облика.
 import AiOrb, { orbStateFromPipeline } from "./orb/AiOrb.jsx";
+import { AiAnalysis, aiAgentStages, aiAnalysisText, AI_DEPTH_FALLBACK } from "./aiAnalysis.jsx";
 import {
   AlertTriangle,
   BarChart3,
@@ -4312,6 +4313,9 @@ const AI_REFUSAL_HINTS = {
 // системы то, чего не знает.
 function aiStages(answer) {
   if (!answer) return [];
+  // Ответ агента несёт свои измеренные шаги: разбор задачи, запросы,
+  // вычисления, графики, формулировка. Показываем их, а не этапы FAST.
+  if (answer.analysis && (answer.steps || []).length) return aiAgentStages(answer);
   const stages = [
     { key: "draft", label: "Составил запрос к витрине", ms: answer.modelMs, done: true },
   ];
@@ -4779,6 +4783,17 @@ function AiAnswerBody({ answer, maySeeSql }) {
     );
   }
 
+  if (answer.analysis) {
+    return (
+      <AiAnalysis
+        answer={answer}
+        maySeeSql={maySeeSql}
+        Fold={AiFold}
+        fmt={{ cell: aiFormatCell, decimals: aiColumnDecimals, int: asInt }}
+      />
+    );
+  }
+
   const rows = answer.rows || [];
   const columns = answer.columns || [];
   const single = rows.length === 1 && columns.length === 1;
@@ -4952,7 +4967,8 @@ function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onCopy, o
 function aiAnswerText(item) {
   const answer = item.answer || {};
   const parts = [item.question];
-  if (answer.summary) parts.push(answer.summary);
+  if (answer.analysis) parts.push(aiAnalysisText(answer));
+  else if (answer.summary) parts.push(answer.summary);
   if ((answer.rows || []).length) {
     parts.push([(answer.columns || []).join("\t"), ...answer.rows.map((row) => row.map(aiFormatCell).join("\t"))].join("\n"));
   }
@@ -5126,6 +5142,9 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   const identities = status?.identities || [];
   const [identityKey, setIdentityKey] = useState("");
   const [model, setModel] = useState(status?.model || "");
+  // Глубина анализа: auto — выбирает разбор задачи; остальное — принудительно.
+  const [depth, setDepth] = useState("auto");
+  const depthOptions = (status?.depths || []).length ? status.depths : AI_DEPTH_FALLBACK;
   const [showSettings, setShowSettings] = useState(false);
 
   const [dialogs, setDialogs] = useState([]);
@@ -5215,6 +5234,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       role: identity?.role || undefined,
       binding: identity?.binding || undefined,
       model: model || undefined,
+      depth,
       dialogId: activeId ?? undefined,
     };
     try {
@@ -5388,6 +5408,13 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                 </div>
               </div>
             )}
+            <label className="ui-field ai-field-depth">
+              <span>Глубина анализа</span>
+              <select className="ui-select" value={depth} onChange={(event) => setDepth(event.target.value)}>
+                {depthOptions.map((item) => <option key={item.code} value={item.code}>{item.title}</option>)}
+              </select>
+              <span className="ai-depth-hint">{(depthOptions.find((item) => item.code === depth) || {}).hint || ""}</span>
+            </label>
             <label className="ui-field ai-field-model">
               <span>Модель</span>
               {(status?.installedModels || []).length > 0 ? (

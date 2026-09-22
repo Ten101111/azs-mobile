@@ -49,7 +49,7 @@ def _connect() -> sqlite3.Connection:
 
 # Колонки, появившиеся после первых запусков. У уже созданной базы их нет,
 # а ронять журнал из-за этого нельзя: он пишется по каждому обращению.
-LATE_COLUMNS = (("prompt_version", "TEXT"),)
+LATE_COLUMNS = (("prompt_version", "TEXT"), ("depth", "TEXT"), ("task_type", "TEXT"), ("trace_json", "TEXT"))
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -64,7 +64,7 @@ def write(entry: dict) -> int:
     fields = (
         "actor", "role", "binding", "scope_label", "question", "model",
         "sql_raw", "sql_final", "verdict", "rule", "message", "row_count",
-        "model_ms", "sql_ms", "prompt_version",
+        "model_ms", "sql_ms", "prompt_version", "depth", "task_type", "trace_json",
     )
     values = [int(time.time())] + [entry.get(f) for f in fields]
     conn = _connect()

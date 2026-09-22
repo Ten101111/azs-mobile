@@ -47,6 +47,9 @@ class Catalog:
     description: str = ""     # текст описания таблиц для модели
     examples: list[tuple[str, str]] = field(default_factory=list)
     source: str = "встроенный"
+    # Секция semantic файла каталога: правки формул и синонимов поверх
+    # встроенного профиля (см. backend/ai/semantic.py). None — нет секции.
+    semantic: dict | None = None
 
     def column_universe(self) -> set[str]:
         return set().union(*self.tables.values()) if self.tables else set()
@@ -75,6 +78,7 @@ def _from_file(path: Path) -> Catalog:
         description=payload.get("description", ""),
         examples=[(item["question"], item["sql"]) for item in payload.get("examples", [])],
         source=str(path),
+        semantic=payload.get("semantic") or None,
     )
 
 

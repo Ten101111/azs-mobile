@@ -7860,3 +7860,69 @@ a {
      становится жирнее, перестаёт помещаться и обрезается многоточием. */
   .admin-tabs button { min-height: 44px; padding: 0 var(--s1); font-size: 11.5px; }
 }
+
+
+/* --- Ответ аналитического агента: структура, графики, расчёты (22.09.2026) --- */
+.ai-headline {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.5;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.005em;
+}
+.ai-section { display: flex; flex-direction: column; gap: var(--s2); }
+.ai-section-title {
+  margin: 0;
+  font-size: var(--t-meta);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ai-list { margin: 0; padding-left: var(--s4); font-size: var(--t-body); line-height: 1.6; color: var(--text); }
+.ai-list li { margin: var(--s1) 0; }
+.ai-list li::marker { color: var(--line-strong); }
+.ai-section.limits { padding: var(--s3) var(--s4); border-radius: var(--r2, 10px); background: var(--surface-2); }
+.ai-section.limits .ai-list { font-size: var(--t-ui); color: var(--text-secondary); }
+
+.ai-chart-card { margin: 0; display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.ai-chart-title { font-size: var(--t-meta); font-weight: 600; color: var(--text-secondary); }
+.ai-chart-body { width: 100%; min-width: 0; overflow: hidden; }
+.ai-chart { display: block; max-width: 100%; height: auto; font-family: inherit; }
+.ai-chart text { font-size: 11px; fill: var(--muted); }
+.ai-chart text.value { font-size: 11px; fill: var(--text); font-variant-numeric: tabular-nums; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+.ai-chart text.cat { fill: var(--text-secondary); }
+.ai-chart text.unit { font-size: 10.5px; fill: var(--muted); }
+.ai-chart .ai-axes line { stroke: var(--hairline); stroke-width: 1; }
+.ai-chart .ai-axes line.zero,
+.ai-chart line.zero { stroke: var(--line-strong); }
+.ai-chart line.connector { stroke: var(--line-mid); stroke-dasharray: 3 3; }
+.ai-legend { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); font-size: var(--t-meta); color: var(--muted); }
+.ai-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.ai-legend-item i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.ai-chart-note { font-size: var(--t-meta); color: var(--muted); }
+.ai-fact-delta { font-size: var(--t-meta); font-variant-numeric: tabular-nums; }
+.ai-fact-delta.up { color: var(--green); }
+.ai-fact-delta.down { color: var(--red-soft-text); }
+
+.ai-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--s2); }
+.ai-step { display: flex; gap: var(--s2); align-items: flex-start; font-size: var(--t-ui); color: var(--text-secondary); }
+.ai-step-mark { display: inline-flex; flex: 0 0 auto; margin-top: 3px; color: var(--green); }
+.ai-step.bad .ai-step-mark { color: var(--red); }
+.ai-step-body { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; flex: 1 1 auto; }
+.ai-step-line { display: flex; gap: var(--s3); align-items: baseline; }
+.ai-step-ms { margin-left: auto; font-size: var(--t-meta); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ai-step-warn { display: flex; gap: 6px; align-items: flex-start; font-size: var(--t-meta); line-height: 1.5; color: var(--muted); }
+.ai-step-warn svg { flex: 0 0 auto; margin-top: 3px; color: var(--amber); }
+.ai-step .ai-sql { margin: var(--s1) 0 0; }
+.ai-sql.out { opacity: 0.85; }
+
+.ai-field-depth select { min-width: 200px; }
+.ai-depth-hint { font-size: var(--t-meta); color: var(--muted); }
+
+@media (max-width: 620px) {
+  .ai-headline { font-size: 16px; }
+  .ai-list { font-size: 15px; }
+  .ai-chart text { font-size: 10px; }
+}

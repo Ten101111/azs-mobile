@@ -111,7 +111,12 @@ export function orbStateFromPipeline({ typing = false, pending = false, stages =
   if (pending) {
     const active = [...stages].reverse().find((s) => s.state === "active");
     if (!active) return "searching";
-    if (active.key === "draft" || active.key === "check") return "searching";
+    // Шаги агента приходят с полем kind: разбор и схема — «ищет», запросы и
+    // вычисления — «анализирует», график и формулировка — «формирует».
+    if (active.kind === "plan" || active.kind === "schema") return "searching";
+    if (active.kind === "sql" || active.kind === "python") return "analyzing";
+    if (active.kind === "chart" || active.kind === "write") return "forming";
+    if (active.key === "draft" || active.key === "check" || active.key === "plan") return "searching";
     if (active.key === "read") return "analyzing";
     if (active.key === "write") return "forming";
     return "analyzing";
