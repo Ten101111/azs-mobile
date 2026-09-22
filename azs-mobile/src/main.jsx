@@ -4,9 +4,13 @@ import { createRoot } from "react-dom/client";
 import { max } from "d3-array";
 import { scaleLinear } from "d3-scale";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+// Орб на WebGL: крупные места — пустой экран и блок ожидания. Мелкие места
+// остаются на SVG-знаке AiMark, как требует спецификация облика.
+import AiOrb, { orbStateFromPipeline } from "./orb/AiOrb.jsx";
 import {
   AlertTriangle,
   BarChart3,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -14,6 +18,7 @@ import {
   CircleDot,
   Clock3,
   Coffee,
+  Copy,
   Download,
   Filter,
   Fuel,
@@ -25,30 +30,39 @@ import {
   Map as MapIcon,
   MessageSquare,
   Monitor,
+  MoreHorizontal,
   Navigation,
+  PanelLeft,
+  Pencil,
   Phone,
+  Pin,
+  PinOff,
+  Plus,
   RefreshCw,
+  RotateCcw,
+  Search,
   Send,
   Share2,
-  Smartphone,
-  Users,
-  Search,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
+  Sparkles,
+  Star,
   Store,
   Toilet,
+  Trash2,
+  Users,
   X,
 } from "lucide-react";
 import "./styles.css";
 
 const statusColors = {
   "Действующая": "#14945f",
-  CODO: "#14945f",
-  Консервация: "#d09416",
-  Реконструкция: "#7b61ff",
-  Строительство: "#3077d8",
-  Оптимизация: "#d65f32",
-  Продана: "#8f99a8",
+  CODO: "#2f9f72",
+  Арендованные: "#74ae45",
+  Реконструкция: "#8f99a8",
+  Консервация: "#c83a45",
+  "Временная приостановка работы": "#d9822b",
 };
 
 const defaultFilters = {
@@ -59,14 +73,26 @@ const defaultFilters = {
   location: "",
   service: "",
   quality: "",
+  fuel: [],
+  favorites: false,
 };
 
+// Разделы приложения. «ИИ-аналитик» — самостоятельный раздел наравне с остальными,
+// а не вкладка внутри аналитики: решение владельца, задача З-9 реестра БТ.
+// Пункт показывается, только когда бэкенд отвечает на /api/ai/status.
 const viewItems = [
   { id: "list", label: "Реестр", mobileLabel: "Реестр", Icon: List },
   { id: "map", label: "Карта", mobileLabel: "Карта", Icon: MapIcon },
   { id: "home", label: "Главная", mobileLabel: "Главная", Icon: Home },
   { id: "analytics", label: "Аналитика", mobileLabel: "Аналитика", Icon: BarChart3 },
-  { id: "quality", label: "Контроль", mobileLabel: "Контроль", Icon: ShieldCheck },
+  // accent — значок красится корпоративным красным: на ИИ нужен акцент.
+  // Значок и вид — те же, что у кнопки «ИИ-аналитик» на главной (Sparkles,
+  // без акцента): решение владельца от 22.09.2026 — кнопка везде одинаковая.
+  // Флаги accent и mark у пункта сохранены в коде навигации на будущее.
+  { id: "ai", label: "ИИ-аналитик", mobileLabel: "ИИ", Icon: Sparkles, optional: true },
+  // mobileHidden — на нижней панели не показываем: обычному пользователю
+  // контроль не нужен каждый день, вход остаётся плиткой на главной.
+  { id: "quality", label: "Контроль", mobileLabel: "Контроль", Icon: ShieldCheck, mobileHidden: true },
 ];
 const viewIds = new Set(viewItems.map((item) => item.id));
 
@@ -115,10 +141,12 @@ function shortStatus(status) {
 }
 
 function statusTone(status) {
-  if (status === "Действующая" || status === "CODO") return "green";
-  if (status === "Реконструкция" || status === "Строительство") return "blue";
-  if (status === "Консервация") return "amber";
-  if (status === "Оптимизация" || status === "Продана") return "red";
+  if (status === "Действующая") return "active";
+  if (status === "CODO") return "codo";
+  if (status === "Арендованные") return "rented";
+  if (status === "Реконструкция") return "reconstruction";
+  if (status === "Консервация") return "conservation";
+  if (status === "Временная приостановка работы") return "paused";
   return "gray";
 }
 
@@ -309,7 +337,7 @@ function stationFeature(station, selectedId) {
     },
     options: {
       preset: selectedId === station.id ? "islands#redCircleDotIcon" : "islands#circleDotIcon",
-      iconColor: selectedId === station.id ? "#c91d32" : statusColors[station.status] || "#8f99a8",
+      iconColor: selectedId === station.id ? "#E31E24" : statusColors[station.status] || "#8f99a8",
     },
   };
 }
@@ -318,7 +346,7 @@ function createStationMarker(ymaps3, station, selectedId, onSelect) {
   const element = document.createElement("button");
   element.type = "button";
   element.className = `ymap-marker ${selectedId === station.id ? "selected" : ""}`;
-  element.style.setProperty("--marker-color", selectedId === station.id ? "#c91d32" : statusColors[station.status] || "#8f99a8");
+  element.style.setProperty("--marker-color", selectedId === station.id ? "#E31E24" : statusColors[station.status] || "#8f99a8");
   element.title = `${station.name || station.stationNumber} · ${station.subject || ""}`;
   element.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -337,10 +365,11 @@ function createStationMarker(ymaps3, station, selectedId, onSelect) {
 function MapLegend() {
   const items = [
     ["Действующая", statusColors["Действующая"]],
-    ["Консервация", statusColors["Консервация"]],
+    ["CODO", statusColors["CODO"]],
+    ["Арендованные", statusColors["Арендованные"]],
     ["Реконструкция", statusColors["Реконструкция"]],
-    ["Оптимизация", statusColors["Оптимизация"]],
-    ["Другой статус", "#8f99a8"],
+    ["Консервация", statusColors["Консервация"]],
+    ["Временная приостановка работы", statusColors["Временная приостановка работы"]],
   ];
 
   return (
@@ -977,6 +1006,85 @@ function fetchJson(url, signal) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Usage metrics: visit heartbeat + in-app events (screen views, key actions).
+// Data is stored server-side per authenticated user (see /api/metrics/*).
+// ---------------------------------------------------------------------------
+const METRICS_HEARTBEAT_MS = 60_000;
+const metricsState = { queue: [], flushTimer: null, deviceSent: false };
+
+function metricsDeviceContext() {
+  let tz = "";
+  try {
+    tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    tz = "";
+  }
+  return {
+    ua: (navigator.userAgent || "").slice(0, 400),
+    platform: (navigator.platform || "").slice(0, 80),
+    screen: `${window.screen?.width || 0}x${window.screen?.height || 0}`,
+    pwa: isStandaloneApp(),
+    lang: (navigator.language || "").slice(0, 20),
+    tz: tz.slice(0, 60),
+  };
+}
+
+function postMetrics(url, payload, { beacon = false } = {}) {
+  const body = JSON.stringify(payload);
+  if (beacon && navigator.sendBeacon) {
+    navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+    return;
+  }
+  fetch(url, {
+    method: "POST",
+    credentials: "include",
+    keepalive: beacon,
+    headers: { "Content-Type": "application/json" },
+    body,
+  }).catch(() => {});
+}
+
+function flushMetrics({ beacon = false } = {}) {
+  if (metricsState.flushTimer) {
+    window.clearTimeout(metricsState.flushTimer);
+    metricsState.flushTimer = null;
+  }
+  if (!metricsState.queue.length) return;
+  const payload = { events: metricsState.queue.splice(0, 50) };
+  if (!metricsState.deviceSent) {
+    payload.device = metricsDeviceContext();
+    metricsState.deviceSent = true;
+  }
+  postMetrics("/api/metrics/events", payload, { beacon });
+}
+
+function trackEvent(event, screen = "", detail = "") {
+  metricsState.queue.push({
+    event: String(event).slice(0, 40),
+    screen: String(screen || "").slice(0, 80),
+    detail: String(detail || "").slice(0, 200),
+  });
+  if (metricsState.queue.length >= 20) {
+    flushMetrics();
+    return;
+  }
+  if (metricsState.flushTimer) return;
+  metricsState.flushTimer = window.setTimeout(() => {
+    metricsState.flushTimer = null;
+    flushMetrics();
+  }, 5_000);
+}
+
+function sendMetricsBeat(screen = "") {
+  const payload = { screen: String(screen || "").slice(0, 80) };
+  if (!metricsState.deviceSent) {
+    payload.device = metricsDeviceContext();
+    metricsState.deviceSent = true;
+  }
+  postMetrics("/api/metrics/beat", payload, { beacon: false });
+}
+
 function useFuelStock(ksss) {
   const [stockState, setStockState] = useState({ status: "idle", data: null, error: "", refreshing: false });
   const controllerRef = useRef(null);
@@ -1095,6 +1203,111 @@ function useFuelOutages(ksss) {
   return { outageState, refresh: loadOutages };
 }
 
+// Registry fuel filter. The server decides which stations qualify: available volume must
+// reach FUEL_STOCK_AVAILABLE_MIN_PERCENT of the dispensable capacity (tank capacity minus
+// the static dead rest), so a station standing on its dead rest never matches. Several
+// fuels intersect — the answer is "where can I refuel all of these", not "any of these".
+// Options come from the snapshot, never from a hardcoded list.
+const emptyKsssSet = new Set();
+
+// Display form of a canonical fuel code: "АБ95 ЭКТО" -> "АБ-95 ЭКТО". Storage and API
+// keep the canonical code, only the label carries the dash.
+function fuelDisplayName(canonicalFuel) {
+  return String(canonicalFuel || "").replace(/^АБ(?=\d)/, "АБ-");
+}
+
+function fuelSelectionKey(fuels) {
+  return (Array.isArray(fuels) ? fuels : []).filter(Boolean).slice().sort().join("|");
+}
+
+function useFuelAvailability(fuels, enabled) {
+  const selection = useMemo(() => (Array.isArray(fuels) ? fuels.filter(Boolean) : []), [fuels]);
+  const selectionKey = fuelSelectionKey(selection);
+  const [options, setOptions] = useState({ status: "idle", fuels: [], minPercent: null });
+  const [matches, setMatches] = useState({ status: "idle", key: "", ksss: emptyKsssSet, meta: null, error: "" });
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const controller = new AbortController();
+    setOptions((previous) => (previous.status === "ready" ? previous : { ...previous, status: "loading" }));
+
+    fetchJson("/api/fuel-stock/fuels", controller.signal)
+      .then((data) => {
+        setOptions({
+          status: "ready",
+          fuels: Array.isArray(data?.fuels) ? data.fuels : [],
+          minPercent: numericOrNull(data?.minPercent),
+        });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError" || error.message === "AUTH_REQUIRED") return;
+        setOptions({ status: "error", fuels: [], minPercent: null });
+      });
+
+    return () => controller.abort();
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!selectionKey || !enabled) {
+      requestRef.current += 1;
+      setMatches({ status: "idle", key: "", ksss: emptyKsssSet, meta: null, error: "" });
+      return undefined;
+    }
+
+    requestRef.current += 1;
+    const requestId = requestRef.current;
+    const controller = new AbortController();
+    setMatches({ status: "loading", key: selectionKey, ksss: emptyKsssSet, meta: null, error: "" });
+
+    const query = selectionKey
+      .split("|")
+      .map((item) => `fuel=${encodeURIComponent(item)}`)
+      .join("&");
+
+    fetchJson(`/api/fuel-stock/available?${query}`, controller.signal)
+      .then((data) => {
+        if (requestRef.current !== requestId) return;
+        if (!data || !Array.isArray(data.ksss)) {
+          setMatches({ status: "no-data", key: selectionKey, ksss: emptyKsssSet, meta: data || null, error: "" });
+          return;
+        }
+        setMatches({
+          status: "ready",
+          key: selectionKey,
+          ksss: new Set(data.ksss.map((code) => String(code))),
+          meta: data,
+          error: "",
+        });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError" || error.message === "AUTH_REQUIRED") return;
+        if (requestRef.current !== requestId) return;
+        setMatches({
+          status: "error",
+          key: selectionKey,
+          ksss: emptyKsssSet,
+          meta: null,
+          error: "Не удалось получить остатки топлива. Фильтр по топливу временно недоступен.",
+        });
+      });
+
+    return () => controller.abort();
+  }, [selectionKey, enabled]);
+
+  // A stale reply must never silently narrow the registry: the filter stays "pending"
+  // until the answer for the current selection has arrived.
+  const active = Boolean(selectionKey) && enabled;
+  return {
+    options,
+    matches,
+    selection,
+    ready: active && matches.status === "ready" && matches.key === selectionKey,
+    pending: active && (matches.status === "loading" || matches.key !== selectionKey),
+    failed: active && matches.status === "error",
+  };
+}
+
 async function authJson(url, options = {}) {
   const { timeoutMs = 15_000, signal: externalSignal, ...requestOptions } = options;
   const controller = new AbortController();
@@ -1179,6 +1392,12 @@ function App() {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState(defaultFilters);
   const [mode, setMode] = useState(() => initialViewMode());
+  const aiStatus = useAiStatus();
+  // Необязательные разделы скрыты, пока бэкенд не подтвердил, что они есть.
+  const navItems = useMemo(
+    () => viewItems.filter((item) => !item.optional || (item.id === "ai" && aiStatus?.enabled)),
+    [aiStatus],
+  );
   const [selectedId, setSelectedId] = useState("");
   const [selectionMode, setSelectionMode] = useState("auto");
   const [registryCompact, setRegistryCompact] = useState(false);
@@ -1223,6 +1442,45 @@ function App() {
     window.addEventListener("azs:auth-required", handleAuthRequired);
     return () => window.removeEventListener("azs:auth-required", handleAuthRequired);
   }, []);
+
+  // Visit tracking: heartbeat while the tab is visible, flush events on hide/close.
+  useEffect(() => {
+    if (!auth.user) return undefined;
+    metricsState.deviceSent = false;
+    sendMetricsBeat("session_start");
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") sendMetricsBeat();
+    }, METRICS_HEARTBEAT_MS);
+
+    function handleVisibility() {
+      if (document.visibilityState === "hidden") {
+        flushMetrics({ beacon: true });
+        postMetrics("/api/metrics/beat", { screen: "" }, { beacon: true });
+      } else {
+        sendMetricsBeat();
+      }
+    }
+
+    function handlePageHide() {
+      flushMetrics({ beacon: true });
+    }
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("pagehide", handlePageHide);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pagehide", handlePageHide);
+      flushMetrics();
+    };
+  }, [auth.user?.id]);
+
+  // Screen view tracking for the top-level navigation.
+  useEffect(() => {
+    if (auth.user) trackEvent("screen_view", mode);
+  }, [auth.user?.id, mode]);
 
   useEffect(() => {
     if (!auth.user) {
@@ -1287,14 +1545,16 @@ function App() {
     setSelectionMode("auto");
     setSelectedId("");
     setRegistryCompact(false);
-  }, [query, filters.npo, filters.subject, filters.status, filters.type, filters.location, filters.service, filters.quality]);
+  }, [query, filters.npo, filters.subject, filters.status, filters.type, filters.location, filters.service, filters.quality, filters.fuel, filters.favorites]);
 
   useEffect(() => {
     if (mode !== "map") previousModeRef.current = mode;
   }, [mode]);
 
-  const stations = useMemo(() => payload.stations.filter(hasValidPoint), [payload.stations]);
-  const excludedNoCoords = Math.max((payload.meta?.count || payload.stations.length) - stations.length, 0);
+  // The registry and analytics must reflect the complete operational selection.
+  // Coordinates are required only by StationMap, which filters its own points.
+  const stations = useMemo(() => payload.stations, [payload.stations]);
+  const excludedNoCoords = useMemo(() => stations.filter((station) => !hasValidPoint(station)).length, [stations]);
   const options = useMemo(
     () => ({
       npo: uniqueOptions(stations, "npo"),
@@ -1306,7 +1566,15 @@ function App() {
     [stations],
   );
 
+  // Fuel availability is answered by the server, so it applies only once the reply for the
+  // selected fuel is in. While it is in flight the registry shows its loading state, and if
+  // the request failed the filter is dropped rather than silently emptying the registry.
+  const fuelAvailability = useFuelAvailability(filters.fuel, auth.status === "ready");
+  const fuelMatches = fuelAvailability.ready ? fuelAvailability.matches.ksss : null;
+  const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
+
   const filtered = useMemo(() => {
+    if (fuelAvailability.pending) return [];
     const needle = query.trim().toLowerCase();
     return stations.filter((station) => {
       if (needle && !station.search.includes(needle)) return false;
@@ -1320,9 +1588,11 @@ function App() {
       if (filters.service === "toilet" && !station.flags.hasToilet) return false;
       if (filters.service === "landmark" && !station.flags.landmark) return false;
       if (filters.quality === "issues" && station.qualityIssues.length === 0) return false;
+      if (filters.favorites && !favoriteSet.has(station.id)) return false;
+      if (fuelMatches && !fuelMatches.has(String(station.ksss))) return false;
       return true;
     });
-  }, [stations, query, filters]);
+  }, [stations, query, filters, favoriteSet, fuelMatches, fuelAvailability.pending]);
 
   const selected = filtered.find((station) => station.id === selectedId) || null;
   const detailVisible = Boolean(selected && detailOpen);
@@ -1348,6 +1618,13 @@ function App() {
 
   function setFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
+    const label = Array.isArray(value) ? value.join("+") : value;
+    trackEvent("filter", mode, `${key}:${label || "clear"}`);
+  }
+
+  function openFavorites() {
+    setFilters((current) => ({ ...current, favorites: true }));
+    changeMode("list");
   }
 
   function toggleFavorite(id) {
@@ -1358,6 +1635,7 @@ function App() {
     setSelectedId(id);
     setSelectionMode("manual");
     setDetailOpen(true);
+    trackEvent("station_open", mode, String(id));
   }
 
   function previewStation(id) {
@@ -1373,6 +1651,10 @@ function App() {
   function closeDetailSheet() {
     setDetailOpen(false);
   }
+
+  useEffect(() => {
+    if (mode === "ai" && aiStatus && !aiStatus.enabled) setMode("home");
+  }, [mode, aiStatus]);
 
   function changeMode(nextMode, { closeDetail = true } = {}) {
     setMode(nextMode);
@@ -1415,7 +1697,12 @@ function App() {
   }
 
   const canInstallApp = Boolean(installPrompt && !standaloneApp);
-  const isControlMode = mode === "quality";
+  const isAdminMode = mode === "admin";
+  const isAiMode = mode === "ai";
+  const [aiDrawer, setAiDrawer] = useState(false);
+  // Поиск, метрики и фильтры реестра к этим разделам не применяются:
+  // ИИ отвечает по витрине и области данных, а не по текущей выборке.
+  const isControlMode = mode === "quality" || isAdminMode || isAiMode;
 
   if (auth.status === "checking") {
     return <AuthLoading />;
@@ -1434,16 +1721,34 @@ function App() {
           <>
             <header className="topbar">
               <div>
-                <h1>{isControlMode ? "Контроль АЗС" : "АЗС ЛУКОЙЛ"}</h1>
+                <h1>{isAdminMode ? "Администрирование" : isAiMode ? "ИИ-аналитик" : isControlMode ? "Контроль АЗС" : "АЗС ЛУКОЙЛ"}</h1>
+                {/* В разделе ИИ подписи нет: на телефоне эта строка съедала
+                    высоту, а ничего нового не сообщала. */}
+                {!isAiMode && (
                 <p>
-                  {isControlMode
+                  {isAdminMode
+                    ? "Пользователи и статистика использования"
+                    : isControlMode
                     ? `${asInt(stations.length)} объектов в контуре контроля`
                     : payload.meta
                     ? `${asInt(stations.length)} на карте${excludedNoCoords ? ` · скрыто ${asInt(excludedNoCoords)}` : ""}`
                     : "Загрузка данных"}
                 </p>
+                )}
               </div>
               <div className="topbar-actions">
+                {/* История диалогов живёт в шапке: в разделе на телефоне
+                    отдельная строка под неё не окупалась. */}
+                {isAiMode && (
+                  <button
+                    className="icon-button ai-drawer-btn"
+                    type="button"
+                    onClick={() => setAiDrawer(true)}
+                    aria-label="История диалогов"
+                  >
+                    <PanelLeft size={20} />
+                  </button>
+                )}
                 <InstallAppControl canInstall={canInstallApp} standalone={standaloneApp} onInstall={installApp} compact />
                 {!isControlMode && (
                   <button className="icon-button" type="button" onClick={() => setShowFilters(true)} aria-label="Фильтры">
@@ -1478,13 +1783,21 @@ function App() {
 
                 <MetricStrip count={filtered.length} metrics={metrics} />
 
-                <FilterRail filters={filters} options={options} setFilter={setFilter} />
+                <FilterRail
+                  filters={filters}
+                  options={options}
+                  setFilter={setFilter}
+                  fuelAvailability={fuelAvailability}
+                />
+                <FuelFilterNotice availability={fuelAvailability} onClear={() => setFilter("fuel", [])} />
               </>
               )}
 
-            <ModeSwitcher items={viewItems} mode={mode} onChange={changeMode} />
+            <ModeSwitcher items={navItems} mode={mode} onChange={changeMode} />
           </>
         )}
+
+        <ScopeNotice meta={payload.meta} />
 
         <AnimatePresence mode="popLayout" initial={false}>
           {mode === "home" ? (
@@ -1503,7 +1816,10 @@ function App() {
                 onOpenList={() => changeMode("list")}
                 onOpenMap={() => changeMode("map")}
                 onOpenAnalytics={() => changeMode("analytics")}
+                onOpenAi={aiStatus?.enabled ? () => changeMode("ai") : undefined}
                 onOpenControl={() => changeMode("quality")}
+                onOpenFavorites={openFavorites}
+                onOpenAdmin={() => changeMode("admin")}
                 onLogout={handleLogout}
               />
             </motion.div>
@@ -1521,6 +1837,12 @@ function App() {
                 }}
               />
             </motion.div>
+          ) : mode === "ai" && aiStatus?.enabled ? (
+            <motion.div className="view-stage" key="ai" {...viewMotion}>
+              <section className="analytics-pane">
+                <AnalyticsAiConsole status={aiStatus} drawer={aiDrawer} onDrawer={setAiDrawer} />
+              </section>
+            </motion.div>
           ) : mode === "quality" ? (
             <motion.div className="view-stage" key="quality" {...viewMotion}>
               <ControlDashboard
@@ -1530,6 +1852,10 @@ function App() {
                   selectStation(id);
                 }}
               />
+            </motion.div>
+          ) : mode === "admin" ? (
+            <motion.div className="view-stage" key="admin" {...viewMotion}>
+              <AdminDashboard onBack={() => changeMode("home")} currentUserId={auth.user?.id} />
             </motion.div>
           ) : (
             <motion.div className="view-stage content-grid" key={mode} {...(mode === "map" ? mapSheetMotion : viewMotion)}>
@@ -1564,7 +1890,8 @@ function App() {
                   onSelect={selectStation}
                   onFavorite={toggleFavorite}
                   onScroll={handleRegistryScroll}
-                  loading={loading}
+                  loading={loading || fuelAvailability.pending}
+                  favoritesOnly={Boolean(filters.favorites)}
                 />
               </section>
 
@@ -1604,13 +1931,14 @@ function App() {
           filters={filters}
           options={options}
           setFilter={setFilter}
+          fuelAvailability={fuelAvailability}
           onClose={() => setShowFilters(false)}
           onReset={() => setFilters(defaultFilters)}
         />
       )}
 
       <BottomStrip
-        items={viewItems}
+        items={navItems}
         mode={mode}
         count={filtered.length}
         issueCount={issueCount}
@@ -1624,7 +1952,7 @@ function App() {
 function ModeSwitcher({ items, mode, onChange }) {
   return (
     <div className="mode-row" role="tablist" aria-label="Разделы классификатора">
-      {items.map(({ id, label, Icon }) => (
+      {items.map(({ id, label, Icon, accent, mark }) => (
         <motion.button
           className={mode === id ? "active" : ""}
           key={id}
@@ -1636,7 +1964,9 @@ function ModeSwitcher({ items, mode, onChange }) {
           whileTap={{ scale: 0.965 }}
         >
           {mode === id && <motion.span className="mode-active-bg" layoutId="mode-active-bg" />}
-          <Icon size={16} />
+          <span className={accent ? "mode-icon accent" : "mode-icon"}>
+            {mark ? <AiMark variant="orb" simple decorative /> : <Icon size={16} />}
+          </span>
           <span>{label}</span>
         </motion.button>
       ))}
@@ -1655,7 +1985,7 @@ function BottomStrip({ items, mode, count, issueCount, onChange }) {
 
   return (
     <nav className="bottom-strip" aria-label="Основная навигация">
-      {items.map(({ id, mobileLabel, Icon }) => {
+      {items.filter((item) => !item.mobileHidden).map(({ id, mobileLabel, Icon, accent, mark }) => {
         const active = mode === id;
         return (
           <motion.button
@@ -1669,8 +1999,8 @@ function BottomStrip({ items, mode, count, issueCount, onChange }) {
             whileTap={{ scale: 0.955 }}
           >
             {active && <motion.span className="bottom-nav-active" layoutId="bottom-nav-active" />}
-            <span className="bottom-nav-icon">
-              <Icon size={19} />
+            <span className={accent ? "bottom-nav-icon accent" : "bottom-nav-icon"}>
+              {mark ? <AiMark variant="orb" simple decorative /> : <Icon size={19} />}
             </span>
             <span className="bottom-nav-label">{mobileLabel}</span>
             {badges[id] && <span className={`bottom-nav-meta ${id === "quality" && issueCount ? "warning" : ""}`}>{badges[id]}</span>}
@@ -2342,6 +2672,794 @@ function AuthScreen({ initialError = "", onAuthenticated }) {
   );
 }
 
+const ADMIN_SCREEN_LABELS = {
+  home: "Главная",
+  list: "Реестр",
+  map: "Карта",
+  analytics: "Аналитика",
+  ai: "ИИ-аналитик",
+  quality: "Контроль",
+  admin: "Админ",
+  session_start: "Открытие приложения",
+  "analytics:summary": "Аналитика · свод",
+  "analytics:overview": "Аналитика · обзор",
+  "analytics:slices": "Аналитика · срезы",
+  "analytics:outages": "Аналитика · простои",
+  "analytics:similar": "Аналитика · похожие",
+  "analytics:compare": "Аналитика · сравнение",
+};
+
+const ADMIN_ACTION_LABELS = {
+  station_open: "Открытие карточки АЗС",
+  filter: "Использование фильтров",
+  search: "Поиск",
+};
+
+const ADMIN_AUTH_EVENT_LABELS = {
+  login_success: "Вход",
+  login_failed: "Неверный пароль",
+  login_blocked: "Вход заблокирован",
+  logout: "Выход",
+  register_verification_sent: "Регистрация: код отправлен",
+  verify_success: "Почта подтверждена",
+  password_reset_code_sent: "Сброс пароля: код отправлен",
+  password_reset_success: "Пароль изменен",
+  password_reset_failed: "Сброс пароля: ошибка",
+  session_blocked: "Сессия заблокирована",
+};
+
+function adminScreenLabel(screen) {
+  return ADMIN_SCREEN_LABELS[screen] || screen || "—";
+}
+
+function formatUnixDateTime(ts) {
+  if (!ts) return "—";
+  const date = new Date(ts * 1000);
+  return date.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatUnixDate(ts) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function formatDurationShort(totalSeconds) {
+  const seconds = Math.max(0, Math.round(totalSeconds || 0));
+  if (seconds < 60) return `${seconds} с`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} мин`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${hours} ч ${restMinutes} мин` : `${hours} ч`;
+}
+
+function AdminBarList({ items, valueLabel }) {
+  const maxValue = Math.max(1, ...items.map((item) => item.value));
+  return (
+    <div className="admin-bar-list">
+      {items.length === 0 && <p className="admin-empty">Нет данных за выбранный период.</p>}
+      {items.map((item) => (
+        <div className="admin-bar-row" key={item.key}>
+          <span className="admin-bar-label" title={item.label}>{item.label}</span>
+          <span className="admin-bar-track">
+            <span className="admin-bar-fill" style={{ width: `${Math.max(3, Math.round((item.value / maxValue) * 100))}%` }} />
+          </span>
+          <span className="admin-bar-value">
+            {asInt(item.value)}
+            {item.helper ? <em>{item.helper}</em> : null}
+          </span>
+        </div>
+      ))}
+      {valueLabel && <p className="admin-bar-caption">{valueLabel}</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Раздел «Качество ответов» (БТ-КК1…КК10).
+// Переписки здесь нет: метаданные, оценка, комментарий и текст запроса к
+// витрине. Полное содержание чужого диалога раскрывается только по жалобе его
+// автора — модель приватности ИБ-4.
+// ---------------------------------------------------------------------------
+const QUALITY_PERIODS = [
+  { days: 7, label: "7 дней" },
+  { days: 30, label: "30 дней" },
+  { days: 90, label: "90 дней" },
+];
+
+const QUALITY_VERDICTS = {
+  ok: { label: "Ответ", tone: "ok" },
+  rejected: { label: "Отказ", tone: "refused" },
+  execution_error: { label: "Ошибка", tone: "failed" },
+  model_unavailable: { label: "Ошибка", tone: "failed" },
+};
+
+function qualityShare(part, whole) {
+  if (!whole) return "—";
+  return `${(100 * part / whole).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} %`;
+}
+
+function qualitySeconds(ms) {
+  if (!ms) return "—";
+  return `${(ms / 1000).toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} с`;
+}
+
+function QualityTile({ label, value, note, tone }) {
+  return (
+    <div className={tone ? `quality-tile ${tone}` : "quality-tile"}>
+      <div className="quality-tile-value">{value}</div>
+      <div className="quality-tile-label">{label}</div>
+      {note ? <div className="quality-tile-note">{note}</div> : null}
+    </div>
+  );
+}
+
+function QualitySpread({ spread, rated }) {
+  const top = Math.max(1, ...[1, 2, 3, 4, 5].map((n) => spread[String(n)] || 0));
+  return (
+    <div className="quality-spread">
+      {[5, 4, 3, 2, 1].map((star) => {
+        const count = spread[String(star)] || 0;
+        return (
+          <div className="quality-spread-row" key={star}>
+            <span className="quality-spread-star">{star}</span>
+            <span className="quality-spread-track">
+              <span
+                className={star <= 3 ? "quality-spread-fill low" : "quality-spread-fill"}
+                style={{ width: `${Math.round(100 * count / top)}%` }}
+              />
+            </span>
+            <span className="quality-spread-count">{asInt(count)}</span>
+            <span className="quality-spread-share">{qualityShare(count, rated)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function QualityEntry({ item, statuses, onReview }) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState(item.note || "");
+  const [busy, setBusy] = useState(false);
+  const verdict = QUALITY_VERDICTS[item.verdict] || { label: item.verdict || "—", tone: "" };
+
+  async function send(patch) {
+    setBusy(true);
+    try {
+      await onReview(item.message_id, patch);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article className={item.overdue ? "quality-entry overdue" : "quality-entry"}>
+      <div className="quality-entry-head">
+        <AiStars value={item.rating} size={16} />
+        <span className={`quality-chip ${verdict.tone}`}>{verdict.label}</span>
+        <span className="quality-entry-meta">
+          {item.role || "—"}
+          {item.scope_label ? ` · ${item.scope_label}` : ""}
+        </span>
+        <span className="quality-entry-gap" />
+        <span className="quality-entry-meta">{formatUnixDateTime(item.created_at)}</span>
+      </div>
+
+      <p className="quality-question">{item.question}</p>
+      {item.comment ? <p className="quality-comment">{item.comment}</p> : null}
+
+      <div className="quality-entry-facts">
+        <span>{item.model || "модель не записана"}</span>
+        <span>инструкция {item.prompt_version || "—"}</span>
+        <span>{qualitySeconds(item.total_ms)}</span>
+        {item.rule ? <span>правило: {item.rule}</span> : null}
+        {item.in_golden ? <span className="quality-golden"><Check size={13} /> в эталонном наборе</span> : null}
+        {item.overdue ? <span className="quality-overdue">реакция просрочена</span> : null}
+      </div>
+
+      <div className="quality-entry-actions">
+        <label className="quality-status">
+          <span className="visually-hidden">Статус разбора</span>
+          <select
+            className="ui-select"
+            value={item.status}
+            disabled={busy}
+            onChange={(event) => send({ status: event.target.value })}
+          >
+            {statuses.map((option) => (
+              <option key={option.code} value={option.code}>{option.title}</option>
+            ))}
+          </select>
+        </label>
+        {item.owner ? <span className="quality-entry-meta">разбирает: {item.owner}</span> : null}
+        {item.first_seen ? (
+          <span className="quality-entry-meta">взято в работу {formatUnixDateTime(item.first_seen)}</span>
+        ) : null}
+        <span className="quality-entry-gap" />
+        <button
+          type="button"
+          className="ai-action"
+          disabled={busy || Boolean(item.in_golden)}
+          onClick={() => send({ inGolden: true })}
+        >
+          <Plus size={15} /> {item.in_golden ? "В эталонном наборе" : "В эталонный набор"}
+        </button>
+        <button type="button" className="ai-action" onClick={() => setOpen((value) => !value)}>
+          <Pencil size={15} /> Результат разбора
+        </button>
+      </div>
+
+      {open && (
+        <div className="quality-note">
+          <textarea
+            className="ui-textarea"
+            rows={2}
+            value={note}
+            placeholder="Что выяснили и что сделали"
+            onChange={(event) => setNote(event.target.value)}
+          />
+          <div className="quality-note-actions">
+            <button
+              type="button"
+              className="ui-button"
+              disabled={busy || note === (item.note || "")}
+              onClick={() => send({ note }).then(() => setOpen(false))}
+            >
+              Сохранить
+            </button>
+            <button type="button" className="ui-button ghost" onClick={() => { setNote(item.note || ""); setOpen(false); }}>
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
+      {!open && item.note ? <p className="quality-note-text">{item.note}</p> : null}
+    </article>
+  );
+}
+
+function AiQualityPanel() {
+  const [days, setDays] = useState(30);
+  const [filters, setFilters] = useState({ rating: "", verdict: "", status: "", role: "", promptVersion: "" });
+  const [state, setState] = useState({ status: "loading", data: null, error: "" });
+
+  const query = useMemo(() => {
+    const params = new URLSearchParams({ days: String(days), limit: "200" });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
+    });
+    return params.toString();
+  }, [days, filters]);
+
+  const load = useCallback(() => {
+    let alive = true;
+    setState((previous) => ({ ...previous, status: previous.data ? "refreshing" : "loading", error: "" }));
+    fetchJson(`/api/ai/quality?${query}`)
+      .then((data) => { if (alive) setState({ status: "ready", data, error: "" }); })
+      .catch((error) => {
+        if (!alive || error.message === "AUTH_REQUIRED") return;
+        setState({
+          status: "error",
+          data: null,
+          error: error.message === "REQUEST_FAILED_403"
+            ? "Недостаточно прав для просмотра качества ответов."
+            : "Не удалось загрузить качество ответов.",
+        });
+      });
+    return () => { alive = false; };
+  }, [query]);
+
+  useEffect(() => load(), [load]);
+
+  async function review(messageId, patch) {
+    try {
+      await aiSend(`/api/ai/quality/${messageId}/review`, {
+        method: "POST",
+        body: JSON.stringify(patch),
+      });
+      load();
+    } catch (error) {
+      setState((previous) => ({ ...previous, error: error.message || "Не удалось сохранить разбор" }));
+    }
+  }
+
+  const data = state.data;
+  const summary = data?.summary;
+  const roles = useMemo(() => {
+    const seen = new Set((data?.entries || []).map((item) => item.role).filter(Boolean));
+    return [...seen].sort();
+  }, [data]);
+
+  if (state.status === "loading") {
+    return <div className="admin-card"><h3>Качество ответов ИИ</h3><p className="admin-bar-caption">Загружаю…</p></div>;
+  }
+  if (state.status === "error") {
+    return <div className="admin-card"><h3>Качество ответов ИИ</h3><p className="admin-error">{state.error}</p></div>;
+  }
+
+  return (
+    <div className="admin-card quality-card">
+      <div className="quality-head">
+        <h3>Качество ответов ИИ</h3>
+        <span className="quality-head-gap" />
+        <label className="quality-period">
+          <span className="visually-hidden">Период</span>
+          <select className="ui-select" value={days} onChange={(event) => setDays(Number(event.target.value))}>
+            {QUALITY_PERIODS.map((item) => (
+              <option key={item.days} value={item.days}>{item.label}</option>
+            ))}
+          </select>
+        </label>
+        <a className="ai-action" href={`/api/ai/quality/export?days=${days}`} download>
+          <Download size={15} /> В Excel
+        </a>
+      </div>
+
+      <div className="quality-tiles">
+        <QualityTile label="Задано вопросов" value={asInt(summary.asked)} />
+        <QualityTile label="Отвечено" value={asInt(summary.answered)} note={qualityShare(summary.answered, summary.asked)} />
+        <QualityTile label="Отказов" value={asInt(summary.refused)} note={`${qualityShare(summary.refused, summary.asked)} · граница области данных`} />
+        <QualityTile label="Технических ошибок" value={asInt(summary.failed)} note={qualityShare(summary.failed, summary.asked)} tone={summary.failed ? "warn" : ""} />
+        <QualityTile label="Оценено" value={asInt(summary.rated)} note={`${qualityShare(summary.rated, summary.answered)} от ответов`} />
+        <QualityTile label="Средняя оценка" value={summary.average === null ? "—" : summary.average.toLocaleString("ru-RU", { minimumFractionDigits: 2 })} />
+        <QualityTile label="Время ответа" value={qualitySeconds(summary.avgMs)} note={`наибольшее ${qualitySeconds(summary.maxMs)}`} />
+        <QualityTile
+          label="В разборе"
+          value={asInt(summary.openReview)}
+          note={summary.overdue ? `просрочено ${asInt(summary.overdue)}` : `срок реакции ${summary.firstResponseDays} дня`}
+          tone={summary.overdue ? "bad" : ""}
+        />
+      </div>
+
+      {summary.rated > 0 && <QualitySpread spread={summary.spread} rated={summary.rated} />}
+
+      <div className="quality-filters">
+        <label className="ui-field">
+          <span>Оценка</span>
+          <select className="ui-select" value={filters.rating}
+                  onChange={(event) => setFilters((f) => ({ ...f, rating: event.target.value }))}>
+            <option value="">любая</option>
+            {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <label className="ui-field">
+          <span>Исход</span>
+          <select className="ui-select" value={filters.verdict}
+                  onChange={(event) => setFilters((f) => ({ ...f, verdict: event.target.value }))}>
+            <option value="">любой</option>
+            <option value="ok">ответ</option>
+            <option value="refused">отказ</option>
+            <option value="failed">техническая ошибка</option>
+          </select>
+        </label>
+        <label className="ui-field">
+          <span>Разбор</span>
+          <select className="ui-select" value={filters.status}
+                  onChange={(event) => setFilters((f) => ({ ...f, status: event.target.value }))}>
+            <option value="">любой</option>
+            {(data.statuses || []).map((option) => (
+              <option key={option.code} value={option.code}>{option.title}</option>
+            ))}
+          </select>
+        </label>
+        <label className="ui-field">
+          <span>Роль</span>
+          <select className="ui-select" value={filters.role}
+                  onChange={(event) => setFilters((f) => ({ ...f, role: event.target.value }))}>
+            <option value="">любая</option>
+            {roles.map((role) => <option key={role} value={role}>{role}</option>)}
+          </select>
+        </label>
+        <label className="ui-field">
+          <span>Версия инструкции</span>
+          <select className="ui-select" value={filters.promptVersion}
+                  onChange={(event) => setFilters((f) => ({ ...f, promptVersion: event.target.value }))}>
+            <option value="">любая</option>
+            {(data.versions || []).map((item) => (
+              <option key={`${item.version}-${item.model}`} value={item.version}>
+                {item.version}{item.version === data.promptVersion ? " (текущая)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {state.error && <p className="admin-error">{state.error}</p>}
+
+      <div className="quality-entries">
+        {(data.entries || []).length === 0 ? (
+          <p className="admin-bar-caption">За этот период оценок нет.</p>
+        ) : (
+          data.entries.map((item) => (
+            <QualityEntry key={item.message_id} item={item} statuses={data.statuses || []} onReview={review} />
+          ))
+        )}
+      </div>
+
+      <h4 className="quality-subhead">Срез по версиям</h4>
+      <p className="admin-bar-caption">
+        Средняя оценка сама по себе ничего не говорит, пока не с чем сравнить: этот срез показывает,
+        улучшила ли новая версия инструкции или модели качество.
+      </p>
+      <div className="admin-table-wrap">
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>Версия</th>
+              <th>Модель</th>
+              <th>Задано</th>
+              <th>Отвечено</th>
+              <th>Оценено</th>
+              <th>Средняя</th>
+              <th>Низких</th>
+              <th>Последний вопрос</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data.versions || []).map((item) => (
+              <tr key={`${item.version}-${item.model}`}>
+                <td>
+                  {item.version}
+                  {item.version === data.promptVersion ? <small>текущая</small> : null}
+                </td>
+                <td>{item.model || "—"}</td>
+                <td>{asInt(item.asked)}</td>
+                <td>{asInt(item.answered)}</td>
+                <td>{asInt(item.rated)}</td>
+                <td>{item.average === null ? "—" : item.average.toLocaleString("ru-RU", { minimumFractionDigits: 2 })}</td>
+                <td>{asInt(item.low)}</td>
+                <td>{formatUnixDateTime(item.untilAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="admin-bar-caption">
+        Здесь видны метаданные, оценка, комментарий и текст запроса к витрине. Переписки нет:
+        полное содержание чужого диалога раскрывается только по жалобе его автора.
+        Оценки — обратная связь по продукту: они не используются для оценки работы сотрудника
+        и не влияют на премирование (БТ-КК10).
+      </p>
+    </div>
+  );
+}
+
+// Администрирование разложено на три вкладки: раньше это была одна длинная
+// страница, где качество ответов ИИ пряталось между таблицей пользователей
+// и журналом входов.
+const ADMIN_TABS = [
+  { code: "usage", tab: "Аналитика", title: "Пользовательская аналитика",
+    note: "Регистрации, входы, длительность визитов и востребованность разделов." },
+  { code: "users", tab: "Пользователи", title: "Перечень пользователей",
+    note: "Учётные записи, роли и область данных. Здесь же удаление аккаунта." },
+  { code: "quality", tab: "Качество ИИ", title: "Качество ответов ИИ",
+    note: "Оценки, разбор низких оценок и срез по версиям инструкции." },
+];
+
+function AdminDashboard({ onBack, currentUserId }) {
+  const aiStatus = useAiStatus();
+  const [tab, setTab] = useState("usage");
+  const [days, setDays] = useState(30);
+  const [usersState, setUsersState] = useState({ status: "loading", data: null, error: "" });
+  const [activityState, setActivityState] = useState({ status: "loading", data: null, error: "" });
+  const [deleteState, setDeleteState] = useState({ id: null, busy: false, error: "", info: "" });
+  const [rolesCatalog, setRolesCatalog] = useState(null);
+
+  const load = useCallback(() => {
+    const controller = new AbortController();
+    setDeleteState((previous) => ({ ...previous, id: null, busy: false }));
+    setUsersState((previous) => ({ ...previous, status: previous.data ? "refreshing" : "loading", error: "" }));
+    setActivityState((previous) => ({ ...previous, status: previous.data ? "refreshing" : "loading", error: "" }));
+
+    fetchJson("/api/roles/catalog", controller.signal)
+      .then((data) => data && setRolesCatalog(data))
+      .catch(() => {});
+
+    fetchJson("/api/admin/users", controller.signal)
+      .then((data) => setUsersState({ status: "ready", data, error: "" }))
+      .catch((error) => {
+        if (error.name === "AbortError" || error.message === "AUTH_REQUIRED") return;
+        setUsersState({
+          status: "error",
+          data: null,
+          error: error.message === "REQUEST_FAILED_403" ? "Недостаточно прав для просмотра статистики." : "Не удалось загрузить список пользователей.",
+        });
+      });
+
+    fetchJson(`/api/admin/activity?days=${days}`, controller.signal)
+      .then((data) => setActivityState({ status: "ready", data, error: "" }))
+      .catch((error) => {
+        if (error.name === "AbortError" || error.message === "AUTH_REQUIRED") return;
+        setActivityState({
+          status: "error",
+          data: null,
+          error: error.message === "REQUEST_FAILED_403" ? "Недостаточно прав для просмотра статистики." : "Не удалось загрузить статистику активности.",
+        });
+      });
+
+    return () => controller.abort();
+  }, [days]);
+
+  useEffect(() => load(), [load]);
+
+  useEffect(() => {
+    if (tab === "quality" && aiStatus && !aiStatus.enabled) setTab("usage");
+  }, [tab, aiStatus]);
+
+  async function handleDeleteUser(item) {
+    // Первый клик — переводим кнопку в режим подтверждения, второй — удаляем.
+    if (deleteState.id !== item.id) {
+      setDeleteState({ id: item.id, busy: false, error: "", info: "" });
+      return;
+    }
+    if (deleteState.busy) return;
+    setDeleteState({ id: item.id, busy: true, error: "", info: "" });
+    try {
+      const result = await authJson(`/api/admin/users/${item.id}`, { method: "DELETE" });
+      trackEvent("admin_user_deleted", "admin", String(result?.deletedEmail || item.email));
+      setDeleteState({ id: null, busy: false, error: "", info: `Пользователь ${result?.deletedEmail || item.email} удален из базы.` });
+      load();
+    } catch (error) {
+      setDeleteState({
+        id: null,
+        busy: false,
+        error: error.message === "AUTH_REQUIRED" ? "Сессия истекла. Войдите снова." : error.message || "Не удалось удалить пользователя.",
+        info: "",
+      });
+    }
+  }
+
+  // Вкладка качества появляется только при включённом контуре ИИ.
+  const tabs = ADMIN_TABS.filter((item) => item.code !== "quality" || aiStatus?.enabled);
+  const current = tabs.find((item) => item.code === tab) || tabs[0];
+
+  const users = usersState.data?.users || [];
+  const activity = activityState.data || null;
+  const visitsInPeriod = activity?.totalVisits || 0;
+  const totalSecondsInPeriod = (activity?.daily || []).reduce((sum, day) => sum + (day.totalSeconds || 0), 0);
+  const avgVisitSeconds = visitsInPeriod ? Math.round(totalSecondsInPeriod / visitsInPeriod) : 0;
+  const pwaShare = visitsInPeriod ? Math.round(((activity?.pwaVisits || 0) / visitsInPeriod) * 100) : 0;
+
+  const summaryCards = [
+    { label: "Пользователей", value: asInt(usersState.data?.totalUsers || 0), helper: "всего в системе" },
+    { label: "Активны за 7 дней", value: asInt(usersState.data?.activeLast7d || 0), helper: "заходили в приложение" },
+    { label: `Визитов за ${days} дн.`, value: asInt(visitsInPeriod), helper: `суммарно ${formatDurationShort(totalSecondsInPeriod)}` },
+    { label: "Средний визит", value: formatDurationShort(avgVisitSeconds), helper: `PWA: ${pwaShare}% визитов` },
+  ];
+
+  const dailyItems = (activity?.daily || []).map((day) => ({
+    key: day.date,
+    label: new Date(`${day.date}T00:00:00`).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" }),
+    value: day.visits,
+    helper: `${asInt(day.users)} чел · ${formatDurationShort(day.totalSeconds)}`,
+  }));
+
+  const screenItems = (activity?.screens || []).map((item) => ({
+    key: item.screen,
+    label: adminScreenLabel(item.screen),
+    value: item.views,
+    helper: `${asInt(item.users)} чел`,
+  }));
+
+  const actionItems = (activity?.actions || []).map((item) => ({
+    key: item.event,
+    label: ADMIN_ACTION_LABELS[item.event] || item.event,
+    value: item.count,
+  }));
+
+  const deviceItems = (activity?.deviceTypes || []).map((item) => ({
+    key: item.label,
+    label: item.label === "mobile" ? "Смартфон" : item.label === "tablet" ? "Планшет" : item.label === "desktop" ? "Компьютер" : item.label,
+    value: item.count,
+  }));
+
+  const browserItems = (activity?.browsers || []).map((item) => ({ key: item.label, label: item.label, value: item.count }));
+
+  const loading = usersState.status === "loading" || activityState.status === "loading";
+  const errorText = usersState.error || activityState.error;
+
+  return (
+    <section className="admin-pane" aria-labelledby="admin-title">
+      <div className="admin-head">
+        <div>
+          <h2 id="admin-title">{current.title}</h2>
+          <p>{current.note}</p>
+        </div>
+        <div className="admin-head-actions">
+          {tab === "usage" && (
+            <div className="admin-days-toggle" role="group" aria-label="Период статистики">
+              {[7, 30, 90].map((value) => (
+                <button key={value} type="button" className={days === value ? "active" : ""} onClick={() => setDays(value)}>
+                  {value} дн.
+                </button>
+              ))}
+            </div>
+          )}
+          {tab !== "quality" && (
+            <button className="admin-refresh" type="button" onClick={load} aria-label="Обновить статистику">
+              <RefreshCw size={15} />
+              <span>Обновить</span>
+            </button>
+          )}
+          {onBack && (
+            <button className="admin-back" type="button" onClick={onBack}>
+              На главную
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="admin-tabs" role="tablist" aria-label="Разделы администрирования">
+        {tabs.map((item) => (
+          <button
+            key={item.code}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.code}
+            className={tab === item.code ? "active" : ""}
+            onClick={() => setTab(item.code)}
+          >
+            {item.tab}
+          </button>
+        ))}
+      </div>
+
+      {tab === "quality" && <AiQualityPanel />}
+
+      {tab !== "quality" && errorText && <p className="admin-error" role="alert">{errorText}</p>}
+      {tab !== "quality" && loading && !errorText && <p className="admin-empty">Загружаем статистику…</p>}
+
+      {tab !== "quality" && !loading && !errorText && (
+        <>
+          {tab === "usage" && (
+          <>
+          <div className="admin-summary">
+            {summaryCards.map((card) => (
+              <div className="admin-summary-card" key={card.label}>
+                <small>{card.label}</small>
+                <strong>{card.value}</strong>
+                <em>{card.helper}</em>
+              </div>
+            ))}
+          </div>
+
+          <div className="admin-grid">
+            <div className="admin-card">
+              <h3>Визиты по дням</h3>
+              <AdminBarList items={dailyItems} valueLabel="Число визитов · уникальные пользователи · суммарное время" />
+            </div>
+            <div className="admin-card">
+              <h3>Популярность разделов</h3>
+              <AdminBarList items={screenItems} valueLabel="Просмотры экранов за период" />
+            </div>
+            <div className="admin-card">
+              <h3>Действия</h3>
+              <AdminBarList items={actionItems} valueLabel="Ключевые действия за период" />
+            </div>
+            <div className="admin-card">
+              <h3>Устройства</h3>
+              <AdminBarList items={deviceItems} />
+              <h3 className="admin-subhead">Браузеры</h3>
+              <AdminBarList items={browserItems} />
+            </div>
+          </div>
+
+          </>
+          )}
+
+          {tab === "users" && (
+          <div className="admin-card admin-users-card">
+            {deleteState.error && <p className="admin-error" role="alert">{deleteState.error}</p>}
+            {deleteState.info && <p className="admin-info" role="status">{deleteState.info}</p>}
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Пользователь</th>
+                    <th>Регистрация</th>
+                    <th>Последний вход</th>
+                    <th>Был в сети</th>
+                    <th>Визитов</th>
+                    <th>Всего времени</th>
+                    <th>Средний визит</th>
+                    <th>Действий</th>
+                    <th>Роль и область данных</th>
+                    <th aria-label="Управление" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((item) => (
+                    <tr key={item.id}>
+                      <td>
+                        <strong>{item.name || "Без ФИО"}</strong>
+                        <small>{item.email}</small>
+                      </td>
+                      <td>{formatUnixDate(item.createdAt)}</td>
+                      <td>{formatUnixDateTime(item.lastLoginAt)}</td>
+                      <td>{formatUnixDateTime(item.lastSeenAt)}</td>
+                      <td className="admin-num">{asInt(item.visitCount)}</td>
+                      <td className="admin-num">{formatDurationShort(item.totalSeconds)}</td>
+                      <td className="admin-num">{formatDurationShort(item.avgSeconds)}</td>
+                      <td className="admin-num">{asInt(item.eventCount)}</td>
+                      <td>
+                        <RoleCell item={item} catalog={rolesCatalog} onSaved={load} />
+                      </td>
+                      <td className="admin-actions-cell">
+                        {item.id === currentUserId ? (
+                          <span className="admin-self-tag">это вы</span>
+                        ) : item.isAdmin ? (
+                          <span className="admin-self-tag" title="Уберите адрес из ADMIN_EMAILS, чтобы удалить">админ</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className={`admin-delete-btn ${deleteState.id === item.id ? "confirm" : ""}`}
+                            disabled={deleteState.busy && deleteState.id === item.id}
+                            onClick={() => handleDeleteUser(item)}
+                            onBlur={() => {
+                              if (deleteState.id === item.id && !deleteState.busy) {
+                                setDeleteState((previous) => (previous.id === item.id ? { ...previous, id: null } : previous));
+                              }
+                            }}
+                            title="Удаляет пользователя и все его данные: сессии, визиты, события, коды"
+                          >
+                            {deleteState.id === item.id
+                              ? deleteState.busy
+                                ? "Удаляем…"
+                                : "Точно удалить?"
+                              : "Удалить"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="admin-bar-caption">
+              Удаление необратимо: стираются аккаунт, сессии, визиты, события и коды. Повторный клик по кнопке подтверждает удаление.
+            </p>
+          </div>
+
+          )}
+
+          {tab === "usage" && (
+          <div className="admin-card">
+            <h3>Последние события входа</h3>
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Когда</th>
+                    <th>Email</th>
+                    <th>Событие</th>
+                    <th>IP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(activity?.recentAuthEvents || []).slice(0, 25).map((item, index) => (
+                    <tr key={`${item.createdAt}-${index}`}>
+                      <td>{formatUnixDateTime(item.createdAt)}</td>
+                      <td>{item.email}</td>
+                      <td>
+                        {ADMIN_AUTH_EVENT_LABELS[item.event] || item.event}
+                        {item.reason ? <small>{item.reason}</small> : null}
+                      </td>
+                      <td>{item.ip || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function HomeDashboard({
   count,
   total,
@@ -2356,7 +3474,10 @@ function HomeDashboard({
   onOpenList,
   onOpenMap,
   onOpenAnalytics,
+  onOpenAi,
   onOpenControl,
+  onOpenFavorites,
+  onOpenAdmin,
   onLogout,
 }) {
   const activeShare = total ? Math.round((metrics.active / total) * 100) : 0;
@@ -2364,8 +3485,13 @@ function HomeDashboard({
     { label: "Реестр", Icon: List, onClick: onOpenList },
     { label: "Карта", Icon: MapIcon, onClick: onOpenMap },
     { label: "Аналитика", Icon: BarChart3, onClick: onOpenAnalytics },
+    ...(onOpenAi ? [{ label: "ИИ-аналитик", Icon: Sparkles, onClick: onOpenAi }] : []),
     { label: "Контроль", Icon: ShieldCheck, onClick: onOpenControl },
+    { label: "Избранное", Icon: Heart, onClick: onOpenFavorites },
   ];
+  if (user?.isAdmin && onOpenAdmin) {
+    homeLinks.push({ label: "Админ", Icon: Users, onClick: onOpenAdmin });
+  }
   const passportItems = [
     { label: "Объектов", value: asInt(total), helper: `в текущем срезе ${asInt(count)}` },
     { label: "Активная сеть", value: `${activeShare}%`, helper: `${asInt(metrics.active)} действующих` },
@@ -2475,6 +3601,10 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
   const [compareIds, setCompareIds] = useState(() => (selected?.ksss ? [selected.ksss] : []));
   const [compareNotice, setCompareNotice] = useState("");
   const similarBase = stations.find((station) => station.ksss === similarBaseId);
+
+  useEffect(() => {
+    trackEvent("screen_view", `analytics:${view}`);
+  }, [view]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2670,7 +3800,9 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
     setCompareIds((current) => current.filter((item) => item !== ksss));
   }
 
+  const summaryCatalog = useSummaryCatalog();
   const tabs = [
+    ...(summaryCatalog ? [["summary", "Свод"]] : []),
     ["overview", "Обзор"],
     ["slices", "Разрезы"],
     ["outages", "Простои"],
@@ -2684,7 +3816,9 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
         <div>
           <h2>Аналитика сети</h2>
           <p>
-            {view === "overview"
+            {view === "summary"
+              ? "Свод по витрине: состав плиток настраивается, сравнение идёт с тем же отрезком прошлого года."
+              : view === "overview"
               ? `Показатели пересчитываются по текущей выборке: ${asInt(stations.length)} из ${asInt(totalStations.length)} объектов.`
               : view === "outages"
                 ? outageAnalyticsState.data?.reportDate
@@ -2693,7 +3827,7 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
               : `Период: ${formatPeriod(period)} · источник API /api`}
           </p>
         </div>
-        {view !== "outages" && periods.length > 1 && <PeriodNavigator periods={periods} period={period} onChange={setPeriod} />}
+        {view !== "outages" && view !== "summary" && periods.length > 1 && <PeriodNavigator periods={periods} period={period} onChange={setPeriod} />}
       </div>
 
       <div className="analytics-tabs" role="tablist" aria-label="Режим аналитики">
@@ -2704,6 +3838,7 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
         ))}
       </div>
 
+      {view === "summary" && summaryCatalog && <AnalyticsSummary catalog={summaryCatalog} />}
       {view === "overview" && (
         <AnalyticsLocalOverview
           stations={stations}
@@ -2762,9 +3897,1976 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
   );
 }
 
+// ---------------------------------------------------------------------------
+// Демонстрационный контур ИИ: вопрос на русском -> SQL -> ответ из витрины.
+// Раздел появляется, только если бэкенд отвечает на /api/ai/status.
+// Переключатель роли здесь демонстрирует область данных, а не ролевую модель
+// продукта: она описана в бизнес-требованиях отдельно.
+// ---------------------------------------------------------------------------
+// Примеры привязаны к периодам, которые в витрине действительно есть.
+// Пилотная заливка — сентябрь 2026 и сентябрь 2025; при расширении обновить.
+// Подсказка и вопрос — разные вещи. На кнопке нужен короткий ярлык, который
+// читается с одного взгляда; модели уходит полная формулировка с периодом,
+// иначе она начнёт угадывать год.
+const AI_EXAMPLES = [
+  { hint: "Выручка НТУ за сентябрь", ask: "Выручка НТУ по моим АЗС за сентябрь 2026" },
+  { hint: "Выполнение плана НТУ", ask: "Выполнение плана НТУ в текущем месяце" },
+  { hint: "Топливо в прошлом году", ask: "Сравни объём топлива за сентябрь 2026 с сентябрём 2025" },
+  { hint: "Топ-5 по конверсии", ask: "Топ-5 АЗС по конверсии за сентябрь 2026" },
+  { hint: "Средний чек по ОНПО", ask: "Средний чек НТУ по ОНПО за сентябрь 2026" },
+  { hint: "АЗС с кафе на трассе", ask: "Сколько действующих АЗС с кафе на трассе" },
+];
+
+function RoleCell({ item, catalog, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [role, setRole] = useState(item.role || "");
+  const [binding, setBinding] = useState(item.roleBinding || "");
+  const [state, setState] = useState({ busy: false, error: "" });
+
+  const spec = (catalog?.roles || []).find((r) => r.code === role);
+  const options = catalog?.options?.[role] || [];
+  const needsBinding = Boolean(spec && spec.bindingKind !== "none");
+  const freeform = spec?.bindingKind === "list";
+
+  async function save() {
+    setState({ busy: true, error: "" });
+    try {
+      const response = await fetch(`/api/admin/users/${item.id}/role`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ role, binding: needsBinding ? binding : "" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || `Ошибка ${response.status}`);
+      setEditing(false);
+      setState({ busy: false, error: "" });
+      onSaved?.();
+    } catch (error) {
+      setState({ busy: false, error: error.message || "Не удалось сохранить" });
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="admin-role-cell">
+        <strong>{item.roleTitle}</strong>
+        {item.roleBinding && <small>{item.roleBinding}</small>}
+        <small className={item.role && item.scopeStations === 0 ? "admin-role-warn" : ""}>
+          {item.scopeStations < 0 ? "вся сеть" : `${asInt(item.scopeStations)} объектов`}
+        </small>
+        {!item.isAdmin && (
+          <button type="button" className="admin-role-edit" onClick={() => setEditing(true)}>
+            изменить
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="admin-role-cell editing">
+      <select className="ui-select" value={role} onChange={(event) => { setRole(event.target.value); setBinding(""); }}>
+        <option value="">Роль не назначена</option>
+        {(catalog?.roles || []).map((r) => (
+          <option key={r.code} value={r.code}>{r.title}</option>
+        ))}
+      </select>
+
+      {needsBinding && (freeform || options.length === 0 ? (
+        <input
+          className="ui-input"
+          type="text"
+          value={binding}
+          placeholder={spec?.bindingLabel || "Привязка"}
+          onChange={(event) => setBinding(event.target.value)}
+        />
+      ) : (
+        <select className="ui-select" value={binding} onChange={(event) => setBinding(event.target.value)}>
+          <option value="">{spec?.bindingLabel || "Выберите"}</option>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.value}{option.stations ? ` (${option.stations})` : ""}
+            </option>
+          ))}
+        </select>
+      ))}
+
+      {state.error && <small className="admin-role-warn">{state.error}</small>}
+      <div className="admin-role-buttons">
+        <button type="button" className="ui-button" onClick={save} disabled={state.busy}>
+          {state.busy ? "Сохраняю…" : "Сохранить"}
+        </button>
+        <button type="button" className="ui-button ghost" onClick={() => { setEditing(false); setState({ busy: false, error: "" }); }}>
+          Отмена
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ScopeNotice({ meta }) {
+  const scope = meta?.scope;
+  if (!scope || scope.unrestricted) return null;
+
+  const blocked = scope.problems?.length > 0 || scope.stations === 0;
+  return (
+    <div className={blocked ? "scope-notice blocked" : "scope-notice"}>
+      {blocked ? (
+        <>
+          <strong>Объекты не показаны.</strong>{" "}
+          {scope.problems?.length
+            ? scope.problems.join(". ")
+            : "В вашей области данных нет действующих объектов."}{" "}
+          Обратитесь к администратору — он назначает роль и привязку.
+        </>
+      ) : (
+        <>
+          Область данных: <strong>{scope.label}</strong>. Показаны только ваши объекты —
+          реестр, карта, аналитика и сравнение считаются по ним.
+        </>
+      )}
+    </div>
+  );
+}
+
+function useAiStatus() {
+  const [status, setStatus] = useState(undefined);
+  useEffect(() => {
+    let alive = true;
+    fetchJson("/api/ai/status")
+      .then((data) => {
+        if (alive) setStatus(data || null);
+      })
+      .catch(() => {
+        if (alive) setStatus(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return status;
+}
+
+function aiFormatCell(value, decimals) {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "number") {
+    const places = Number.isInteger(decimals)
+      ? decimals
+      : (Math.abs(value % 1) > 0 ? 2 : 0);
+    return value.toLocaleString("ru-RU", {
+      minimumFractionDigits: places,
+      maximumFractionDigits: places,
+    });
+  }
+  return String(value);
+}
+
+// Разрядность берётся по колонке, а не по ячейке: иначе в столбце процентов
+// рядом стоят «43,1» и «33», и колонка перестаёт читаться как один ряд чисел.
+function aiColumnDecimals(rows, index) {
+  let places = 0;
+  for (const row of rows) {
+    const value = row[index];
+    if (typeof value !== "number" || Number.isInteger(value)) continue;
+    const text = String(value);
+    const dot = text.indexOf(".");
+    if (dot >= 0) places = Math.max(places, Math.min(2, text.length - dot - 1));
+  }
+  return places;
+}
+
+function aiIdentityKey(identity) {
+  return `${identity.role}::${identity.binding || ""}`;
+}
+
+// ---------------------------------------------------------------------------
+// Раздел «ИИ-аналитик»: история диалогов, лента ответов, оценка точности.
+// Разметка следует прототипу, согласованному с владельцем 21.09.2026.
+// Знак ИИ собран по спецификации облика: круг, красный контур, три столбца.
+// Шейдерная версия знака придёт отдельно (З-16) и заменит этот SVG.
+// ---------------------------------------------------------------------------
+// Размер задаётся либо числом отсюда, либо стилями — тогда size не передаётся
+// и знак подстраивается под высоту окна. Инлайновый стиль перебивает правило,
+// поэтому ставить его «на всякий случай» нельзя.
+// Орб ИИ-аналитика. Облик согласован владельцем — «Облик_ИИ_аналитика_
+// заполнено.xlsx» (З-16): круг с красным контуром и тремя белыми столбцами,
+// восемь состояний, корпоративная гамма.
+//
+// Здесь собран обязательный вариант на SVG и CSS. По спецификации он нужен
+// всегда: крупный орб на мощной машине рисует шейдер, но при отключённой
+// анимации, на слабом устройстве и в статике показывается именно этот знак.
+// Поэтому он не «заглушка до шейдера», а самостоятельный уровень.
+//
+// В SVG нет ни <defs>, ни градиентов, ни фильтров: им обязательны id, а знак
+// рисуется на странице до пяти раз — одинаковые id сделали бы разметку
+// невалидной. Поэтому корпус и внутреннее свечение нарисованы фоном самой
+// обёртки: у CSS радиальные градиенты есть, и красный получается настоящим
+// светом внутри, а не плоской заливкой поверх графита.
+const AI_MARK_STATES = new Set([
+  "idle",     // покой: вопроса нет
+  "parse",    // разбор вопроса: модель читает формулировку
+  "draft",    // составление запроса к витрине
+  "check",    // проверка допустимости
+  "read",     // чтение витрины — основная стадия
+  "done",     // ответ готов
+  "refused",  // вне области данных: контролируемый исход, не авария
+  "error",    // модель недоступна или витрина не ответила
+]);
+
+// Старые названия состояний, чтобы прежние места вызова не сломались.
+const AI_MARK_ALIASES = {
+  working: "read",
+  ready: "done",
+  clarify: "refused",   // просьба уточнить — такой же спокойный исход, как отказ
+  write: "read",        // спецификация не описывает отдельный вид для «формулирую ответ»
+};
+
+// Подпись для тех, кто пользуется экранным диктором: состояние орба иначе
+// не читается вовсе.
+const AI_MARK_TITLES = {
+  idle: "ИИ-аналитик",
+  parse: "Разбираю вопрос",
+  draft: "Составляю запрос к витрине",
+  check: "Проверяю допустимость запроса",
+  read: "Читаю витрину",
+  done: "Ответ готов",
+  refused: "Запрос вне области данных",
+  error: "Ответ не получен",
+};
+
+function AiMark({ size, state = "idle", title, simple = false, decorative = false, variant = "plain" }) {
+  const resolved = AI_MARK_ALIASES[state] || state;
+  const mode = AI_MARK_STATES.has(resolved) ? resolved : "idle";
+  // decorative — рядом уже есть видимая подпись («ИИ», «ИИ-аналитик»),
+  // и диктор не должен читать её дважды.
+  const label = decorative ? "" : (title || AI_MARK_TITLES[mode]);
+
+  // Вариант plain — прежний знак в блоках ленты и на панели: графитовый
+  // круг с тремя белыми столбцами, без красного контура. Владелец вернул
+  // его 22.09.2026: орб — для крупных мест, мелкий значок должен быть тихим.
+  // Состояние здесь читается только по столбцам: работа — пульс,
+  // отказ и ошибка — приглушённый цвет.
+  if (variant === "plain") {
+    const busy = ["parse", "draft", "check", "read"].includes(mode);
+    const bad = mode === "refused" || mode === "error";
+    return (
+      <span
+        className={`ai-mark ai-mark-plain${busy ? " is-busy" : ""}${bad ? " is-bad" : ""}`}
+        style={size ? { "--ai-mark-size": `${size}px` } : undefined}
+      >
+        <svg viewBox="0 0 100 100" role={label ? "img" : "presentation"} aria-label={label || undefined}>
+          <circle cx="50" cy="50" r="48" className="ai-plain-body" />
+          <circle cx="50" cy="36" r="40" className="ai-plain-sheen" />
+          <rect x="38" y="52" width="6" height="18" rx="2" className="ai-plain-bar b1" />
+          <rect x="47" y="44" width="6" height="26" rx="2" className="ai-plain-bar b2" />
+          <rect x="56" y="36" width="6" height="34" rx="2" className="ai-plain-bar b3" />
+        </svg>
+      </span>
+    );
+  }
+
+  // Вариант orb — знак с красным контуром и внутренним светом, по
+  // спецификации облика. Остался только в навигации.
+  // simple — облегчённая сборка: два-три слоя вместо девяти.
+  return (
+    <span
+      className={`ai-mark ai-mark-${mode}${simple ? " ai-mark-simple" : ""}`}
+      style={size ? { "--ai-mark-size": `${size}px` } : undefined}
+    >
+      <svg
+        viewBox="0 0 100 100"
+        role={label ? "img" : "presentation"}
+        aria-label={label || undefined}
+      >
+        {!simple && (
+          <g className="orb-layers" aria-hidden="true">
+            {/* вложенные слои: намёк на recursive erosion без шейдера */}
+            <circle cx="50" cy="50" r="38" className="orb-layer l1" />
+            <circle cx="50" cy="50" r="30" className="orb-layer l2" />
+            <circle cx="50" cy="50" r="22" className="orb-layer l3" />
+          </g>
+        )}
+        {!simple && (
+          <g className="orb-flow" aria-hidden="true">
+            {/* световые потоки: встречные, видны на составлении и чтении */}
+            <circle cx="50" cy="50" r="41" className="orb-stream s1" />
+            <circle cx="50" cy="50" r="34" className="orb-stream s2" />
+            <circle cx="50" cy="50" r="27" className="orb-stream s3" />
+          </g>
+        )}
+        {/* красный контур — постоянная часть знака */}
+        <circle cx="50" cy="50" r="49" className="orb-ring" />
+        {/* контрольный импульс: проверка и финальный pulse */}
+        <circle cx="50" cy="50" r="49" className="orb-pulse" aria-hidden="true" />
+        {/* блик стекла */}
+        <circle cx="50" cy="32" r="33" className="orb-sheen" aria-hidden="true" />
+        {/* три белых столбца — ядро знака, оно же результат */}
+        <g className="orb-bars">
+          <rect x="38" y="52" width="6" height="18" rx="2" className="orb-bar b1" />
+          <rect x="47" y="44" width="6" height="26" rx="2" className="orb-bar b2" />
+          <rect x="56" y="36" width="6" height="34" rx="2" className="orb-bar b3" />
+        </g>
+      </svg>
+    </span>
+  );
+}
+
+// Этап конвейера → состояние орба. Конвейер знает четыре ключа
+// (draft, check, read, write), спецификация — восемь состояний; «разбор
+// вопроса» наступает до первого события, пока модель читает формулировку.
+function aiMarkState({ pending, stages = [], outcome }) {
+  if (!pending) {
+    if (outcome === "ready") return "done";
+    if (outcome === "error") return "error";
+    if (outcome === "refused" || outcome === "clarify") return "refused";
+    return "idle";
+  }
+  const active = [...stages].reverse().find((stage) => stage.state === "active");
+  if (!active) return "parse";
+  return AI_MARK_ALIASES[active.key] || (AI_MARK_STATES.has(active.key) ? active.key : "read");
+}
+
+function aiMs(value) {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  // Разделитель — запятая: «2,1 с», а не «2.1 с».
+  return value >= 1000
+    ? `${(value / 1000).toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} с`
+    : `${Math.round(value)} мс`;
+}
+
+function aiTotalMs(answer) {
+  return (answer?.modelMs || 0) + (answer?.narrateMs || 0) + (answer?.sqlMs || 0);
+}
+
+// Три исхода вместо двух: ошибка системы, граница области данных и просьба
+// уточнить. Они выглядят по-разному, потому что человеку нужно разное:
+// подождать, попросить права или переспросить точнее.
+// Движение в ленте — три вещи и не больше: вход сообщения, раскрытие блока,
+// проявление этапов. Всё уважает prefers-reduced-motion: при выключенной
+// анимации элементы просто появляются на своих местах.
+const AI_EASE = [0.22, 1, 0.36, 1];
+const AI_FOLD_SPRING = { type: "spring", stiffness: 340, damping: 34, mass: 0.7 };
+
+function AiReveal({ open, children, className }) {
+  const reduced = useReducedMotion();
+  return (
+    <AnimatePresence initial={false}>
+      {open && (
+        <motion.div
+          className={className}
+          style={{ overflow: "hidden" }}
+          initial={reduced ? false : { height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={reduced ? { opacity: 0 } : { height: 0, opacity: 0 }}
+          transition={reduced
+            ? { duration: 0.12 }
+            : { ...AI_FOLD_SPRING, opacity: { duration: 0.16, ease: AI_EASE } }}
+        >
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+const AI_CLARIFY_RULES = new Set(["parse", "multi", "empty"]);
+const AI_FAILURE_RULES = new Set(["execution", "model_unavailable"]);
+
+function aiOutcome(answer) {
+  if (!answer) return "idle";
+  if (answer.ok) return "ready";
+  if (AI_FAILURE_RULES.has(answer.rule)) return "error";
+  if (AI_CLARIFY_RULES.has(answer.rule)) return "clarify";
+  return "refused";
+}
+
+const AI_REFUSAL_TITLES = {
+  model_unavailable: "Модель недоступна",
+  execution: "Витрина не ответила на запрос",
+  unknown_table: "Это вне вашей области данных",
+  qualified_table: "Это вне вашей области данных",
+  unknown_column: "Такого показателя в витрине нет",
+  forbidden_function: "Запрос не разрешён",
+  not_select: "Запрос не разрешён",
+  parse: "Уточните, о чём речь",
+  multi: "Уточните, о чём речь",
+  empty: "Уточните, о чём речь",
+};
+
+const AI_REFUSAL_HINTS = {
+  model_unavailable: "Это сбой контура, а не отказ: повторите вопрос через минуту.",
+  execution: "Запрос был допустим, но витрина его не выполнила. Повторите вопрос — если повторится, сообщите администратору.",
+  unknown_table: "Область данных назначает администратор: расширение прав идёт через него.",
+  qualified_table: "Область данных назначает администратор: расширение прав идёт через него.",
+  unknown_column: "Проверьте название показателя — справочник сокращений есть в базе знаний.",
+  forbidden_function: "Разрешено только чтение витрины: изменять и удалять данные ИИ не может.",
+  not_select: "Разрешено только чтение витрины: изменять и удалять данные ИИ не может.",
+  parse: "Назовите показатель, период и объекты — тогда не придётся угадывать.",
+  multi: "Задайте один вопрос за раз — так понятнее, что именно считать.",
+  empty: "Назовите показатель, период и объекты — тогда не придётся угадывать.",
+};
+
+// Этапы строятся только из измеренных величин. Промежутка, который никто
+// не засекал, здесь быть не должно: иначе интерфейс рассказывает о работе
+// системы то, чего не знает.
+function aiStages(answer) {
+  if (!answer) return [];
+  const stages = [
+    { key: "draft", label: "Составил запрос к витрине", ms: answer.modelMs, done: true },
+  ];
+  if (answer.ok) {
+    stages.push({
+      key: "check",
+      label: answer.attempts > 1
+        ? `Проверил допустимость — принято с ${answer.attempts}-й попытки`
+        : "Проверил допустимость — запрос разрешён, область данных подставлена",
+      done: true,
+    });
+    stages.push({
+      key: "read",
+      label: `Прочитал витрину — ${asInt(answer.rowCount ?? (answer.rows || []).length)} строк`,
+      ms: answer.sqlMs,
+      done: true,
+    });
+    if (answer.narrateMs) {
+      stages.push({ key: "write", label: "Сформулировал ответ", ms: answer.narrateMs, done: true });
+    }
+  } else {
+    stages.push({
+      key: "check",
+      label: AI_REFUSAL_TITLES[answer.rule] || "Проверка не пропустила запрос",
+      done: false,
+      ms: answer.sqlMs,
+    });
+  }
+  return stages;
+}
+
+// Строка рассуждения: одна строка со знаком и временем, разворачивается
+// в этапы. Так же, как в знакомых людям ассистентах, — чтобы не объяснять
+// отдельно, что за блок висит над ответом.
+function aiStageClass(state) {
+  if (state === "active") return "ai-stage current";
+  if (state === "failed") return "ai-stage failed";
+  if (state === "retry") return "ai-stage retry";
+  return "ai-stage";
+}
+
+function AiThinking({ answer, pending, stages: live_stages = [] }) {
+  const [open, setOpen] = useState(false);
+  const reduced = useReducedMotion();
+  if (pending) {
+    // Этапы приходят потоком; пока не пришёл ни один — показываем первый,
+    // чтобы строка не висела пустой.
+    const live = live_stages.length
+      ? live_stages
+      : [{ key: "draft", state: "active", label: "Составляю запрос к витрине" }];
+    const current = [...live].reverse().find((stage) => stage.state === "active") || live[live.length - 1];
+    return (
+      <div className="ai-think pending">
+        {/* Орб живёт этапами конвейера: составление и проверка — «ищет»,
+            чтение витрины — «анализирует», формулирование — «формирует».
+            Это настоящие этапы, а не анимация ради анимации: по ним видно,
+            что модель не ходит в данные сама. Момент «готово» показывает
+            уже AiSettleOrb в пришедшем ответе — он встаёт ровно на это
+            место, потому что вопрос и ответ свёрстаны одинаково. */}
+        <div className="ai-think-orb">
+          <AiOrb
+            size="var(--ai-orb-pending, 120px)"
+            state={orbStateFromPipeline({ pending: true, stages: live })}
+            interactive={false}
+            fallback={<AiMark state={aiMarkState({ pending: true, stages: live })} />}
+          />
+        </div>
+        <span className="ai-think-line">
+          <strong>{current?.label || "Работаю"}</strong>
+          <span className="ai-think-dots" aria-hidden="true"><i /><i /><i /></span>
+        </span>
+        <div className="ai-think-body">
+          <AnimatePresence initial={false}>
+            {live.map((stage) => (
+              <motion.div
+                key={stage.key}
+                className={aiStageClass(stage.state)}
+                initial={reduced ? false : { opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.18, ease: AI_EASE }}
+              >
+                <span className="ai-stage-mark" aria-hidden="true">
+                  {stage.state === "active"
+                    ? <span className="ai-stage-spin" />
+                    : stage.state === "failed"
+                      ? <X size={13} />
+                      : stage.state === "retry"
+                        ? <RefreshCw size={13} />
+                        : <Check size={13} />}
+                </span>
+                <span>{stage.label}</span>
+                {stage.ms ? <span className="ai-stage-ms">{aiMs(stage.ms)}</span> : null}
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+        <div className="ai-skeleton" aria-hidden="true"><i style={{ width: "82%" }} /><i style={{ width: "94%" }} /><i style={{ width: "61%" }} /></div>
+      </div>
+    );
+  }
+  if (!answer) return null;
+  const stages = aiStages(answer);
+  const total = aiTotalMs(answer);
+  const outcome = aiOutcome(answer);
+  return (
+    <div className="ai-think">
+      <button type="button" className="ai-think-line" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        {/* Тот же графитовый знак, что на боковой панели (решение владельца от 22.09.2026). */}
+        <AiMark state={aiMarkState({ outcome })} />
+        <strong>{answer.ok ? "Рассуждал" : "Разбирал вопрос"}</strong>
+        <span className="ai-think-ms">{aiMs(total) || "меньше секунды"}</span>
+        <ChevronDown size={15} className={open ? "ai-caret open" : "ai-caret"} />
+      </button>
+      <AiReveal open={open}>
+        <div className="ai-think-body">
+          {stages.map((stage, index) => (
+            <motion.div
+              key={stage.key}
+              className={stage.done ? "ai-stage" : "ai-stage failed"}
+              initial={reduced ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.18, delay: reduced ? 0 : index * 0.04, ease: AI_EASE }}
+            >
+              <span className="ai-stage-mark" aria-hidden="true">{stage.done ? <Check size={13} /> : <X size={13} />}</span>
+              <span>{stage.label}</span>
+              {stage.ms ? <span className="ai-stage-ms">{aiMs(stage.ms)}</span> : null}
+            </motion.div>
+          ))}
+          {answer.model && (
+            <motion.p
+              className="ai-think-note"
+              initial={reduced ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.2, delay: reduced ? 0 : stages.length * 0.04, ease: AI_EASE }}
+            >
+              <span>Ход рассуждения — текст модели, не факт</span>
+              Запрос составляла модель {answer.model}. Решение о допустимости принимала проверка, данные читал
+              исполнитель: сама модель к витрине не обращается.
+            </motion.p>
+          )}
+        </div>
+      </AiReveal>
+    </div>
+  );
+}
+
+function AiStars({ value, onPick, size = 38 }) {
+  return (
+    <span className="ai-stars">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          className={n <= value ? "on" : ""}
+          onClick={onPick ? () => onPick(n) : undefined}
+          aria-label={`Оценка ${n} из 5`}
+          disabled={!onPick}
+        >
+          <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+            <path d="M12 3.2l2.6 5.5 5.9.8-4.3 4.2 1.1 6-5.3-2.9-5.3 2.9 1.1-6L3.5 9.5l5.9-.8z" strokeWidth="1.6" strokeLinejoin="round" />
+          </svg>
+        </button>
+      ))}
+    </span>
+  );
+}
+
+const AI_RATING_HINTS = {
+  0: "Выберите оценку",
+  1: "Ответ неверный",
+  2: "Ответ в основном неверный",
+  3: "Ответ частично верный",
+  4: "Ответ верный, есть замечания",
+  5: "Ответ верный",
+};
+
+// Комментарий обязателен при низкой оценке: оценка без причины ничего не даёт
+// разбору, а разбирать придётся именно такие ответы.
+function AiRatingDialog({ item, requiredUpTo, onClose, onSave }) {
+  const [rating, setRating] = useState(item.rating || 0);
+  const [comment, setComment] = useState(item.comment || "");
+  const [state, setState] = useState({ busy: false, error: "" });
+
+  const mustComment = rating > 0 && rating <= requiredUpTo;
+  const blocked = rating === 0 || (mustComment && !comment.trim());
+
+  async function submit() {
+    if (blocked) return;
+    setState({ busy: true, error: "" });
+    try {
+      await onSave(rating, comment.trim());
+      onClose();
+    } catch (error) {
+      setState({ busy: false, error: error.message || "Не удалось сохранить оценку" });
+    }
+  }
+
+  return createPortal(
+    <div className="ai-modal-scrim" role="presentation" onClick={onClose}>
+      <div
+        className="ai-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Оценка точности ответа"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="ai-modal-head">
+          <div>
+            <p className="ai-modal-title">Насколько точен ответ?</p>
+            <p className="ai-modal-sub">Оценка попадает в разбор качества ответов и в эталонный набор вопросов.</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Закрыть">
+            <X size={18} />
+          </button>
+        </div>
+
+        <p className="ai-modal-question">{item.question}</p>
+
+        <div className="ai-rating-pick">
+          <AiStars value={rating} onPick={setRating} />
+          <span className="ai-rating-hint">{AI_RATING_HINTS[rating]}</span>
+        </div>
+
+        <label className="ui-field">
+          <span className={mustComment && !comment.trim() ? "ai-required" : ""}>
+            {mustComment ? "Что именно не так — обязательно" : "Комментарий, по желанию"}
+          </span>
+          <textarea
+            className={`ui-textarea${mustComment && !comment.trim() ? " invalid" : ""}`}
+            rows={3}
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            placeholder="Что именно не так: цифра, период, область данных, формулировка"
+          />
+        </label>
+
+        {state.error && <p className="ai-modal-error">{state.error}</p>}
+
+        <div className="ai-modal-actions">
+          <button type="button" className="ui-button" disabled={blocked || state.busy} onClick={submit}>
+            {state.busy ? "Сохраняю…" : "Отправить"}
+          </button>
+          <button type="button" className="ui-button ghost" onClick={onClose}>Отмена</button>
+          <span className={blocked && mustComment ? "ai-modal-note warn" : "ai-modal-note"}>
+            {blocked && mustComment
+              ? "При оценке до трёх звёзд нужна причина"
+              : "Оценка сохраняется вместе с вопросом и ответом"}
+          </span>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// --- история диалогов ------------------------------------------------------
+
+const AI_DAY = 86400;
+
+function aiDialogGroup(updatedAt) {
+  const now = new Date();
+  const midnight = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+  if (updatedAt >= midnight) return "Сегодня";
+  if (updatedAt >= midnight - AI_DAY) return "Вчера";
+  if (updatedAt >= midnight - 7 * AI_DAY) return "На этой неделе";
+  if (updatedAt >= midnight - 30 * AI_DAY) return "В этом месяце";
+  return "Ранее";
+}
+
+const AI_GROUP_ORDER = ["Закреплённые", "Сегодня", "Вчера", "На этой неделе", "В этом месяце", "Ранее"];
+
+function aiGroupDialogs(dialogs) {
+  const buckets = new Map();
+  dialogs.forEach((dialog) => {
+    const name = dialog.pinned ? "Закреплённые" : aiDialogGroup(dialog.updated_at || 0);
+    if (!buckets.has(name)) buckets.set(name, []);
+    buckets.get(name).push(dialog);
+  });
+  return AI_GROUP_ORDER.filter((name) => buckets.has(name)).map((name) => ({ name, items: buckets.get(name) }));
+}
+
+function AiDialogRow({ dialog, active, onOpen, onRename, onPin, onDelete }) {
+  const [menu, setMenu] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(dialog.title);
+
+  useEffect(() => { setDraft(dialog.title); }, [dialog.title]);
+
+  if (editing) {
+    return (
+      <div className="ai-dialog editing">
+        <input
+          className="ui-input"
+          value={draft}
+          autoFocus
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") { onRename(draft); setEditing(false); }
+            if (event.key === "Escape") { setDraft(dialog.title); setEditing(false); }
+          }}
+          onBlur={() => { onRename(draft); setEditing(false); }}
+          aria-label="Название диалога"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className={active ? "ai-dialog active" : "ai-dialog"}>
+      <button type="button" className="ai-dialog-open" onClick={onOpen}>
+        <span className="ai-dialog-title">
+          {dialog.pinned ? <Pin size={12} aria-label="Закреплён" /> : null}
+          <span className="ai-dialog-name">{dialog.title}</span>
+        </span>
+        {dialog.last_question && <span className="ai-dialog-last">{dialog.last_question}</span>}
+      </button>
+      <button
+        type="button"
+        className="ai-dialog-more"
+        aria-label="Действия с диалогом"
+        aria-expanded={menu}
+        onClick={() => setMenu((value) => !value)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {menu && (
+        <>
+          <button type="button" className="ai-menu-scrim" aria-label="Закрыть меню" onClick={() => setMenu(false)} />
+          <div className="ai-dialog-menu" role="menu">
+            <button type="button" role="menuitem" onClick={() => { setMenu(false); setEditing(true); }}>
+              <Pencil size={14} /> Переименовать
+            </button>
+            <button type="button" role="menuitem" onClick={() => { setMenu(false); onPin(!dialog.pinned); }}>
+              {dialog.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+              {dialog.pinned ? "Открепить" : "Закрепить"}
+            </button>
+            <button type="button" role="menuitem" className="danger" onClick={() => { setMenu(false); onDelete(); }}>
+              <Trash2 size={14} /> Удалить
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin, onDelete, whoLabel, whoName, onClose }) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const visible = needle
+    ? dialogs.filter((dialog) =>
+        `${dialog.title} ${dialog.last_question || ""}`.toLowerCase().includes(needle))
+    : dialogs;
+  const groups = aiGroupDialogs(visible);
+
+  return (
+    <aside className="ai-sidebar">
+      <div className="ai-sidebar-head">
+        <div className="ai-sidebar-brand">
+          <AiMark />
+          <span>ИИ-аналитик</span>
+          {onClose && (
+            <button type="button" className="ai-sidebar-close" onClick={onClose} aria-label="Закрыть историю">
+              <X size={18} />
+            </button>
+          )}
+        </div>
+        <button type="button" className="ui-button ai-new" onClick={onNew}>
+          <Plus size={16} /> Новый диалог
+        </button>
+        <label className="ai-search">
+          <Search size={15} />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Поиск по диалогам"
+            aria-label="Поиск по диалогам"
+          />
+        </label>
+      </div>
+
+      <div className="ai-sidebar-list">
+        {loading ? (
+          <p className="ai-sidebar-empty">Загружаю историю…</p>
+        ) : groups.length === 0 ? (
+          <p className="ai-sidebar-empty">
+            {needle ? "По этому запросу диалогов нет." : "Диалогов пока нет. Они появятся здесь и будут храниться за вами."}
+          </p>
+        ) : (
+          groups.map((group) => (
+            <div className="ai-dialog-group" key={group.name}>
+              <p className="ai-group-name">{group.name}</p>
+              {group.items.map((dialog) => (
+                <AiDialogRow
+                  key={dialog.id}
+                  dialog={dialog}
+                  active={dialog.id === activeId}
+                  onOpen={() => onOpen(dialog.id)}
+                  onRename={(title) => onRename(dialog.id, title)}
+                  onPin={(pinned) => onPin(dialog.id, pinned)}
+                  onDelete={() => onDelete(dialog.id)}
+                />
+              ))}
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="ai-sidebar-foot">
+        <span className="ai-avatar" aria-hidden="true">{aiInitials(whoName)}</span>
+        <span className="ai-who">
+          <strong>{whoName || "Пользователь"}</strong>
+          <small>{whoLabel}</small>
+        </span>
+      </div>
+    </aside>
+  );
+}
+
+function aiInitials(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "—";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+// --- один ответ ------------------------------------------------------------
+
+function AiFold({ title, meta, children, tone }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={tone ? `ai-fold ${tone}` : "ai-fold"}>
+      <button type="button" className="ai-fold-head" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <ChevronRight size={14} className={open ? "ai-caret open" : "ai-caret"} />
+        <strong>{title}</strong>
+        {meta ? <span className="ai-fold-meta">{meta}</span> : null}
+      </button>
+      <AiReveal open={open}>
+        <div className="ai-fold-body">{children}</div>
+      </AiReveal>
+    </div>
+  );
+}
+
+function AiAnswerBody({ answer, maySeeSql }) {
+  const outcome = aiOutcome(answer);
+
+  if (outcome !== "ready") {
+    return (
+      <div className={`ai-verdict ${outcome}`}>
+        {/* Без значка орба: в отказе, уточнении и ошибке достаточно обозначения
+            (решение владельца от 22.09.2026). */}
+        <div className="ai-verdict-head">
+          <p>{AI_REFUSAL_TITLES[answer.rule] || "Запрос отклонён"}</p>
+        </div>
+        <p className="ai-verdict-text">{answer.error || "Запрос не выполнен."}</p>
+        <p className="ai-verdict-hint">{AI_REFUSAL_HINTS[answer.rule] || "Переформулируйте вопрос или обратитесь к администратору."}</p>
+        {maySeeSql && answer.sqlRaw ? (
+          <AiFold title="Что составила модель" meta={answer.rule ? `правило: ${answer.rule}` : ""} tone="bad">
+            <pre className="ai-sql bad">{answer.sqlRaw}</pre>
+          </AiFold>
+        ) : null}
+      </div>
+    );
+  }
+
+  const rows = answer.rows || [];
+  const columns = answer.columns || [];
+  const single = rows.length === 1 && columns.length === 1;
+  const facts = rows.length === 1 && columns.length > 1 && columns.length <= 4;
+  const decimals = columns.map((_, index) => aiColumnDecimals(rows, index));
+
+  return (
+    <>
+      {single && (
+        <div className="ai-hero">
+          <strong className="ai-hero-value">{aiFormatCell(rows[0][0], decimals[0])}</strong>
+          <span className="ai-hero-label">{columns[0]}</span>
+          <span className="ai-hero-scope">{answer.scopeLabel}</span>
+        </div>
+      )}
+
+      {facts && (
+        <div className="ai-facts">
+          {columns.map((column, index) => (
+            <div className="ai-fact" key={column}>
+              <div className="ai-fact-value">{aiFormatCell(rows[0][index], decimals[index])}</div>
+              <div className="ai-fact-label">{column}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {answer.summary && <p className="ai-summary">{answer.summary}</p>}
+
+      {rows.length === 0 && <div className="ai-empty">Запрос выполнен, данных по условию нет.</div>}
+
+      {rows.length > 0 && !single && !facts && (
+        <div className="ai-table-card">
+          <div className="ai-table-head">
+            <span className="ai-table-title">Разбивка по строкам</span>
+            <span className="ai-table-count">
+              {answer.truncated ? `первые ${asInt(rows.length)}` : `${asInt(rows.length)} строк`}
+            </span>
+          </div>
+          <div className="ai-table-wrap">
+            <table className="ai-table">
+              <thead>
+                <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
+              </thead>
+              <tbody>
+                {rows.map((row, index) => (
+                  <tr key={index}>
+                    {row.map((cell, cellIndex) => (
+                      <td key={cellIndex} className={typeof cell === "number" ? "num" : ""}>
+                        {aiFormatCell(cell, decimals[cellIndex])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {(answer.notes || []).length > 0 && (
+        <ul className="ai-notes">
+          {answer.notes.map((note) => <li key={note}>{note}</li>)}
+        </ul>
+      )}
+
+      <div className="ai-folds">
+        <AiFold
+          title="Откуда число"
+          meta={`DWH ЛИКАРД · ${answer.scopeLabel}`}
+        >
+          <p className="ai-source-text">
+            Источник: DWH ЛИКАРД. Область данных: {answer.scopeLabel} — подставлена системой, а не выбрана моделью.
+            Прочитано {asInt(answer.rowCount ?? rows.length)} строк{answer.truncated ? `, показано ${asInt(rows.length)}` : ""}.
+            {answer.attempts > 1 ? ` Запрос принят с ${answer.attempts}-й попытки.` : ""}
+          </p>
+        </AiFold>
+
+        {maySeeSql && answer.sql ? (
+          <AiFold title="SQL-запрос" meta="администратор и субадминистратор">
+            <pre className="ai-sql">{answer.sql}</pre>
+          </AiFold>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+// Передача из блока ожидания в ответ. Блок ожидания уходит из дерева в тот
+// же кадр, в который приходит ответ, — поэтому «готово» показывает не он,
+// а этот орб: он монтируется на том же месте (вопрос и ответ свёрстаны
+// одинаково), стартует с параметров «формирую» и переходит в исход —
+// импульс готовности, отказ или ошибку. Через 1,4 с сворачивается, и
+// остаётся обычная строка разбора с мелким SVG-знаком. Ответ при этом
+// не задерживается ни на кадр.
+function AiSettleOrb({ outcome, onSettled }) {
+  const [shown, setShown] = useState(true);
+  const reduced = useReducedMotion();
+  // Колбэк — через ref: родитель перерисовывается при каждом нажатии
+  // клавиши в поле, и таймер иначе сбрасывался бы, не дойдя до конца.
+  const settled = useRef(onSettled);
+  settled.current = onSettled;
+  useEffect(() => {
+    const timer = setTimeout(() => { setShown(false); settled.current?.(); }, reduced ? 900 : 1400);
+    return () => clearTimeout(timer);
+  }, [reduced]);
+  return (
+    <AnimatePresence initial={false}>
+      {shown && (
+        <motion.div
+          className="ai-think-orb settle"
+          style={{ overflow: "hidden" }}
+          exit={reduced ? { opacity: 0 } : { height: 0, opacity: 0, marginBottom: 0 }}
+          transition={reduced ? { duration: 0.15 } : { duration: 0.45, ease: AI_EASE }}
+        >
+          <AiOrb
+            size="var(--ai-orb-pending, 120px)"
+            initialState="forming"
+            appear={false}
+            state={orbStateFromPipeline({ outcome })}
+            interactive={false}
+            fallback={null}
+          />
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onCopy, onSettled }) {
+  const answer = item.answer || {};
+  const reduced = useReducedMotion();
+  return (
+    <motion.article
+      className="ai-turn"
+      // Анимируется только то, что появилось при этом заходе: иначе при
+      // открытии старого диалога вся переписка въезжала бы заново.
+      initial={fresh && !reduced ? { opacity: 0, y: 8 } : false}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22, ease: AI_EASE }}
+    >
+      <div className="ai-ask-row">
+        <p className="ai-question">{item.question}</p>
+      </div>
+      <div className="ai-reply">
+        {fresh && <AiSettleOrb outcome={aiOutcome(answer)} onSettled={onSettled} />}
+        <AiThinking answer={answer} />
+        <AiAnswerBody answer={answer} maySeeSql={maySeeSql} />
+        <div className="ai-actions">
+          <button type="button" className="ai-action rate" onClick={() => onRate(item)}>
+            <Star size={15} /> {item.rating ? "Изменить оценку" : "Оценить ответ"}
+          </button>
+          <span className="ai-rated">
+            {item.rating ? `Ваша оценка: ${item.rating} из 5` : "Ответ ещё не оценён"}
+          </span>
+          <span className="ai-actions-gap" />
+          <button type="button" className="ai-action" onClick={() => onCopy(item)}>
+            {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Скопировано" : "Копировать"}
+          </button>
+          <button type="button" className="ai-action" onClick={() => onRepeat(item.question)}>
+            <RotateCcw size={15} /> Повторить
+          </button>
+        </div>
+      </div>
+    </motion.article>
+  );
+}
+
+// --- рабочая область -------------------------------------------------------
+
+function aiAnswerText(item) {
+  const answer = item.answer || {};
+  const parts = [item.question];
+  if (answer.summary) parts.push(answer.summary);
+  if ((answer.rows || []).length) {
+    parts.push([(answer.columns || []).join("\t"), ...answer.rows.map((row) => row.map(aiFormatCell).join("\t"))].join("\n"));
+  }
+  if (!answer.ok && answer.error) parts.push(answer.error);
+  parts.push(`Источник: DWH ЛИКАРД · ${answer.scopeLabel || ""}`.trim());
+  return parts.filter(Boolean).join("\n\n");
+}
+
+// Поток приходит кадрами «event: …\ndata: …\n\n». Читаем как текст и режем
+// по пустой строке: EventSource здесь не годится, он умеет только GET, а
+// вопрос в адресной строке — это вопрос в логах прокси.
+async function aiStream(body, { onStage, signal }) {
+  const response = await fetch("/api/ai/ask/stream", {
+    method: "POST",
+    credentials: "include",
+    signal,
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+  });
+  if (response.status === 401) {
+    emitAuthRequired();
+    throw new Error("Сессия истекла — войдите заново");
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    const error = new Error(detail.detail || `Ошибка ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  if (!response.body?.getReader) {
+    const error = new Error("Поток не поддерживается");
+    error.noStream = true;
+    throw error;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let answer = null;
+  let failure = null;
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut = buffer.indexOf("\n\n");
+    while (cut >= 0) {
+      const frame = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      cut = buffer.indexOf("\n\n");
+      let name = "message";
+      const chunks = [];
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) name = line.slice(6).trim();
+        else if (line.startsWith("data:")) chunks.push(line.slice(5).trim());
+      }
+      if (!chunks.length) continue;
+      let data;
+      try {
+        data = JSON.parse(chunks.join("\n"));
+      } catch {
+        continue;
+      }
+      if (name === "stage") onStage?.(data);
+      else if (name === "answer") answer = data;
+      else if (name === "failed") failure = data;
+    }
+  }
+
+  if (failure) throw new Error(failure.detail || "Не удалось получить ответ");
+  if (!answer) {
+    const error = new Error("Поток оборвался до ответа");
+    error.noStream = true;
+    throw error;
+  }
+  return answer;
+}
+
+// Насколько человек растянул раздел вниз. Хранится у него в браузере: это
+// его привычка, а не общая настройка продукта, и на сервере ей делать нечего.
+const AI_HEIGHT_KEY = "ai.shellExtra";
+const AI_EXTRA_MAX = 520;
+
+function aiReadExtra() {
+  try {
+    const raw = Number(window.localStorage.getItem(AI_HEIGHT_KEY));
+    return Number.isFinite(raw) ? Math.min(Math.max(raw, 0), AI_EXTRA_MAX) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function aiWriteExtra(value) {
+  try {
+    window.localStorage.setItem(AI_HEIGHT_KEY, String(Math.round(value)));
+  } catch {
+    // приватный режим или запрет на хранение — молча живём без запоминания
+  }
+}
+
+// Нижняя кромка раздела. Тянется мышью и стрелками: клавиатура здесь не
+// вежливость, а единственный способ для тех, кто не пользуется мышью.
+function AiResizeHandle({ extra, onChange }) {
+  const [dragging, setDragging] = useState(false);
+  const from = useRef({ y: 0, extra: 0 });
+
+  function start(event) {
+    event.preventDefault();
+    from.current = { y: event.clientY, extra };
+    setDragging(true);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function move(event) {
+    if (!dragging) return;
+    const next = from.current.extra + (event.clientY - from.current.y);
+    onChange(Math.min(Math.max(next, 0), AI_EXTRA_MAX));
+  }
+
+  function stop(event) {
+    if (!dragging) return;
+    setDragging(false);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  }
+
+  return (
+    <div
+      className={dragging ? "ai-resize dragging" : "ai-resize"}
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Высота раздела"
+      aria-valuenow={Math.round(extra)}
+      aria-valuemin={0}
+      aria-valuemax={AI_EXTRA_MAX}
+      tabIndex={0}
+      onPointerDown={start}
+      onPointerMove={move}
+      onPointerUp={stop}
+      onPointerCancel={stop}
+      onDoubleClick={() => onChange(0)}
+      onKeyDown={(event) => {
+        const step = event.shiftKey ? 80 : 24;
+        if (event.key === "ArrowDown") { event.preventDefault(); onChange(Math.min(extra + step, AI_EXTRA_MAX)); }
+        if (event.key === "ArrowUp") { event.preventDefault(); onChange(Math.max(extra - step, 0)); }
+        if (event.key === "Home") { event.preventDefault(); onChange(0); }
+      }}
+      title="Потяните, чтобы сделать раздел выше. Двойной щелчок — вернуть как было"
+    />
+  );
+}
+
+async function aiSend(path, options = {}) {
+  const response = await fetch(path, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    ...options,
+  });
+  if (response.status === 401) {
+    emitAuthRequired();
+    throw new Error("Сессия истекла — войдите заново");
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.detail || `Ошибка ${response.status}`);
+  }
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
+  const identities = status?.identities || [];
+  const [identityKey, setIdentityKey] = useState("");
+  const [model, setModel] = useState(status?.model || "");
+  const [showSettings, setShowSettings] = useState(false);
+
+  const [dialogs, setDialogs] = useState([]);
+  const [dialogsLoading, setDialogsLoading] = useState(true);
+  const [activeId, setActiveId] = useState(null);
+  const [items, setItems] = useState([]);
+  const [question, setQuestion] = useState("");
+  const [pending, setPending] = useState("");
+  const [liveStages, setLiveStages] = useState([]);
+  // Орб пустого экрана слушает, пока курсор в поле или набран текст.
+  const [composing, setComposing] = useState(false);
+  const [shellExtra, setShellExtra] = useState(aiReadExtra);
+  const [error, setError] = useState("");
+  const [ratingFor, setRatingFor] = useState(null);
+  const [copied, setCopied] = useState(0);
+
+  const reducedMotion = useReducedMotion();
+  const feedEnd = useRef(null);
+  const composer = useRef(null);
+  // Идентификаторы ответов, пришедших в этом сеансе: только они въезжают
+  // при появлении, загруженная история показывается сразу на своих местах.
+  // Сбрасывать при смене диалога не нужно — номера сообщений сквозные.
+  const freshIds = useRef(new Set());
+  const maySeeSql = Boolean(status?.maySeeSql);
+  const requiredUpTo = status?.commentRequiredUpTo ?? 3;
+  const identity = identities.find((item) => aiIdentityKey(item) === identityKey) || null;
+  const activeDialog = dialogs.find((dialog) => dialog.id === activeId) || null;
+
+  useEffect(() => {
+    if (model) return;
+    const installed = status?.installedModels || [];
+    if (!installed.length) return;
+    setModel(installed.includes(status.model) ? status.model : installed[0]);
+  }, [status, model]);
+
+  const loadDialogs = useCallback(async () => {
+    try {
+      const data = await aiSend("/api/ai/dialogs");
+      setDialogs(data?.dialogs || []);
+    } catch (err) {
+      setError(err.message || "Не удалось загрузить историю");
+    } finally {
+      setDialogsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadDialogs(); }, [loadDialogs]);
+
+  useEffect(() => {
+    if (!activeId) { setItems([]); return; }
+    let alive = true;
+    aiSend(`/api/ai/dialogs/${activeId}/messages`)
+      .then((data) => { if (alive) setItems(data?.messages || []); })
+      .catch((err) => { if (alive) setError(err.message || "Диалог не открылся"); });
+    return () => { alive = false; };
+  }, [activeId]);
+
+  useEffect(() => {
+    if (!items.length && !pending) return;
+    feedEnd.current?.scrollIntoView({
+      block: "end",
+      behavior: reducedMotion ? "auto" : "smooth",
+    });
+  }, [items.length, pending, reducedMotion]);
+
+  // Этап приходит дважды: «начал» и «закончил». Второй заменяет первый,
+  // иначе список рос бы вдвое и показывал одно и то же по два раза.
+  function pushStage(event) {
+    setLiveStages((list) => {
+      const index = list.findIndex((stage) => stage.key === event.key);
+      if (index < 0) return [...list, event];
+      const next = [...list];
+      next[index] = { ...next[index], ...event };
+      return next;
+    });
+  }
+
+  async function ask(text) {
+    const value = (text ?? question).trim();
+    if (!value || pending) return;
+    setPending(value);
+    setLiveStages([]);
+    setQuestion("");
+    setError("");
+    const body = {
+      question: value,
+      role: identity?.role || undefined,
+      binding: identity?.binding || undefined,
+      model: model || undefined,
+      dialogId: activeId ?? undefined,
+    };
+    try {
+      let data;
+      try {
+        data = await aiStream(body, { onStage: pushStage });
+      } catch (streamError) {
+        // Поток мог не подняться: старый браузер, прокси без потоковой
+        // передачи, обрыв до ответа. Обычный запрос всё ещё работает —
+        // человек просто не увидит этапы по ходу дела.
+        if (!streamError.noStream) throw streamError;
+        setLiveStages([]);
+        data = await aiSend("/api/ai/ask", { method: "POST", body: JSON.stringify(body) });
+      }
+      if (data.messageId) freshIds.current.add(data.messageId);
+      setItems((list) => [...list, {
+        id: data.messageId,
+        createdAt: Math.floor(Date.now() / 1000),
+        question: data.question || value,
+        answer: data,
+        rating: null,
+        comment: "",
+      }]);
+      if (data.dialogId && data.dialogId !== activeId) setActiveId(data.dialogId);
+      loadDialogs();
+    } catch (err) {
+      setError(err.message || "Не удалось получить ответ");
+      setQuestion(value);
+    } finally {
+      setPending("");
+      setLiveStages([]);
+    }
+  }
+
+  async function newDialog() {
+    setActiveId(null);
+    setItems([]);
+    setError("");
+    onDrawer(false);
+  }
+
+  async function renameDialog(id, title) {
+    const clean = (title || "").trim();
+    if (!clean || clean === dialogs.find((d) => d.id === id)?.title) return;
+    try {
+      await aiSend(`/api/ai/dialogs/${id}`, { method: "PATCH", body: JSON.stringify({ title: clean }) });
+      setDialogs((list) => list.map((d) => (d.id === id ? { ...d, title: clean } : d)));
+    } catch (err) {
+      setError(err.message || "Не удалось переименовать диалог");
+    }
+  }
+
+  async function pinDialog(id, pinned) {
+    try {
+      await aiSend(`/api/ai/dialogs/${id}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
+      setDialogs((list) => list.map((d) => (d.id === id ? { ...d, pinned: pinned ? 1 : 0 } : d)));
+    } catch (err) {
+      setError(err.message || "Не удалось закрепить диалог");
+    }
+  }
+
+  async function removeDialog(id) {
+    try {
+      await aiSend(`/api/ai/dialogs/${id}`, { method: "DELETE" });
+      setDialogs((list) => list.filter((d) => d.id !== id));
+      if (id === activeId) { setActiveId(null); setItems([]); }
+    } catch (err) {
+      setError(err.message || "Не удалось удалить диалог");
+    }
+  }
+
+  async function saveRating(item, rating, comment) {
+    await aiSend("/api/ai/feedback", {
+      method: "POST",
+      body: JSON.stringify({ messageId: item.id, rating, comment }),
+    });
+    setItems((list) => list.map((row) => (row.id === item.id ? { ...row, rating, comment } : row)));
+  }
+
+  function copyAnswer(item) {
+    const text = aiAnswerText(item);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => setCopied(item.id)).catch(() => setCopied(0));
+      window.setTimeout(() => setCopied(0), 2000);
+    }
+  }
+
+  const whoLabel = status?.ownScopeLabel
+    ? `${status.ownRoleTitle || ""} · ${status.ownScopeLabel}`.replace(/^ · /, "")
+    : status?.ownRoleTitle || "";
+
+  const sidebar = (
+    <AiSidebar
+      dialogs={dialogs}
+      activeId={activeId}
+      loading={dialogsLoading}
+      onNew={newDialog}
+      onOpen={(id) => { setActiveId(id); onDrawer(false); }}
+      onRename={renameDialog}
+      onPin={pinDialog}
+      onDelete={removeDialog}
+      whoLabel={whoLabel}
+      whoName={status?.ownName || status?.ownEmail || ""}
+      onClose={drawer ? () => onDrawer(false) : undefined}
+    />
+  );
+
+  // Подсказка не отправляет вопрос, а кладёт его в поле: почти всегда его
+  // хочется поправить — уточнить период или объекты.
+  function suggest(text) {
+    setQuestion(text);
+    const field = composer.current;
+    if (!field) return;
+    field.focus();
+    field.setSelectionRange(text.length, text.length);
+  }
+
+  function changeShellExtra(value) {
+    setShellExtra(value);
+    aiWriteExtra(value);
+  }
+
+  return (
+    <div className="ai-shell" style={{ "--ai-extra": `${Math.round(shellExtra)}px` }}>
+      <div className="ai-shell-side">{sidebar}</div>
+      {drawer && (
+        <div className="ai-drawer" role="presentation" onClick={() => onDrawer(false)}>
+          <div className="ai-drawer-panel" onClick={(event) => event.stopPropagation()}>{sidebar}</div>
+        </div>
+      )}
+
+      <div className="ai-main">
+        <header className="ai-main-head">
+          <h2>{activeDialog ? activeDialog.title : "Новый диалог"}</h2>
+          {status?.backend && (
+            <span className="ai-chip">
+              {status.backend === "postgres" ? "Витрина ОХД" : "Демонстрационный стенд"}
+            </span>
+          )}
+          <span className="ai-head-gap" />
+          <button
+            type="button"
+            className={showSettings ? "ai-head-button on" : "ai-head-button"}
+            onClick={() => setShowSettings((value) => !value)}
+            aria-expanded={showSettings}
+          >
+            <SlidersHorizontal size={15} /> Настройки
+          </button>
+        </header>
+
+        {showSettings && (
+          <div className="ai-settings">
+            {status?.mayImpersonate ? (
+              <label className="ui-field">
+                <span>Спросить от имени</span>
+                <select className="ui-select" value={identityKey} onChange={(event) => setIdentityKey(event.target.value)}>
+                  <option value="">{`Себя · ${status.ownRoleTitle || "администратор"}`}</option>
+                  {identities.map((item) => (
+                    <option key={aiIdentityKey(item)} value={aiIdentityKey(item)}>
+                      {item.binding ? `${item.roleTitle} — ${item.binding} (${item.stations})` : item.roleTitle}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <div className="ui-field">
+                <span>Вы спрашиваете как</span>
+                <div className="ai-own-role">
+                  <strong>{status?.ownRoleTitle}</strong>
+                  {status?.ownScopeLabel ? ` · ${status.ownScopeLabel}` : ""}
+                </div>
+              </div>
+            )}
+            <label className="ui-field ai-field-model">
+              <span>Модель</span>
+              {(status?.installedModels || []).length > 0 ? (
+                <select className="ui-select" value={model} onChange={(event) => setModel(event.target.value)}>
+                  {status.installedModels.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              ) : (
+                <div className="ai-model">
+                  <span className="ai-dot off" />
+                  Ollama не отвечает — запустите `ollama serve`
+                </div>
+              )}
+            </label>
+            <p className="ai-settings-note">
+              Вопрос переводит в SQL модель, запрос проверяет детерминированный валидатор, читает витрину исполнитель
+              только на чтение. Модель — недоверенный генератор: решение о допустимости принимает проверка.
+            </p>
+          </div>
+        )}
+
+        <div className="ai-feed">
+          {items.length === 0 && !pending ? (
+            <div className="ai-welcome">
+              <AiOrb
+                className="ai-welcome-orb"
+                size="var(--ai-orb-size, 240px)"
+                state={composing || question.trim() ? "listening" : "idle"}
+                onTap={() => composer.current?.focus()}
+                fallback={<AiMark state="idle" />}
+              />
+              <div className="ai-welcome-text">
+                <p className="ai-welcome-title">Спросите о ваших объектах</p>
+                <p className="ai-welcome-sub">
+                  Вопрос на русском языке превращается в запрос к витрине. Запрос проверяется перед выполнением,
+                  и ответ считается только по вашей области данных.
+                </p>
+              </div>
+              <div className="ai-welcome-examples">
+                {/* Три подсказки: четвёртая не помещалась в отведённую высоту
+                    и вылезала за нижний контур. */}
+                {AI_EXAMPLES.slice(0, 3).map((example) => (
+                  <button
+                    type="button"
+                    key={example.ask}
+                    title={example.ask}
+                    onClick={() => suggest(example.ask)}
+                  >
+                    {example.hint}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="ai-turns">
+              {items.map((item) => (
+                <AiMessage
+                  key={item.id}
+                  item={item}
+                  maySeeSql={maySeeSql}
+                  copied={copied === item.id}
+                  fresh={freshIds.current.has(item.id)}
+                  onSettled={() => freshIds.current.delete(item.id)}
+                  onRate={setRatingFor}
+                  onRepeat={(text) => ask(text)}
+                  onCopy={copyAnswer}
+                />
+              ))}
+              {pending && (
+                <motion.article
+                  className="ai-turn"
+                  initial={reducedMotion ? false : { opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.22, ease: AI_EASE }}
+                >
+                  <div className="ai-ask-row"><p className="ai-question">{pending}</p></div>
+                  <div className="ai-reply"><AiThinking pending stages={liveStages} /></div>
+                </motion.article>
+              )}
+              <div ref={feedEnd} />
+            </div>
+          )}
+        </div>
+
+        {error && (
+          <div className="ai-error" role="alert">
+            <AlertTriangle size={15} /> {error}
+          </div>
+        )}
+
+        <div className="ai-composer-wrap">
+          {items.length > 0 && !pending && (
+            <div className="ai-chips">
+              {AI_EXAMPLES.slice(0, 3).map((example) => (
+                <button
+                  type="button"
+                  key={example.ask}
+                  title={example.ask}
+                  onClick={() => suggest(example.ask)}
+                >
+                  {example.hint}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="ai-composer">
+            <label>
+              <span className="visually-hidden">Вопрос к витрине данных</span>
+              <textarea
+                ref={composer}
+                rows={2}
+                value={question}
+                placeholder="Спросите о показателях ваших объектов"
+                onChange={(event) => setQuestion(event.target.value)}
+                onFocus={() => setComposing(true)}
+                onBlur={() => setComposing(false)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    ask();
+                  }
+                }}
+              />
+            </label>
+            <span className="ai-composer-hint">Enter — отправить, Shift+Enter — перенос строки</span>
+            <button
+              type="button"
+              className="ai-send"
+              onClick={() => ask()}
+              disabled={Boolean(pending) || !question.trim()}
+              aria-label="Отправить вопрос"
+            >
+              <Send size={17} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <AiResizeHandle extra={shellExtra} onChange={changeShellExtra} />
+
+      {ratingFor && (
+        <AiRatingDialog
+          item={ratingFor}
+          requiredUpTo={requiredUpTo}
+          onClose={() => setRatingFor(null)}
+          onSave={(rating, comment) => saveRating(ratingFor, rating, comment)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Свод аналитики: настраиваемая панель показателей витрины.
+// Состав плиток хранится в профиле, поэтому у каждой роли он свой, а период
+// считается как в справках: неполный месяц сравнивается с тем же отрезком
+// прошлого года, а не с полным месяцем — иначе падение выходит мнимым.
+// ---------------------------------------------------------------------------
+const SUMMARY_MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+  "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+
+function useSummaryCatalog() {
+  const [catalog, setCatalog] = useState(undefined);
+  useEffect(() => {
+    let alive = true;
+    fetchJson("/api/summary/catalog")
+      .then((data) => {
+        if (alive) setCatalog(data && Array.isArray(data.available) ? data : null);
+      })
+      .catch(() => {
+        if (alive) setCatalog(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return catalog;
+}
+
+function summaryPeriodLabel(value) {
+  const month = Number(value.slice(5, 7));
+  return `${SUMMARY_MONTHS[month - 1] || value} ${value.slice(0, 4)}`;
+}
+
+// Витрина залита не сплошным периодом, поэтому список месяцев берём из неё.
+// Пока он не пришёл — показываем календарный год назад от последней даты.
+function summaryPeriodOptions(latestDate, known) {
+  if (known?.length) return known.map((value) => [value, summaryPeriodLabel(value)]);
+  const anchor = latestDate ? new Date(`${latestDate}T00:00:00`) : new Date();
+  const base = Number.isNaN(anchor.getTime()) ? new Date() : anchor;
+  const options = [];
+  for (let back = 0; back < 13; back += 1) {
+    const month = new Date(base.getFullYear(), base.getMonth() - back, 1);
+    const value = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
+    options.push([value, summaryPeriodLabel(value)]);
+  }
+  return options;
+}
+
+// Крупные суммы в плитке режутся до «5,29 млрд»: точное значение остаётся
+// в подсказке, а плитка читается с одного взгляда и на телефоне.
+function summaryFormatValue(value, decimals) {
+  if (value === null || value === undefined) return { text: "—", exact: "" };
+  const exact = value.toLocaleString("ru-RU", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+  const magnitude = Math.abs(value);
+  if (decimals <= 1 && magnitude >= 1_000_000) {
+    const [divider, suffix] = magnitude >= 1_000_000_000 ? [1_000_000_000, " млрд"] : [1_000_000, " млн"];
+    const short = (value / divider).toLocaleString("ru-RU", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    return { text: short + suffix, exact };
+  }
+  return { text: exact, exact: "" };
+}
+
+function summaryDelta(tile) {
+  if (tile.delta === null || tile.delta === undefined) return null;
+  const sign = tile.delta > 0 ? "+" : tile.delta < 0 ? "−" : "";
+  const digits = tile.deltaDecimals ?? 1;
+  const size = Math.abs(tile.delta).toLocaleString("ru-RU", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  const text = `${sign}${size} ${tile.deltaUnit || "%"}`;
+  if (tile.delta === 0) return { text, tone: "flat" };
+  const better = tile.lowerIsBetter ? tile.delta < 0 : tile.delta > 0;
+  return { text, tone: better ? "up" : "down" };
+}
+
+function SummaryTile({ tile }) {
+  const value = summaryFormatValue(tile.value, tile.decimals);
+  const previous = summaryFormatValue(tile.previous, tile.decimals);
+  const delta = summaryDelta(tile);
+  return (
+    <article className="summary-tile">
+      <p className="summary-tile-title" title={tile.hint || tile.title}>
+        {tile.title}
+        {tile.hint ? <span className="summary-tile-mark" aria-hidden="true">?</span> : null}
+      </p>
+      <p className="summary-tile-value" title={value.exact ? `${value.exact} ${tile.unit}` : ""}>
+        <strong>{value.text}</strong>
+        <span className="summary-tile-unit">{tile.unit}</span>
+      </p>
+      <p className="summary-tile-foot">
+        {delta ? <span className={`summary-delta ${delta.tone}`}>{delta.text}</span> : <span className="summary-delta flat">нет сравнения</span>}
+        <span className="summary-tile-prev">год назад {previous.text || "—"}</span>
+      </p>
+    </article>
+  );
+}
+
+function SummaryEditor({ catalog, selected, busy, error, onSave, onReset, onCancel }) {
+  const [draft, setDraft] = useState(selected);
+  const maxTiles = catalog.maxTiles || 8;
+  const minTiles = catalog.minTiles || 4;
+
+  const groups = [];
+  for (const tile of catalog.available) {
+    const found = groups.find((item) => item[0] === tile.group);
+    if (found) found[1].push(tile);
+    else groups.push([tile.group, [tile]]);
+  }
+
+  function toggle(code) {
+    setDraft((current) => {
+      if (current.includes(code)) return current.filter((item) => item !== code);
+      if (current.length >= maxTiles) return current;
+      return [...current, code];
+    });
+  }
+
+  const tooFew = draft.length < minTiles;
+  return (
+    <div className="summary-editor">
+      <div className="summary-editor-head">
+        <strong>Состав свода</strong>
+        <span className={tooFew ? "summary-editor-count warn" : "summary-editor-count"}>
+          Выбрано {draft.length} из {maxTiles} · минимум {minTiles}
+        </span>
+      </div>
+      <p className="summary-editor-note">
+        В списке только те показатели, которые витрина умеет посчитать. Остальные появятся,
+        когда в витрине будут нужные столбцы.
+      </p>
+      {groups.map(([group, tiles]) => (
+        <fieldset className="summary-group" key={group}>
+          <legend>{group}</legend>
+          <div className="summary-group-items">
+            {tiles.map((tile) => {
+              const checked = draft.includes(tile.code);
+              const locked = !checked && draft.length >= maxTiles;
+              return (
+                <label
+                  key={tile.code}
+                  className={`summary-option${checked ? " checked" : ""}${locked ? " locked" : ""}`}
+                  title={tile.hint || ""}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={locked || busy}
+                    onChange={() => toggle(tile.code)}
+                  />
+                  <span className="summary-option-title">{tile.title}</span>
+                  <span className="summary-option-unit">{tile.unit}</span>
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
+      ))}
+      {error ? <p className="summary-editor-error">{error}</p> : null}
+      <div className="summary-editor-actions">
+        <button type="button" className="ui-button" disabled={tooFew || busy} onClick={() => onSave(draft)}>
+          {busy ? "Сохраняю…" : "Сохранить"}
+        </button>
+        <button type="button" className="ui-button ghost" disabled={busy} onClick={onCancel}>
+          Отмена
+        </button>
+        <button type="button" className="ui-link-button" disabled={busy} onClick={onReset}>
+          Вернуть состав по умолчанию
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsSummary({ catalog }) {
+  const [period, setPeriod] = useState(() => currentMonthPeriod());
+  const [state, setState] = useState({ status: "idle", data: null, error: "" });
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [revision, setRevision] = useState(0);
+  const [knownPeriods, setKnownPeriods] = useState([]);
+  // Витрина обычно отстаёт от календаря. Один раз подводим период к
+  // последнему месяцу, который в ней есть, иначе свод открывается пустым.
+  const periodAligned = useRef(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState((current) => ({ status: "loading", data: current.data, error: "" }));
+    fetchJson(`/api/summary?period=${period}`, controller.signal)
+      .then((data) => {
+        if (!data) throw new Error("Свод недоступен");
+        const latestPeriod = (data.latestDate || "").slice(0, 7);
+        if (!periodAligned.current && latestPeriod && latestPeriod < period) {
+          periodAligned.current = true;
+          setPeriod(latestPeriod);
+          return;
+        }
+        periodAligned.current = true;
+        setState({ status: "ready", data, error: "" });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setState({ status: "error", data: null, error: error.message || "Не удалось получить свод" });
+      });
+    return () => controller.abort();
+  }, [period, revision]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchJson("/api/summary/periods", controller.signal)
+      .then((data) => {
+        const list = Array.isArray(data?.periods) ? data.periods : [];
+        setKnownPeriods(list);
+        if (list.length && !list.includes(period)) setPeriod(list[0]);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+    // Список месяцев витрины запрашивается один раз за открытие раздела.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function persist(url, body) {
+    setSaving(true);
+    setSaveError("");
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: body ? JSON.stringify(body) : "{}",
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || `Ошибка ${response.status}`);
+      }
+      setEditing(false);
+      setRevision((value) => value + 1);
+    } catch (error) {
+      setSaveError(error.message || "Не удалось сохранить состав");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const data = state.data;
+  const options = summaryPeriodOptions(data?.latestDate, knownPeriods);
+  const emptyPeriod = Boolean(data?.tiles?.length) && data.tiles.every((tile) => tile.value === null || tile.value === undefined);
+  const selected = data?.selected || catalog.selected || [];
+
+  return (
+    <div className="summary-pane">
+      <div className="summary-head">
+        <div className="summary-head-text">
+          <p className="summary-period">{data?.periodLabel || "Период загружается…"}</p>
+          <p className="summary-note">
+            {data ? `Сравнение с ${data.comparedTo}` : "Сравнение год к году по тому же отрезку дней"}
+            {data?.scopeLabel ? ` · ${data.scopeLabel}` : ""}
+          </p>
+        </div>
+        <div className="summary-controls">
+          <label className="ui-field summary-period-field">
+            <span>Период</span>
+            <select className="ui-select" value={period} onChange={(event) => setPeriod(event.target.value)}>
+              {options.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+              {options.some(([value]) => value === period) ? null : <option value={period}>{period}</option>}
+            </select>
+          </label>
+          <button type="button" className="ui-button ghost summary-settings" onClick={() => setEditing((value) => !value)}>
+            {editing ? "Свернуть настройку" : "Настроить состав"}
+          </button>
+        </div>
+      </div>
+
+      {editing ? (
+        <SummaryEditor
+          key={selected.join(",")}
+          catalog={catalog}
+          selected={selected}
+          busy={saving}
+          error={saveError}
+          onSave={(tiles) => persist("/api/summary/tiles", { tiles })}
+          onReset={() => persist("/api/summary/reset", null)}
+          onCancel={() => { setSaveError(""); setEditing(false); }}
+        />
+      ) : null}
+
+      {state.status === "error" ? (
+        <p className="summary-message error">{state.error}</p>
+      ) : data?.error ? (
+        <p className="summary-message error">{data.error}</p>
+      ) : null}
+
+      {emptyPeriod ? (
+        <p className="summary-message">
+          За этот месяц в витрине нет данных. Выберите другой период — в списке те месяцы,
+          которые витрина уже содержит.
+        </p>
+      ) : null}
+
+      {data?.tiles?.length ? (
+        <div className={state.status === "loading" ? "summary-grid loading" : "summary-grid"}>
+          {data.tiles.map((tile) => <SummaryTile key={tile.code} tile={tile} />)}
+        </div>
+      ) : state.status === "loading" ? (
+        <p className="summary-message">Считаю показатели по витрине…</p>
+      ) : null}
+
+      {data?.source ? (
+        <p className="summary-source">
+          Источник: витрина {data.source === "postgres" ? "ОХД" : "демонстрационного стенда"} ·
+          значения считаются одним запросом с той же проверкой области данных, что и у ИИ-аналитика.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function AnalyticsLocalOverview({ stations, totalStations, onFilter, onOpenList }) {
   const total = stations.length;
-  const active = stations.filter((station) => station.flags.active).length;
+  const active = stations.filter((station) => station.status === "Действующая").length;
   const quality = stations.filter((station) => station.qualityIssues.length > 0).length;
   const shop = stations.filter((station) => station.flags.hasShop).length;
   const cafe = stations.filter((station) => station.flags.hasCafe).length;
@@ -2809,7 +5911,7 @@ function AnalyticsLocalOverview({ stations, totalStations, onFilter, onOpenList 
             <span>Есть замечания</span>
             <strong>{asInt(quality)}</strong>
           </button>
-          <p>Объекты без координат скрыты из рабочего среза, чтобы карта, маршруты и выездной сценарий оставались чистыми.</p>
+          <p>Объекты без координат учитываются в аналитике и реестре. На карте отображаются только АЗС с указанными координатами.</p>
         </div>
       </div>
     </>
@@ -3397,9 +6499,16 @@ const Metric = React.memo(function Metric({ label, value, tone = "" }) {
   );
 });
 
-function FilterRail({ filters, options, setFilter }) {
+function FilterRail({ filters, options, setFilter, fuelAvailability }) {
+  const fuelOptions = fuelAvailability?.options?.fuels || [];
   return (
     <div className="filter-rail">
+      <ToggleChip
+        label="Избранное"
+        Icon={Heart}
+        active={Boolean(filters.favorites)}
+        onChange={(value) => setFilter("favorites", value)}
+      />
       <SelectChip label="НПО" value={filters.npo} options={options.npo} onChange={(value) => setFilter("npo", value)} />
       <SelectChip label="Регион" value={filters.subject} options={options.subject} onChange={(value) => setFilter("subject", value)} />
       <SelectChip label="Статус" value={filters.status} options={options.status} onChange={(value) => setFilter("status", value)} />
@@ -3410,7 +6519,153 @@ function FilterRail({ filters, options, setFilter }) {
         ["toilet", "Санузел"],
         ["landmark", "Знаковый"],
       ]} onChange={(value) => setFilter("service", value)} />
+      {fuelOptions.length > 0 && (
+        <MultiSelectChip
+          label="Топливо"
+          values={filters.fuel}
+          options={fuelOptions.map((option) => [option.canonicalFuel, fuelDisplayName(option.canonicalFuel)])}
+          onChange={(values) => setFilter("fuel", values)}
+        />
+      )}
     </div>
+  );
+}
+
+function FuelFilterNotice({ availability, onClear }) {
+  if (!availability) return null;
+  const { matches, options, failed, pending, ready } = availability;
+  if (!availability.selection.length) return null;
+
+  if (failed) {
+    return (
+      <div className="fuel-filter-notice warning" role="alert">
+        <span>{matches.error}</span>
+        <button type="button" onClick={onClear}>Снять фильтр</button>
+      </div>
+    );
+  }
+  if (pending) {
+    return (
+      <div className="fuel-filter-notice" role="status">
+        <span>Подбираем АЗС…</span>
+      </div>
+    );
+  }
+  if (!ready) return null;
+
+  const minPercent = numericOrNull(matches.meta?.minPercent) ?? numericOrNull(options.minPercent) ?? 5;
+  return (
+    <div className={`fuel-filter-notice ${matches.meta?.stale ? "warning" : ""}`} role="status">
+      <span>
+        {`Показаны АЗС, где запас выбранного топлива больше ${formatFuelPercent(minPercent)} от доступного к отпуску.`}
+        {matches.meta?.stale ? " Снимок остатков давно не обновлялся." : ""}
+      </span>
+    </div>
+  );
+}
+
+// Multi-value sibling of SelectChip: the registry fuel filter needs several fuels at once,
+// which a native <select> cannot do well on mobile. The menu is rendered through a portal
+// because .filter-rail scrolls horizontally and would clip an absolutely positioned popup.
+const MULTI_CHIP_MENU_WIDTH = 200;
+
+function MultiSelectChip({ label, values, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState(null);
+  const buttonRef = useRef(null);
+  const menuRef = useRef(null);
+  const selected = Array.isArray(values) ? values : [];
+  const normalized = options.map((option) => (Array.isArray(option) ? option : [option, option]));
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    function place() {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const maxLeft = Math.max(8, window.innerWidth - MULTI_CHIP_MENU_WIDTH - 8);
+      setPosition({ top: rect.bottom + 6, left: Math.min(Math.max(8, rect.left), maxLeft) });
+    }
+    function handlePointer(event) {
+      if (buttonRef.current?.contains(event.target)) return;
+      if (menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    }
+    function handleKey(event) {
+      if (event.key === "Escape") setOpen(false);
+    }
+
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    document.addEventListener("pointerdown", handlePointer);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+      document.removeEventListener("pointerdown", handlePointer);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [open]);
+
+  function toggle(id) {
+    onChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
+  }
+
+  const caption = selected.length
+    ? selected.map((id) => normalized.find(([optionId]) => optionId === id)?.[1] || id).join(", ")
+    : label;
+
+  return (
+    <div className={`multi-chip ${selected.length ? "filled" : ""}`}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="multi-chip-button"
+        aria-expanded={open}
+        aria-label={selected.length ? `${label}: ${caption}` : label}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>{caption}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open && position && createPortal(
+        <div
+          ref={menuRef}
+          className="multi-chip-menu"
+          role="group"
+          aria-label={label}
+          style={{ top: position.top, left: position.left, width: MULTI_CHIP_MENU_WIDTH }}
+        >
+          {normalized.map(([id, title]) => (
+            <label className="multi-chip-option" key={id}>
+              <input type="checkbox" checked={selected.includes(id)} onChange={() => toggle(id)} />
+              <span>{title}</span>
+            </label>
+          ))}
+          {selected.length > 0 && (
+            <button type="button" className="multi-chip-clear" onClick={() => onChange([])}>
+              Сбросить
+            </button>
+          )}
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
+function ToggleChip({ label, Icon, active, onChange }) {
+  return (
+    <button
+      type="button"
+      className={`toggle-chip ${active ? "on" : ""}`}
+      aria-pressed={active}
+      onClick={() => onChange(!active)}
+    >
+      {Icon ? <Icon size={14} fill={active ? "currentColor" : "none"} /> : null}
+      <span>{label}</span>
+    </button>
   );
 }
 
@@ -3432,7 +6687,7 @@ function SelectChip({ label, value, options, onChange }) {
   );
 }
 
-function StationList({ stations, selectedId, favorites, density = "comfortable", onSelect, onFavorite, onScroll, loading = false }) {
+function StationList({ stations, selectedId, favorites, density = "comfortable", onSelect, onFavorite, onScroll, loading = false, favoritesOnly = false }) {
   const reduceMotion = useReducedMotion();
 
   if (!stations.length && loading) {
@@ -3447,11 +6702,24 @@ function StationList({ stations, selectedId, favorites, density = "comfortable",
   }
 
   if (!stations.length) {
+    if (favoritesOnly && !favorites.length) {
+      return (
+        <div className="empty">
+          <Heart size={24} />
+          <strong>В избранном пусто</strong>
+          <span>Откройте АЗС и нажмите на сердечко — она появится в этом перечне.</span>
+        </div>
+      );
+    }
     return (
       <div className="empty">
         <Filter size={24} />
         <strong>Нет объектов</strong>
-        <span>Попробуйте изменить поиск или фильтры.</span>
+        <span>
+          {favoritesOnly
+            ? "Среди избранных АЗС нет подходящих под остальные фильтры."
+            : "Попробуйте изменить поиск или фильтры."}
+        </span>
       </div>
     );
   }
@@ -3894,7 +7162,7 @@ function MapStationPreview({ station, onOpen, onDismiss }) {
         </div>
       </div>
       <button className="map-preview-open action-button primary" type="button" onClick={onOpen}>
-        Открыть анкету <ChevronRight size={16} />
+        Подробнее <ChevronRight size={16} />
       </button>
     </motion.div>
   );
@@ -4908,7 +8176,7 @@ function Contact({ title, name, phone }) {
   );
 }
 
-function FilterSheet({ filters, options, setFilter, onClose, onReset }) {
+function FilterSheet({ filters, options, setFilter, onClose, onReset, fuelAvailability }) {
   const [touchStart, setTouchStart] = useState(null);
 
   function handleTouchEnd(event) {
@@ -4936,10 +8204,11 @@ function FilterSheet({ filters, options, setFilter, onClose, onReset }) {
             <X size={19} />
           </button>
         </div>
-        <FilterRail filters={filters} options={options} setFilter={setFilter} />
+        <FilterRail filters={filters} options={options} setFilter={setFilter} fuelAvailability={fuelAvailability} />
         <SelectChip label="Качество" value={filters.quality} options={[
           ["issues", "Есть замечания"],
         ]} onChange={(value) => setFilter("quality", value)} />
+        <FuelFilterNotice availability={fuelAvailability} onClear={() => setFilter("fuel", [])} />
         <button className="reset-button" onClick={onReset} type="button">Сбросить фильтры</button>
       </div>
     </div>

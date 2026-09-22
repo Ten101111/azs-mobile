@@ -63,3 +63,45 @@ CREATE TABLE auth_events (
 
 CREATE INDEX idx_auth_events_email ON auth_events(email);
 CREATE INDEX idx_auth_events_created ON auth_events(created_at);
+
+-- Usage analytics: one row per visit (continuous activity window per user).
+-- A visit is extended by heartbeats/events and closed after
+-- ANALYTICS_VISIT_GAP_SECONDS (default 30 min) of inactivity.
+CREATE TABLE visits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    started_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL DEFAULT 0,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    ip TEXT NOT NULL DEFAULT '',
+    device_type TEXT NOT NULL DEFAULT '',
+    os TEXT NOT NULL DEFAULT '',
+    browser TEXT NOT NULL DEFAULT '',
+    screen_size TEXT NOT NULL DEFAULT '',
+    pwa INTEGER NOT NULL DEFAULT 0,
+    language TEXT NOT NULL DEFAULT '',
+    timezone TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_visits_user ON visits(user_id);
+CREATE INDEX idx_visits_started ON visits(started_at);
+CREATE INDEX idx_visits_open ON visits(user_id, ended_at);
+
+-- In-app events: screen views and key actions (station_open, filter, ...).
+CREATE TABLE usage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    visit_id INTEGER NOT NULL DEFAULT 0,
+    event TEXT NOT NULL,
+    screen TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_usage_events_user ON usage_events(user_id);
+CREATE INDEX idx_usage_events_created ON usage_events(created_at);
+CREATE INDEX idx_usage_events_event ON usage_events(event);

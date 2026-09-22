@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import urllib.error
 import urllib.request
@@ -31,6 +32,7 @@ except ImportError as exc:  # pragma: no cover - dependency guidance
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SQL_PATH = PROJECT_DIR / "backend" / "sql" / "dwh_kpi_daily_export.sql"
 DEFAULT_MIN_DATE = "2024-01-01"
+LOCAL_KPI_DB_PATH = PROJECT_DIR / "data" / "kpi_metrics.sqlite3"
 
 
 def load_env() -> None:
@@ -82,6 +84,11 @@ def iter_periods(start_period: str, end_period: str) -> list[str]:
 
 def env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
+
+
+def local_kpi_db_path() -> Path:
+    configured = env("KPI_LOCAL_DB_PATH")
+    return Path(configured) if configured else LOCAL_KPI_DB_PATH
 
 
 def require_env(names: list[str]) -> dict[str, str]:
@@ -182,6 +189,86 @@ def normalize_records(rows: list[dict]) -> list[dict]:
         except (TypeError, ValueError) as exc:
             raise SystemExit(f"Cannot normalize DWH row #{index}: {exc}. Row keys: {sorted(row.keys())}") from exc
     return normalized
+
+
+def init_local_kpi_db(db_path: Path | None = None) -> None:
+    db_path = db_path or local_kpi_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS station_kpi_daily (
+                metric_date TEXT NOT NULL CHECK (length(metric_date) = 10),
+                period TEXT NOT NULL CHECK (length(period) = 7),
+                ksss TEXT NOT NULL,
+                revenue REAL NOT NULL DEFAULT 0,
+                revenue_ntu REAL,
+                fuel_volume REAL NOT NULL DEFAULT 0,
+                checks REAL NOT NULL DEFAULT 0,
+                checks_ntu REAL,
+                avg_check REAL,
+                updated_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (metric_date, ksss)
+            )
+            """
+        )
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(station_kpi_daily)").fetchall()}
+        for column in ("revenue_ntu", "checks_ntu", "avg_check"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE station_kpi_daily ADD COLUMN {column} REAL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_station_kpi_daily_period ON station_kpi_daily(period)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_station_kpi_daily_ksss_period ON station_kpi_daily(ksss, period)")
+
+
+def mirror_period_to_local_db(
+    period: str,
+    records: list[dict],
+    db_path: Path | None = None,
+    replace_period: bool = True,
+    source: str = "dwh-sync",
+) -> None:
+    """Mirror a successfully uploaded KPI period into the local application database."""
+    db_path = db_path or local_kpi_db_path()
+    init_local_kpi_db(db_path)
+    rows = [
+        (
+            record["date"],
+            period,
+            record["ksss"],
+            record["revenue"],
+            record.get("revenueNtu"),
+            record["fuelVolume"],
+            record["checks"],
+            record.get("checksNtu"),
+            record.get("avgCheck"),
+            record["updatedAt"],
+            source,
+        )
+        for record in records
+    ]
+    with sqlite3.connect(db_path) as conn:
+        if replace_period:
+            conn.execute("DELETE FROM station_kpi_daily WHERE period = ?", (period,))
+        conn.executemany(
+            """
+            INSERT INTO station_kpi_daily (
+                metric_date, period, ksss, revenue, revenue_ntu, fuel_volume,
+                checks, checks_ntu, avg_check, updated_at, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(metric_date, ksss) DO UPDATE SET
+                period = excluded.period,
+                revenue = excluded.revenue,
+                revenue_ntu = excluded.revenue_ntu,
+                fuel_volume = excluded.fuel_volume,
+                checks = excluded.checks,
+                checks_ntu = excluded.checks_ntu,
+                avg_check = excluded.avg_check,
+                updated_at = excluded.updated_at,
+                source = excluded.source
+            """,
+            rows,
+        )
 
 
 def fetch_dwh_rows(sql: str, period: str, min_date: date, limit: int | None) -> list[dict]:
@@ -285,8 +372,14 @@ def main() -> int:
             replace_period=not args.no_replace_period,
             chunk_size=args.chunk_size,
         )
+        mirror_period_to_local_db(
+            period=period,
+            records=records,
+            replace_period=not args.no_replace_period,
+            source=env("KPI_IMPORT_SOURCE", "dwh-sync"),
+        )
         total_imported += imported
-        print(f"Imported {imported} rows for {period} to {args.api_url}")
+        print(f"Imported {imported} rows for {period} to {args.api_url} and mirrored them locally")
 
     if args.dry_run:
         print("Dry run: import API was not called.")

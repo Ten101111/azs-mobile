@@ -6,11 +6,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.fuel_stock import (
+    USABLE_PERCENT_SQL,
     FuelStockImportError,
     FuelStockImportPayload,
     aggregate_tank_rows,
+    available_min_percent,
     business_low_for_percent,
+    calculated_fill_percent,
+    calculated_usable_percent,
+    fuel_stock_connection,
     get_station_fuel_stock,
+    list_fuel_stock_options,
+    list_stations_with_available_fuel,
     normalize_fuel_name,
     replace_fuel_stock_snapshot,
     status_for_percent,
@@ -276,6 +283,189 @@ class FuelSnapshotStoreTests(unittest.TestCase):
             with self.assertRaises(FuelStockImportError) as error:
                 replace_fuel_stock_snapshot(payload, db_path=Path(temp_dir) / "fuel.sqlite3")
         self.assertEqual(error.exception.status_code, 422)
+
+
+def availability_record(
+    ksss: str,
+    canonical_fuel: str = "АБ95",
+    capacity: float = 20000,
+    dead_rest: float = 2000,
+    available: float = 900,
+) -> dict:
+    source_name = {"АБ95": "Бензин АИ-95-К5", "ДТ": "Дизельное топливо"}[canonical_fuel]
+    return {
+        "ksss": ksss,
+        "canonicalFuel": canonical_fuel,
+        "capacityLiters": capacity,
+        "volumeLiters": available + dead_rest,
+        "deadRestLiters": dead_rest,
+        "availableLiters": available,
+        "fillPercent": min(100.0, available / capacity * 100),
+        "tanksCount": 1,
+        "sourceFuelNames": [source_name],
+        "sourceFuelNameCounts": {source_name: 1},
+    }
+
+
+class FuelAvailabilityFilterTests(unittest.TestCase):
+    """The filter measures available fuel against the dispensable capacity.
+
+    Dispensable capacity is capacity minus the dead rest, so the percentage differs
+    from the stored fill_percent, which uses the whole tank as its denominator.
+    """
+
+    def test_percent_uses_dispensable_capacity_not_full_tank(self):
+        raw, capped = calculated_usable_percent(available=900, capacity=20000, dead_rest=2000)
+        self.assertAlmostEqual(raw, 5.0)
+        self.assertAlmostEqual(capped, 5.0)
+        # The same numbers read lower against the full tank.
+        self.assertAlmostEqual(calculated_fill_percent(900, 20000)[1], 4.5)
+
+    def test_percent_is_zero_when_dead_rest_swallows_the_tank(self):
+        self.assertEqual(calculated_usable_percent(available=0, capacity=2000, dead_rest=2000), (0.0, 0.0))
+        self.assertEqual(calculated_usable_percent(available=0, capacity=1000, dead_rest=2000), (0.0, 0.0))
+
+    def _seed(self, db_path: Path, records: list[dict]) -> None:
+        payload = FuelStockImportPayload(
+            source="test",
+            accountDate="2026-07-13",
+            snapshotAt="2026-07-13T08:31:00+00:00",
+            records=records,
+        )
+        replace_fuel_stock_snapshot(payload, db_path=db_path)
+
+    def test_selects_stations_at_or_above_the_threshold(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            self._seed(
+                db_path,
+                [
+                    availability_record("1001", available=900),  # exactly 5.0%
+                    availability_record("1002", available=899),  # 4.99%
+                    availability_record("1003", available=9000),  # 50%
+                    availability_record("1004", available=0),  # on dead stock
+                    availability_record("1005", canonical_fuel="ДТ", available=9000),
+                ],
+            )
+
+            result = list_stations_with_available_fuel(["АБ95"], 5, db_path=db_path)
+
+            self.assertEqual(result.ksss, ["1001", "1003"])
+            self.assertEqual(result.matched, 2)
+            self.assertEqual(result.stations, 5)
+            self.assertEqual(result.minPercent, 5)
+            self.assertEqual(result.canonicalFuels, ["АБ95"])
+
+    def test_several_fuels_require_all_of_them_at_the_same_station(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            self._seed(
+                db_path,
+                [
+                    availability_record("1001", available=9000),  # АБ95 only
+                    availability_record("1002", canonical_fuel="ДТ", available=9000),  # ДТ only
+                    availability_record("1003", available=9000),
+                    availability_record("1003", canonical_fuel="ДТ", available=9000),  # both
+                    availability_record("1004", available=9000),
+                    availability_record("1004", canonical_fuel="ДТ", available=0),  # ДТ on dead stock
+                ],
+            )
+
+            both = list_stations_with_available_fuel(["АБ95", "ДТ"], 5, db_path=db_path)
+            single = list_stations_with_available_fuel(["АБ95"], 5, db_path=db_path)
+
+            self.assertEqual(both.ksss, ["1003"])
+            self.assertEqual(both.canonicalFuels, ["АБ95", "ДТ"])
+            # Adding a fuel narrows the result, never widens it.
+            self.assertTrue(set(both.ksss).issubset(set(single.ksss)))
+
+    def test_ignores_duplicate_and_blank_fuel_arguments(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            self._seed(db_path, [availability_record("1001", available=9000)])
+
+            result = list_stations_with_available_fuel(["АБ95", " АБ95 ", ""], 5, db_path=db_path)
+
+            self.assertEqual(result.canonicalFuels, ["АБ95"])
+            self.assertEqual(result.ksss, ["1001"])
+
+    def test_rejects_an_empty_fuel_selection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            self._seed(db_path, [availability_record("1001")])
+
+            with self.assertRaises(FuelStockImportError) as error:
+                list_stations_with_available_fuel([], 5, db_path=db_path)
+
+        self.assertEqual(error.exception.status_code, 422)
+
+    def test_sql_filter_matches_the_python_formula_row_by_row(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            records = [
+                availability_record("1001", available=900),
+                availability_record("1002", available=899),
+                availability_record("1003", available=9000),
+                availability_record("1004", available=0),
+                availability_record("1005", capacity=15000, dead_rest=14000, available=100),
+                availability_record("1006", canonical_fuel="ДТ", capacity=30000, dead_rest=3000, available=1350),
+            ]
+            self._seed(db_path, records)
+
+            with fuel_stock_connection(db_path) as conn:
+                rows = conn.execute(
+                    f"SELECT ksss, capacity_liters, dead_rest_liters, available_liters, {USABLE_PERCENT_SQL} AS pct "
+                    "FROM fuel_stock_current"
+                ).fetchall()
+
+            self.assertEqual(len(rows), len(records))
+            for row in rows:
+                with self.subTest(ksss=row["ksss"]):
+                    expected = calculated_usable_percent(
+                        float(row["available_liters"]),
+                        float(row["capacity_liters"]),
+                        float(row["dead_rest_liters"]),
+                    )[1]
+                    self.assertAlmostEqual(float(row["pct"]), expected, places=9)
+
+    def test_lists_only_fuels_present_in_the_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            self._seed(
+                db_path,
+                [
+                    availability_record("1001", available=9000),
+                    availability_record("1002", available=0),
+                    availability_record("1003", canonical_fuel="ДТ", available=9000),
+                ],
+            )
+
+            options = list_fuel_stock_options(5, db_path=db_path)
+
+            self.assertEqual([item.canonicalFuel for item in options.fuels], ["АБ95", "ДТ"])
+            self.assertEqual(options.fuels[0].stations, 2)
+            self.assertEqual(options.fuels[0].availableStations, 1)
+            self.assertEqual(options.fuels[1].availableStations, 1)
+
+    def test_rejects_a_fuel_outside_the_canonical_list(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            self._seed(db_path, [availability_record("1001")])
+
+            with self.assertRaises(FuelStockImportError) as error:
+                list_stations_with_available_fuel(["АИ-95"], 5, db_path=db_path)
+
+        self.assertEqual(error.exception.status_code, 422)
+
+    def test_falls_back_to_the_configured_threshold(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fuel.sqlite3"
+            self._seed(db_path, [availability_record("1001", available=900)])
+
+            result = list_stations_with_available_fuel(["АБ95"], None, db_path=db_path)
+
+            self.assertEqual(result.minPercent, available_min_percent())
+            self.assertEqual(result.ksss, ["1001"])
 
 
 if __name__ == "__main__":

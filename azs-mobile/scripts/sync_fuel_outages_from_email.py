@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - local dependency guidance
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR))
 
-from backend.fuel_outages import FuelOutageImportError, rows_from_email, xlsx_from_rows  # noqa: E402
+from backend.fuel_outages import FuelOutageImportError, replace_outage_snapshot, rows_from_email, xlsx_from_rows  # noqa: E402
 
 
 DEFAULT_SENDER = "Artem.Manokhin@lukoil.com"
@@ -44,6 +44,9 @@ def load_env() -> None:
         return
     load_dotenv(PROJECT_DIR / ".env")
     load_dotenv(PROJECT_DIR / ".env.local", override=True)
+    source_env_path = env("FUEL_OUTAGE_SOURCE_ENV_PATH")
+    if source_env_path:
+        load_dotenv(Path(source_env_path), override=True)
 
 
 def env(name: str, default: str = "") -> str:
@@ -229,9 +232,24 @@ def upload_xlsx(content: bytes, message_id: str, received_at: str, from_email: s
     raise SystemExit("Fuel outage import failed")
 
 
+def store_local_snapshot(
+    content: bytes,
+    message_id: str,
+    received_at: str,
+    from_email: str,
+) -> dict[str, Any]:
+    return replace_outage_snapshot(
+        content,
+        source_message_id=message_id,
+        source_received_at=received_at,
+        source_email_from=from_email,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Import the latest fuel-outage email")
     parser.add_argument("--force", action="store_true", help="Process the latest message even if its ID was already imported")
+    parser.add_argument("--local-only", action="store_true", help="Update the local application snapshot without uploading it")
     return parser.parse_args()
 
 
@@ -273,10 +291,13 @@ def main() -> int:
         return 0
 
     xlsx_content = xlsx_from_rows(rows)
-    atomic_write(workbook_path(), xlsx_content)
     received_at = source_received_at(message)
     from_email = parseaddr(decode_mail_header(message.get("From")))[1]
-    response = upload_xlsx(xlsx_content, message_id, received_at, from_email)
+    if args.local_only:
+        response = store_local_snapshot(xlsx_content, message_id, received_at, from_email)
+    else:
+        atomic_write(workbook_path(), xlsx_content)
+        response = upload_xlsx(xlsx_content, message_id, received_at, from_email)
     write_state(
         {
             "messageId": message_id,
@@ -287,7 +308,7 @@ def main() -> int:
         }
     )
     print(
-        "Fuel outage email import complete: "
+        f"Fuel outage email {'local ' if args.local_only else ''}import complete: "
         f"rows={response.get('imported', len(rows))}, stations={response.get('stations', 0)}, "
         f"active={response.get('active', 0)}, unchanged={bool(response.get('unchanged'))}, "
         f"newer_messages_skipped={skipped_messages}",

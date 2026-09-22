@@ -41,3 +41,21 @@ Thumbs.db
 *.swo
 .idea/
 .vscode/
+
+# Виртуальное окружение Python
+.venv/
+venv/
+
+# === Стенд ИИ и любые SQLite (добавлено 22.09.2026) ===
+# ai_journal.sqlite3 — журнал диалогов пользователей; ai_reference.sqlite3 — стенд;
+# ai_catalog.dwh.json — схема витрины ОХД, пересобирается build_dwh_catalog.py из DWH_outputs.
+data/*.sqlite3
+data/*.sqlite3-*
+data/*.sqlite3.*
+data/ai_catalog.dwh.json
+
+# === Кэши и локальные настройки ===
+__pycache__/
+*.pyc
+.claude/
+src/orb/_to_delete/

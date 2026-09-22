@@ -34,6 +34,27 @@ apt-get install -y -q \
   python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python3-pip \
   sqlite3
 
+# Пилотный VPS на 1 GB RAM может убить FastAPI во время импорта или первого
+# чтения крупных локальных витрин. Swap не заменяет нормальный тариф, но
+# предотвращает внезапные OOM-рестарты.
+info "Проверяем swap..."
+if [ ! -f /swapfile ]; then
+    fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo "/swapfile none swap sw 0 0" >> /etc/fstab
+elif ! swapon --show | grep -q '^/swapfile'; then
+    swapon /swapfile
+fi
+
+# nginx may negotiate TLS before SNI selects the site config, so keep the
+# global protocol list aligned with the site-level transport setting below.
+sed -E -i \
+  -e 's/ssl_protocols[[:space:]]+TLSv1[[:space:]]+TLSv1\.1[[:space:]]+TLSv1\.2[[:space:]]+TLSv1\.3;/ssl_protocols TLSv1.2;/' \
+  -e 's/ssl_protocols[[:space:]]+TLSv1\.2[[:space:]]+TLSv1\.3;/ssl_protocols TLSv1.2;/' \
+  /etc/nginx/nginx.conf
+
 # ── Пользователь приложения ───────────────────────────────
 info "Создаём пользователя $APP_USER..."
 id "$APP_USER" &>/dev/null || useradd -r -s /bin/bash -m -d "$APP_DIR" "$APP_USER"
@@ -78,7 +99,9 @@ server {
 
     ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
+    # TLS 1.3 is disabled for now: this VPS/nginx path intermittently stalls
+    # some Apple/Yandex Browser clients during the handshake.
+    ssl_protocols       TLSv1.2;
     ssl_prefer_server_ciphers on;
     ssl_session_cache   shared:SSL:10m;
 
@@ -161,7 +184,7 @@ EnvironmentFile=${APP_DIR}/.env
 ExecStart=${APP_DIR}/venv/bin/python -m uvicorn backend.main:app \
   --host 127.0.0.1 \
   --port 8000 \
-  --workers 2 \
+  --workers 1 \
   --log-level info
 Restart=always
 RestartSec=5

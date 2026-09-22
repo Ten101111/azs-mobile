@@ -47,7 +47,7 @@ allowed_env_keys = (
     "DWH_MIN_DATE", "DWH_CONNECT_TIMEOUT_SECONDS", "DWH_STATEMENT_TIMEOUT_MS",
     "KPI_IMPORT_TOKEN", "KPI_IMPORT_URL", "KPI_IMPORT_SOURCE", "KPI_IMPORT_TIMEOUT_SECONDS",
     "KPI_IMPORT_CHUNK_SIZE", "KPI_CATCHUP_AFTER_SECONDS", "KPI_VPN_PROBE_TIMEOUT_SECONDS",
-    "KPI_SERVER_HEALTH_TIMEOUT_SECONDS",
+    "KPI_SERVER_HEALTH_TIMEOUT_SECONDS", "KPI_LOCAL_DB_PATH",
 )
 source_env = {}
 for line in (source / ".env.local").read_text(encoding="utf-8").splitlines():
@@ -61,8 +61,10 @@ missing = [key for key in required if not source_env.get(key)]
 if missing:
     raise SystemExit(f"Missing schedule environment variables: {', '.join(missing)}")
 
+runtime_env_values = {key: source_env[key] for key in allowed_env_keys if key in source_env}
+runtime_env_values["KPI_LOCAL_DB_PATH"] = str(source / "data" / "kpi_metrics.sqlite3")
 runtime_env = runtime / ".env.local"
-runtime_env.write_text("\n".join(f"{key}={source_env[key]}" for key in allowed_env_keys if key in source_env) + "\n", encoding="utf-8")
+runtime_env.write_text("\n".join(f"{key}={value}" for key, value in runtime_env_values.items()) + "\n", encoding="utf-8")
 runtime_env.chmod(0o600)
 
 sync_payload = {

@@ -10,6 +10,14 @@ ROOT = Path(__file__).resolve().parents[2]
 APP = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "cls_2026_05_AZS.xlsx"
 OUT = APP / "data" / "stations.json"
+ALLOWED_STATION_STATUSES = {
+    "Действующая",
+    "CODO",
+    "Реконструкция",
+    "Консервация",
+    "Арендованные",
+    "Временная приостановка работы",
+}
 
 
 def clean(value):
@@ -150,6 +158,8 @@ def main():
             clean(station.get(k, ""))
             for k in ["ksss", "stationNumber", "name", "status", "npo", "subject", "city", "address", "format", "regionalManager", "territoryManager"]
         ).lower()
+        if station["status"] not in ALLOWED_STATION_STATUSES:
+            continue
         stations.append(station)
 
     meta = {

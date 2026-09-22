@@ -24,6 +24,31 @@ if ! command -v ngrok &>/dev/null; then
   exit 1
 fi
 
+# ── Интерпретатор Python ───────────────────────────────────
+# Системный python3 в Homebrew — это 3.14, а зависимости бэкенда собраны
+# под 3.11–3.13 и лежат в .venv. Раньше скрипт звал просто python3 и падал
+# с «No module named uvicorn».
+#
+# Берём первый интерпретатор, который действительно умеет импортировать
+# uvicorn: проверять наличие файла мало — .venv может остаться от снесённой
+# версии Python и быть битой ссылкой.
+PY_BIN=""
+for CANDIDATE in "$APP_DIR/.venv/bin/python" python3.13 python3.12 python3.11; do
+  if "$CANDIDATE" -c "import uvicorn" 2>/dev/null; then PY_BIN="$CANDIDATE"; break; fi
+done
+
+if [ -z "$PY_BIN" ]; then
+  error "Не найден Python с установленным uvicorn."
+  echo ""
+  echo "  Окружение бэкенда собирается одной командой:"
+  echo -e "      ${BOLD}npm start${RESET}   (или: python3 scripts/run_app.py --mode pwa)"
+  echo ""
+  echo "  Она создаёт .venv на Python 3.11–3.13 и ставит зависимости."
+  echo "  После этого запускай туннель снова."
+  exit 1
+fi
+info "Python бэкенда: $PY_BIN ($("$PY_BIN" -V 2>&1))"
+
 # ── Очистка портов ─────────────────────────────────────────
 info "Освобождаем порты $FRONTEND_PORT и $BACKEND_PORT..."
 lsof -ti :$FRONTEND_PORT | xargs kill -9 2>/dev/null || true
@@ -53,7 +78,7 @@ npm run build --silent
 
 # ── Запуск бэкенда (временно без нового CORS) ──────────────
 info "Запускаем FastAPI бэкенд на порту $BACKEND_PORT..."
-python3 -m uvicorn backend.main:app \
+"$PY_BIN" -m uvicorn backend.main:app \
   --host 0.0.0.0 --port $BACKEND_PORT \
   --log-level warning > /tmp/azs-backend.log 2>&1 &
 BACKEND_PID=$!
@@ -87,7 +112,7 @@ TUNNEL_URL=""
 for i in $(seq 1 20); do
   sleep 1
   TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null \
-    | python3 -c "
+    | "$PY_BIN" -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -108,7 +133,7 @@ fi
 
 # ── Обновляем CORS в .env.local ────────────────────────────
 info "Обновляем CORS в .env.local → $TUNNEL_URL"
-python3 - "$ENV_LOCAL" "$TUNNEL_URL" << 'PYEOF'
+"$PY_BIN" - "$ENV_LOCAL" "$TUNNEL_URL" << 'PYEOF'
 import sys, re
 path, tunnel_url = sys.argv[1], sys.argv[2]
 base = "http://localhost:5173,http://localhost:5174"
@@ -128,7 +153,7 @@ PYEOF
 info "Перезапускаем бэкенд с обновлённым CORS..."
 kill $BACKEND_PID 2>/dev/null || true
 sleep 2
-python3 -m uvicorn backend.main:app \
+"$PY_BIN" -m uvicorn backend.main:app \
   --host 0.0.0.0 --port $BACKEND_PORT \
   --log-level warning > /tmp/azs-backend.log 2>&1 &
 BACKEND_PID=$!

@@ -32,6 +32,7 @@ FUEL_SORT_ORDER = {fuel: index for index, fuel in enumerate((*CANONICAL_FUELS, U
 STORED_VOLUME_UNITS_PER_TON = 1000.0
 DEFAULT_STALE_AFTER_SECONDS = 90 * 60
 DEFAULT_MIN_COVERAGE_RATIO = 0.5
+DEFAULT_AVAILABLE_MIN_PERCENT = 5.0
 ARITHMETIC_ABS_TOLERANCE = 0.1
 PERCENT_ABS_TOLERANCE = 0.1
 
@@ -109,6 +110,33 @@ class FuelStockStationResponse(BaseModel):
     items: list[FuelStockItem]
 
 
+class FuelStockSnapshotMeta(BaseModel):
+    accountDate: str
+    snapshotAt: str
+    importedAt: str
+    stale: bool
+    staleAfterSeconds: int
+
+
+class FuelStockFuelOption(BaseModel):
+    canonicalFuel: str
+    stations: int
+    availableStations: int
+
+
+class FuelStockFuelOptionsResponse(FuelStockSnapshotMeta):
+    minPercent: float
+    fuels: list[FuelStockFuelOption]
+
+
+class FuelStockAvailabilityResponse(FuelStockSnapshotMeta):
+    canonicalFuels: list[str]
+    minPercent: float
+    ksss: list[str]
+    matched: int
+    stations: int
+
+
 class FuelStockImportResponse(BaseModel):
     ok: bool
     unchanged: bool = False
@@ -153,6 +181,17 @@ def min_coverage_ratio() -> float:
         return max(0.0, min(1.0, float(os.getenv("FUEL_STOCK_MIN_COVERAGE_RATIO", str(DEFAULT_MIN_COVERAGE_RATIO)))))
     except ValueError:
         return DEFAULT_MIN_COVERAGE_RATIO
+
+
+def available_min_percent() -> float:
+    """Share of the dispensable capacity below which a fuel counts as unavailable."""
+    try:
+        value = float(os.getenv("FUEL_STOCK_AVAILABLE_MIN_PERCENT", str(DEFAULT_AVAILABLE_MIN_PERCENT)))
+    except ValueError:
+        return DEFAULT_AVAILABLE_MIN_PERCENT
+    if not math.isfinite(value):
+        return DEFAULT_AVAILABLE_MIN_PERCENT
+    return max(0.0, min(100.0, value))
 
 
 def dwh_source_timezone() -> ZoneInfo:
@@ -272,6 +311,7 @@ def init_fuel_stock_db(db_path: Optional[Path] = None) -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fuel_stock_current_ksss ON fuel_stock_current(ksss)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fuel_stock_current_imported ON fuel_stock_current(imported_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fuel_stock_current_fuel ON fuel_stock_current(canonical_fuel)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS fuel_stock_snapshot_meta (
@@ -379,6 +419,31 @@ def business_low_for_percent(percent: float) -> bool:
 def calculated_fill_percent(available: float, capacity: float) -> tuple[float, float]:
     raw_percent = (available / capacity) * 100 if capacity > 0 else 0.0
     return raw_percent, min(100.0, max(0.0, raw_percent))
+
+
+def usable_capacity_liters(capacity: float, dead_rest: float) -> float:
+    """Volume that can ever be dispensed: tank capacity minus the static dead rest."""
+    return max(capacity - dead_rest, 0.0)
+
+
+def calculated_usable_percent(available: float, capacity: float, dead_rest: float) -> tuple[float, float]:
+    """Available fuel as a share of the dispensable capacity, not of the whole tank.
+
+    Differs from calculated_fill_percent(), which measures the same numerator
+    against the full tank capacity and therefore always reads slightly lower.
+    """
+    usable = usable_capacity_liters(capacity, dead_rest)
+    raw_percent = (available / usable) * 100 if usable > 0 else 0.0
+    return raw_percent, min(100.0, max(0.0, raw_percent))
+
+
+# SQLite mirror of calculated_usable_percent() used to filter whole snapshots without
+# loading them into Python. test_fuel_stock.py asserts both agree row by row; keep in sync.
+USABLE_PERCENT_SQL = (
+    "CASE WHEN capacity_liters - dead_rest_liters > 0 "
+    "THEN min(100.0, max(0.0, available_liters * 100.0 / (capacity_liters - dead_rest_liters))) "
+    "ELSE 0.0 END"
+)
 
 
 def _is_close(actual: float, expected: float, absolute_tolerance: float) -> bool:
@@ -672,6 +737,117 @@ def get_station_fuel_stock(ksss: str, db_path: Optional[Path] = None) -> Optiona
             (fuel_item_from_row(row) for row in rows),
             key=lambda item: (FUEL_SORT_ORDER.get(item.canonicalFuel, 99), item.canonicalFuel),
         ),
+    )
+
+
+def _snapshot_meta_fields(meta: Optional[sqlite3.Row]) -> dict[str, Any]:
+    stale_seconds = stale_after_seconds()
+    snapshot_at = str(meta["snapshot_at"] or "") if meta else ""
+    return {
+        "accountDate": str(meta["account_date"] or "") if meta else "",
+        "snapshotAt": snapshot_at,
+        "importedAt": str(meta["imported_at"] or "") if meta else "",
+        "stale": is_stale(snapshot_at, stale_seconds) if snapshot_at else True,
+        "staleAfterSeconds": stale_seconds,
+    }
+
+
+def _resolve_min_percent(min_percent: Optional[float]) -> float:
+    if min_percent is None:
+        return available_min_percent()
+    value = float(min_percent)
+    if not math.isfinite(value):
+        raise FuelStockImportError(422, "minPercent must be a finite number")
+    return max(0.0, min(100.0, value))
+
+
+def list_fuel_stock_options(
+    min_percent: Optional[float] = None,
+    db_path: Optional[Path] = None,
+) -> FuelStockFuelOptionsResponse:
+    """Canonical fuels present in the current snapshot, with availability counts.
+
+    Drives the fuel filter so it never offers a fuel the snapshot cannot answer for.
+    """
+    threshold = _resolve_min_percent(min_percent)
+    init_fuel_stock_db(db_path)
+    with fuel_stock_connection(db_path) as conn:
+        meta = conn.execute("SELECT * FROM fuel_stock_snapshot_meta WHERE id = 1").fetchone()
+        rows = conn.execute(
+            f"""
+            SELECT
+                canonical_fuel,
+                COUNT(DISTINCT ksss) AS stations,
+                COUNT(DISTINCT CASE WHEN {USABLE_PERCENT_SQL} >= ? THEN ksss END) AS available_stations
+            FROM fuel_stock_current
+            GROUP BY canonical_fuel
+            """,
+            (threshold,),
+        ).fetchall()
+
+    fuels = [
+        FuelStockFuelOption(
+            canonicalFuel=str(row["canonical_fuel"]),
+            stations=int(row["stations"] or 0),
+            availableStations=int(row["available_stations"] or 0),
+        )
+        for row in rows
+    ]
+    fuels.sort(key=lambda option: (FUEL_SORT_ORDER.get(option.canonicalFuel, 99), option.canonicalFuel))
+    return FuelStockFuelOptionsResponse(
+        minPercent=round(threshold, 4),
+        fuels=fuels,
+        **_snapshot_meta_fields(meta),
+    )
+
+
+def list_stations_with_available_fuel(
+    canonical_fuels: list[str],
+    min_percent: Optional[float] = None,
+    db_path: Optional[Path] = None,
+) -> FuelStockAvailabilityResponse:
+    """KSSS codes stocking *every* requested fuel above the dispensable-capacity threshold.
+
+    Several fuels intersect rather than union: the filter answers "where can I refuel
+    all of these", so adding a fuel narrows the result instead of widening it.
+    """
+    requested = [str(fuel or "").strip() for fuel in canonical_fuels]
+    fuels = sorted({fuel for fuel in requested if fuel}, key=lambda item: (FUEL_SORT_ORDER.get(item, 99), item))
+    if not fuels:
+        raise FuelStockImportError(422, "At least one canonicalFuel is required")
+    unsupported = [fuel for fuel in fuels if fuel not in CANONICAL_FUELS]
+    if unsupported:
+        raise FuelStockImportError(422, f"Unsupported canonicalFuel: {unsupported[0]}")
+    threshold = _resolve_min_percent(min_percent)
+
+    placeholders = ", ".join("?" for _ in fuels)
+    init_fuel_stock_db(db_path)
+    with fuel_stock_connection(db_path) as conn:
+        meta = conn.execute("SELECT * FROM fuel_stock_snapshot_meta WHERE id = 1").fetchone()
+        rows = conn.execute(
+            f"""
+            SELECT ksss
+            FROM fuel_stock_current
+            WHERE canonical_fuel IN ({placeholders})
+              AND {USABLE_PERCENT_SQL} >= ?
+            GROUP BY ksss
+            HAVING COUNT(DISTINCT canonical_fuel) = ?
+            ORDER BY ksss
+            """,
+            (*fuels, threshold, len(fuels)),
+        ).fetchall()
+        totals = conn.execute(
+            "SELECT COUNT(DISTINCT ksss) AS station_count FROM fuel_stock_current"
+        ).fetchone()
+
+    matches = [str(row["ksss"]) for row in rows]
+    return FuelStockAvailabilityResponse(
+        canonicalFuels=fuels,
+        minPercent=round(threshold, 4),
+        ksss=matches,
+        matched=len(matches),
+        stations=int(totals["station_count"] or 0) if totals else 0,
+        **_snapshot_meta_fields(meta),
     )
 
 

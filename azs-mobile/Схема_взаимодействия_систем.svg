@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="scheme" width="1680" height="1010" viewBox="0 0 1680 1010" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#C00000"/>
+    </marker>
+    <marker id="arrGray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8f99a8"/>
+    </marker>
+    <marker id="arrInk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#595959"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1680" height="6" fill="#C00000"/>
+  <text x="840" y="46" text-anchor="middle" font-size="26" font-weight="bold" fill="#111111">ПРИЛОЖЕНИЕ «МОБИЛЬНЫЙ ИИ-АНАЛИТИК» — КОНЦЕПТУАЛЬНАЯ СХЕМА ВЗАИМОДЕЙСТВИЯ СИСТЕМ</text>
+
+  <!-- ================= ZONES ================= -->
+  <!-- Users zone -->
+  <rect x="25" y="80" width="300" height="800" rx="14" fill="#fafbfc" stroke="#c8d0db" stroke-width="1.5"/>
+  <text x="175" y="112" text-anchor="middle" font-size="17" font-weight="bold" fill="#595959">ПОЛЬЗОВАТЕЛИ</text>
+
+  <!-- App zone -->
+  <rect x="375" y="80" width="370" height="800" rx="14" fill="#fff6f7" stroke="#C00000" stroke-width="1.5"/>
+  <text x="560" y="112" text-anchor="middle" font-size="17" font-weight="bold" fill="#C00000">«МОБИЛЬНЫЙ ИИ-АНАЛИТИК»</text>
+
+  <!-- AI zone -->
+  <rect x="795" y="80" width="450" height="800" rx="14" fill="#f6f7f9" stroke="#595959" stroke-width="1.5"/>
+  <text x="1020" y="112" text-anchor="middle" font-size="17" font-weight="bold" fill="#111111">ИИ-КОНТУР — СЕРВЕРЫ ООО «ЛИКАРД»</text>
+  <text x="1020" y="134" text-anchor="middle" font-size="13" fill="#595959">GPU с резервированием N+1 · без доступа в интернет · внешние AI API запрещены</text>
+
+  <!-- Data zone -->
+  <rect x="1295" y="80" width="360" height="800" rx="14" fill="#fafbfc" stroke="#c8d0db" stroke-width="1.5"/>
+  <text x="1475" y="112" text-anchor="middle" font-size="17" font-weight="bold" fill="#595959">ДАННЫЕ</text>
+
+  <!-- ================= USERS ================= -->
+  <!-- Admin -->
+  <rect x="50" y="140" width="250" height="150" rx="10" fill="#ffffff" stroke="#d9d9d9" stroke-width="1.5"/>
+  <text x="175" y="170" text-anchor="middle" font-size="16" font-weight="bold" fill="#111111">Администратор</text>
+  <text x="175" y="196" text-anchor="middle" font-size="12.5" fill="#595959">управление пользователями,</text>
+  <text x="175" y="214" text-anchor="middle" font-size="12.5" fill="#595959">ролями и областями данных;</text>
+  <text x="175" y="232" text-anchor="middle" font-size="12.5" fill="#595959">конфигурация ИИ и базы знаний;</text>
+  <text x="175" y="250" text-anchor="middle" font-size="12.5" fill="#595959">журналы, статистика, выгрузки</text>
+
+  <!-- AI user -->
+  <rect x="50" y="380" width="250" height="150" rx="10" fill="#FBEDEF" stroke="#C00000" stroke-width="2"/>
+  <text x="175" y="412" text-anchor="middle" font-size="16" font-weight="bold" fill="#111111">Пользователь с ИИ</text>
+  <text x="175" y="434" text-anchor="middle" font-size="12.5" fill="#595959">РУ · ТМ · сотрудники АУП</text>
+  <text x="175" y="458" text-anchor="middle" font-size="12.5" fill="#595959">вопросы к данным в чате</text>
+  <text x="175" y="476" text-anchor="middle" font-size="12.5" fill="#595959">«Диалоги»; ответ: данные +</text>
+  <text x="175" y="494" text-anchor="middle" font-size="12.5" fill="#595959">рассуждение + рекомендации</text>
+
+  <!-- Object -->
+  <rect x="50" y="650" width="250" height="150" rx="10" fill="#ffffff" stroke="#d9d9d9" stroke-width="1.5"/>
+  <text x="175" y="682" text-anchor="middle" font-size="16" font-weight="bold" fill="#111111">Объект</text>
+  <text x="175" y="704" text-anchor="middle" font-size="12.5" fill="#595959">АЗС / кластер АЗС</text>
+  <text x="175" y="728" text-anchor="middle" font-size="12.5" fill="#595959">получает еженедельную справку:</text>
+  <text x="175" y="746" text-anchor="middle" font-size="12.5" fill="#595959">драйверы роста/падения,</text>
+  <text x="175" y="764" text-anchor="middle" font-size="12.5" fill="#595959">сравнение с кластером, действия</text>
+
+  <!-- ================= APP ================= -->
+  <rect x="400" y="150" width="320" height="120" rx="10" fill="#ffffff" stroke="#C00000" stroke-width="1.5"/>
+  <text x="560" y="180" text-anchor="middle" font-size="15" font-weight="bold" fill="#111111">Интерфейс (PWA, смартфон и десктоп)</text>
+  <text x="560" y="204" text-anchor="middle" font-size="12.5" fill="#595959">раздел «Диалоги» · еженедельные справки ·</text>
+  <text x="560" y="222" text-anchor="middle" font-size="12.5" fill="#595959">реестр и карточки АЗС · раздел «Админ»</text>
+  <text x="560" y="248" text-anchor="middle" font-size="12" font-style="italic" fill="#8f99a8">доступ по корпоративной учётной записи</text>
+
+  <rect x="400" y="300" width="320" height="110" rx="10" fill="#ffffff" stroke="#C00000" stroke-width="1.5"/>
+  <text x="560" y="330" text-anchor="middle" font-size="15" font-weight="bold" fill="#111111">Серверная часть приложения</text>
+  <text x="560" y="354" text-anchor="middle" font-size="12.5" fill="#595959">авторизация · роли · область данных пользователя</text>
+  <text x="560" y="372" text-anchor="middle" font-size="12.5" fill="#595959">маршрутизация запросов к ИИ-контуру</text>
+  <text x="560" y="390" text-anchor="middle" font-size="12.5" fill="#595959">доставка ответов автору вопроса</text>
+
+  <rect x="400" y="470" width="320" height="100" rx="10" fill="#ffffff" stroke="#C00000" stroke-width="1.5"/>
+  <text x="560" y="500" text-anchor="middle" font-size="15" font-weight="bold" fill="#111111">Генератор еженедельных справок</text>
+  <text x="560" y="524" text-anchor="middle" font-size="12.5" fill="#595959">по расписанию, для каждого объекта/кластера:</text>
+  <text x="560" y="542" text-anchor="middle" font-size="12.5" fill="#595959">драйверы → рассуждение → рекомендации</text>
+
+  <rect x="400" y="630" width="320" height="100" rx="10" fill="#ffffff" stroke="#C00000" stroke-width="1.5"/>
+  <text x="560" y="660" text-anchor="middle" font-size="15" font-weight="bold" fill="#111111">Журналирование и аудит</text>
+  <text x="560" y="684" text-anchor="middle" font-size="12.5" fill="#595959">SQL-журнал ИИ · метаданные диалогов ·</text>
+  <text x="560" y="702" text-anchor="middle" font-size="12.5" fill="#595959">события входа · действия администратора</text>
+
+  <rect x="400" y="780" width="320" height="70" rx="10" fill="#f6f7f9" stroke="#8f99a8" stroke-width="1.5"/>
+  <text x="560" y="808" text-anchor="middle" font-size="14.5" font-weight="bold" fill="#111111">Корпоративная почта (SMTP)</text>
+  <text x="560" y="830" text-anchor="middle" font-size="12" fill="#595959">коды входа · уведомления · доставка справок</text>
+
+  <!-- ================= AI CONTOUR ================= -->
+  <rect x="820" y="150" width="400" height="90" rx="10" fill="#ffffff" stroke="#595959" stroke-width="1.5"/>
+  <text x="1020" y="180" text-anchor="middle" font-size="15" font-weight="bold" fill="#111111">Оркестратор ИИ</text>
+  <text x="1020" y="202" text-anchor="middle" font-size="12.5" fill="#595959">классификация вопроса · управление шагами ·</text>
+  <text x="1020" y="220" text-anchor="middle" font-size="12.5" fill="#595959">уточняющие вопросы при неоднозначности</text>
+
+  <rect x="820" y="270" width="400" height="80" rx="10" fill="#ffffff" stroke="#595959" stroke-width="1.5"/>
+  <text x="1020" y="298" text-anchor="middle" font-size="15" font-weight="bold" fill="#111111">Модель Qwen3.8-27B</text>
+  <text x="1020" y="320" text-anchor="middle" font-size="12.5" fill="#595959">генерация SQL-запроса к витрине по её описанию</text>
+  <text x="1020" y="338" text-anchor="middle" font-size="12.5" fill="#595959">(семантический каталог показателей)</text>
+
+  <rect x="820" y="380" width="400" height="90" rx="10" fill="#FBEDEF" stroke="#C00000" stroke-width="2.5"/>
+  <text x="1020" y="408" text-anchor="middle" font-size="15" font-weight="bold" fill="#C00000">SQL-валидатор (программный код, не ИИ)</text>
+  <text x="1020" y="430" text-anchor="middle" font-size="12.5" fill="#595959">только SELECT · только таблицы витрины · лимиты ·</text>
+  <text x="1020" y="448" text-anchor="middle" font-size="12.5" fill="#595959">фильтр области данных подставляет система</text>
+
+  <rect x="820" y="500" width="400" height="80" rx="10" fill="#ffffff" stroke="#595959" stroke-width="1.5"/>
+  <text x="1020" y="528" text-anchor="middle" font-size="15" font-weight="bold" fill="#111111">Модель DeepSeek R1 (дистиллят)</text>
+  <text x="1020" y="550" text-anchor="middle" font-size="12.5" fill="#595959">рассуждение над результатом: драйверы, причины,</text>
+  <text x="1020" y="568" text-anchor="middle" font-size="12.5" fill="#595959">выводы и рекомендации в терминах бизнеса</text>
+
+  <rect x="820" y="610" width="400" height="80" rx="10" fill="#ffffff" stroke="#595959" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="1020" y="638" text-anchor="middle" font-size="15" font-weight="bold" fill="#111111">База знаний (RAG)</text>
+  <text x="1020" y="660" text-anchor="middle" font-size="12.5" fill="#595959">бизнес-правила и определения метрик · разделы</text>
+  <text x="1020" y="678" text-anchor="middle" font-size="12.5" fill="#595959">экспертов · библиотека подтверждённых разборов</text>
+
+  <rect x="820" y="720" width="400" height="70" rx="10" fill="#f6f7f9" stroke="#8f99a8" stroke-width="1.5"/>
+  <text x="1020" y="748" text-anchor="middle" font-size="14.5" font-weight="bold" fill="#111111">Сервер инференса (OpenAI-совместимый API)</text>
+  <text x="1020" y="770" text-anchor="middle" font-size="12" fill="#595959">модель = конфигурация: замена после прогона golden set</text>
+
+  <!-- ================= DATA ================= -->
+  <rect x="1320" y="170" width="310" height="230" rx="10" fill="#ffffff" stroke="#111111" stroke-width="2"/>
+  <text x="1475" y="200" text-anchor="middle" font-size="16" font-weight="bold" fill="#111111">Витрина данных</text>
+  <text x="1475" y="220" text-anchor="middle" font-size="12.5" fill="#595959">PostgreSQL · гранулярность «АЗС × день»</text>
+  <line x1="1340" y1="234" x2="1610" y2="234" stroke="#d9d9d9" stroke-width="1"/>
+  <text x="1340" y="258" font-size="12.5" fill="#111111" font-weight="bold">Витрина 1: 61 показатель</text>
+  <text x="1340" y="276" font-size="12" fill="#595959">текущий месяц по текущий день +</text>
+  <text x="1340" y="292" font-size="12" fill="#595959">аналогичный полный месяц прошлого года</text>
+  <text x="1340" y="318" font-size="12.5" fill="#111111" font-weight="bold">Витрина 2: + 82 показателя</text>
+  <text x="1340" y="336" font-size="12" fill="#595959">все исторические данные в разрезе дня</text>
+  <text x="1340" y="366" font-size="12" font-style="italic" fill="#C00000">единственный источник данных для ИИ</text>
+  <text x="1340" y="384" font-size="12" font-style="italic" fill="#C00000">(«витрина как контракт»)</text>
+
+  <rect x="1320" y="620" width="310" height="170" rx="10" fill="#f6f7f9" stroke="#8f99a8" stroke-width="1.5"/>
+  <text x="1475" y="650" text-anchor="middle" font-size="16" font-weight="bold" fill="#111111">ОХД ПАО «ЛУКОЙЛ»</text>
+  <text x="1475" y="672" text-anchor="middle" font-size="12.5" fill="#595959">объединённое хранилище данных (PostgreSQL)</text>
+  <text x="1475" y="700" text-anchor="middle" font-size="12.5" fill="#595959">чеки, транзакции, клиенты, справочники —</text>
+  <text x="1475" y="718" text-anchor="middle" font-size="12.5" fill="#595959">не покидают корпоративный периметр</text>
+  <text x="1475" y="746" text-anchor="middle" font-size="12" font-style="italic" fill="#8f99a8">доступ приложения и ИИ к ОХД отсутствует</text>
+
+  <!-- ETL arrow ОХД -> Витрина -->
+  <line x1="1475" y1="620" x2="1475" y2="404" stroke="#8f99a8" stroke-width="2.5" stroke-dasharray="8 5" marker-end="url(#arrGray)"/>
+  <rect x="1332" y="480" width="286" height="66" rx="8" fill="#ffffff" stroke="#c8d0db" stroke-width="1"/>
+  <text x="1475" y="503" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#595959">Формирование витрины — ООО «ЛИКАРД»</text>
+  <text x="1475" y="521" text-anchor="middle" font-size="12" fill="#8f99a8">read-only · только согласованные агрегаты ·</text>
+  <text x="1475" y="537" text-anchor="middle" font-size="12" fill="#8f99a8">по утверждённому перечню показателей</text>
+
+  <!-- ================= FLOWS ================= -->
+  <!-- 1: AI user -> App UI -->
+  <line x1="300" y1="440" x2="398" y2="330" stroke="#C00000" stroke-width="2.5" marker-end="url(#arr)"/>
+  <circle cx="332" cy="408" r="14" fill="#C00000"/><text x="332" y="413" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">1</text>
+
+  <!-- 2: App backend -> Orchestrator -->
+  <line x1="720" y1="330" x2="818" y2="220" stroke="#C00000" stroke-width="2.5" marker-end="url(#arr)"/>
+  <circle cx="756" cy="296" r="14" fill="#C00000"/><text x="756" y="301" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">2</text>
+
+  <!-- 3: Orchestrator -> Qwen -->
+  <line x1="1020" y1="240" x2="1020" y2="268" stroke="#C00000" stroke-width="2.5" marker-end="url(#arr)"/>
+  <circle cx="998" cy="254" r="14" fill="#C00000"/><text x="998" y="259" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">3</text>
+
+  <!-- 4: Qwen -> Validator -->
+  <line x1="1020" y1="350" x2="1020" y2="378" stroke="#C00000" stroke-width="2.5" marker-end="url(#arr)"/>
+  <circle cx="998" cy="364" r="14" fill="#C00000"/><text x="998" y="369" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">4</text>
+
+  <!-- 5: Validator -> Vitrina -->
+  <line x1="1220" y1="425" x2="1318" y2="330" stroke="#C00000" stroke-width="2.5" marker-end="url(#arr)"/>
+  <circle cx="1256" cy="394" r="14" fill="#C00000"/><text x="1256" y="399" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">5</text>
+
+  <!-- 6: Vitrina -> R1 -->
+  <line x1="1318" y1="390" x2="1222" y2="510" stroke="#C00000" stroke-width="2.5" marker-end="url(#arr)"/>
+  <circle cx="1282" cy="436" r="14" fill="#C00000"/><text x="1282" y="441" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">6</text>
+
+  <!-- KB -> R1 -->
+  <line x1="1020" y1="608" x2="1020" y2="582" stroke="#595959" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrInk)"/>
+
+  <!-- 7: R1 -> App backend (answer) -->
+  <path d="M 818 545 L 778 545 Q 752 545 744 505 L 726 400" fill="none" stroke="#C00000" stroke-width="2.5" marker-end="url(#arr)"/>
+  <circle cx="790" cy="545" r="14" fill="#C00000"/><text x="790" y="550" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">7</text>
+
+  <!-- 8: backend -> journal (по левому краю, мимо генератора) -->
+  <path d="M 440 410 Q 388 430 388 480 L 388 630 Q 388 660 410 665" fill="none" stroke="#595959" stroke-width="2" marker-end="url(#arrInk)"/>
+  <circle cx="388" cy="555" r="14" fill="#595959"/><text x="388" y="560" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">8</text>
+
+  <!-- Admin <-> app -->
+  <line x1="300" y1="215" x2="398" y2="215" stroke="#595959" stroke-width="2" marker-end="url(#arrInk)" marker-start="url(#arrInk)"/>
+
+  <!-- Weekly: generator -> orchestrator (dashed red) -->
+  <path d="M 722 490 L 766 490 Q 786 490 790 460 L 818 235" fill="none" stroke="#C00000" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arr)"/>
+  <circle cx="757" cy="490" r="13" fill="#ffffff" stroke="#C00000" stroke-width="2"/><text x="757" y="495" text-anchor="middle" font-size="13" font-weight="bold" fill="#C00000">Н</text>
+
+  <!-- Weekly: generator -> mail (по правому коридору, мимо журнала) -->
+  <path d="M 700 570 Q 733 580 733 615 L 733 795 Q 733 812 722 813" fill="none" stroke="#C00000" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arr)"/>
+
+  <!-- Weekly: mail -> object -->
+  <path d="M 398 815 L 210 815 Q 175 815 175 804" fill="none" stroke="#C00000" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arr)"/>
+
+  <!-- ================= LEGEND ================= -->
+  <rect x="25" y="905" width="1630" height="85" rx="10" fill="#fafbfc" stroke="#d9d9d9" stroke-width="1"/>
+  <text x="45" y="933" font-size="13.5" font-weight="bold" fill="#111111">Обозначения:</text>
+  <line x1="165" y1="928" x2="215" y2="928" stroke="#C00000" stroke-width="2.5" marker-end="url(#arr)"/>
+  <text x="225" y="933" font-size="13" fill="#595959">поток ИИ-диалога (шаги 1–8)</text>
+  <line x1="470" y1="928" x2="520" y2="928" stroke="#C00000" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arr)"/>
+  <text x="530" y="933" font-size="13" fill="#595959">еженедельные справки объектам (Н — по расписанию)</text>
+  <line x1="925" y1="928" x2="975" y2="928" stroke="#8f99a8" stroke-width="2.5" stroke-dasharray="8 5" marker-end="url(#arrGray)"/>
+  <text x="985" y="933" font-size="13" fill="#595959">формирование витрины из ОХД (ЛИКАРД)</text>
+  <line x1="1310" y1="928" x2="1360" y2="928" stroke="#595959" stroke-width="2" marker-end="url(#arrInk)"/>
+  <text x="1370" y="933" font-size="13" fill="#595959">служебные потоки (админ, журналы)</text>
+  <text x="45" y="967" font-size="13" fill="#595959">Шаги диалога: 1 — вопрос в чате · 2 — запрос + область данных пользователя · 3 — генерация SQL по описанию витрины · 4 — проверка валидатором ·</text>
+  <text x="45" y="985" font-size="13" fill="#595959">5 — выполнение к витрине · 6 — результат в модель рассуждений · 7 — ответ (данные + вывод + рекомендации) · 8 — SQL и метаданные в журнал администратора</text>
+</svg>

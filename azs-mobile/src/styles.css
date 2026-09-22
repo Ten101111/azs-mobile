@@ -1,24 +1,39 @@
 :root {
   color-scheme: light;
-  --bg: #f6f7f9;
+  /* Нейтральная шкала. Один тон (220°) на все поверхности: раньше фон,
+     surface-2 и линии были трёх разных температур, и белые карточки на фоне
+     выглядели вырезанными. */
+  --bg: #F7F8FA;
   --surface: #ffffff;
-  --surface-2: #eef1f5;
+  --surface-2: #F0F1F5;
   --surface-raised: #ffffff;
   --surface-translucent: rgba(255, 255, 255, 0.78);
   --surface-translucent-strong: rgba(255, 255, 255, 0.94);
-  --line: #dfe4ea;
-  --line-strong: #c8d0db;
-  --text: #151b24;
-  --text-secondary: #344052;
-  --muted: #5a6575;
-  --icon-muted: #8f99a8;
-  --red: #c91d32;
-  --red-dark: #a91527;
+  --line: #DEE1E7;
+  /* 3,29:1 к белому — граница поля должна читаться сама по себе там,
+     где заливка её не выделяет (WCAG 1.4.11). */
+  --line-strong: #838EA5;
+  /* Средняя линия — для декоративного: пунктиров, соединителей, дорожек
+     ползунка. Отделена от --line-strong, чтобы усиление границ полей ради
+     доступности не утяжелило всё остальное. */
+  --line-mid: #C7CDD8;
+  --hairline: #DEE1E7;
+  --text: #151A23;
+  --text-secondary: #363E4E;
+  --muted: #646C7D;
+  --icon-muted: #8D95A5;
+  --red: #E31E24;
+  --red-dark: #B8171C;
+  /* Заливка красных кнопок отделена от акцентного цвета: на тёмной теме
+     акцент осветляется ради читаемости текста, а заливка под белым текстом
+     должна, наоборот, остаться тёмной. */
+  --red-fill: #E31E24;
+  --red-fill-hover: #B8171C;
   --green: #14945f;
   --amber: #c68412;
   --blue: #3077d8;
-  --red-soft: #fff1f3;
-  --red-soft-hover: #ffe8ec;
+  --red-soft: #FFF0EF;
+  --red-soft-hover: #FFE4E2;
   --green-soft: #eaf8f1;
   --blue-soft: #eef5ff;
   --amber-soft: #fff5df;
@@ -26,7 +41,41 @@
   --green-soft-text: #13714b;
   --blue-soft-text: #18579f;
   --amber-soft-text: #8d5d09;
-  --red-soft-text: #a91527;
+  --red-soft-text: #A8141A;
+  /* One footprint for every filter chip. Sized to fit the common values
+     ("Действующая", "АБ-95 ЭКТО"); rarer long statuses ellipsize. */
+  --chip-width: 136px;
+  --chip-height: 36px;
+
+  /* --- Системные шкалы -----------------------------------------------------
+     Отступы кратны 4, радиусов четыре, уровней три. До этого в разделе ИИ
+     встречалось двадцать значений отступа и восемь радиусов — глаз читает
+     такой разнобой как небрежность, даже не умея назвать причину. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+
+  --r-sm: 10px;   /* кнопки, поля, мелкие плашки */
+  --r-md: 14px;   /* карточки */
+  --r-lg: 20px;   /* крупные контейнеры, поле вопроса */
+  --r-full: 999px;
+
+  /* Уровень 0 — контент лежит прямо на фоне, тени нет.
+     Уровень 1 — поднятая подложка. Уровень 2 — плавающее над страницей. */
+  --e1: 0 1px 2px rgba(21, 26, 35, 0.05), 0 6px 20px rgba(21, 26, 35, 0.06);
+  --e2: 0 2px 6px rgba(21, 26, 35, 0.08), 0 18px 48px rgba(21, 26, 35, 0.14);
+
+  /* Типографика. Между ступенями настоящий перепад: раньше весь текст лежал
+     в 12–15px и ни один размер не держал экран. */
+  --t-meta: 12px;
+  --t-ui: 13.5px;
+  --t-body: 16px;
+  --t-title: 20px;
+  --t-display: 44px;
   --scrim: rgba(21, 27, 36, 0.48);
   --shadow: 0 16px 48px rgba(21, 27, 36, 0.12);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -71,7 +120,7 @@ a {
   position: absolute;
   top: -100%;
   left: 16px;
-  background: var(--red);
+  background: var(--red-fill);
   color: #fff;
   padding: 8px 16px;
   border-radius: 0 0 8px 8px;
@@ -234,7 +283,7 @@ a {
   min-height: 46px;
   border: 0;
   border-radius: 8px;
-  background: var(--red);
+  background: var(--red-fill);
   color: white;
   font-weight: 800;
   cursor: pointer;
@@ -409,7 +458,7 @@ a {
   padding: 0 14px;
   border: 1px solid rgba(201, 29, 50, 0.24);
   border-radius: 8px;
-  background: var(--red);
+  background: var(--red-fill);
   color: white;
   font-weight: 780;
   font-size: 13px;
@@ -498,7 +547,7 @@ a {
 .pwa-install-actions button.primary,
 .pwa-guide-actions button.primary {
   border-color: rgba(201, 29, 50, 0.24);
-  background: var(--red);
+  background: var(--red-fill);
   color: white;
 }
 
@@ -717,7 +766,10 @@ a {
 
 .mode-row {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  /* Колонки по числу разделов, а не фиксированные пять: раздел «ИИ-аналитик»
+     появляется и исчезает вместе с доступностью контура. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 6px;
   padding: 4px;
   margin: 12px 0;
@@ -821,11 +873,46 @@ a {
   display: none;
 }
 
+/* Explains what the "топливо в наличии" filter is doing: how many stations matched,
+   whether the snapshot is stale, and how to drop the filter when it cannot be applied. */
+.fuel-filter-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--neutral-soft);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.fuel-filter-notice.warning {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+  color: var(--amber-soft-text);
+}
+
+.fuel-filter-notice button {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 10px;
+  background: var(--surface);
+  color: var(--red-dark);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .select-chip {
   position: relative;
-  flex: 0 0 auto;
-  min-width: 94px;
-  height: 36px;
+  flex: 0 0 var(--chip-width);
+  width: var(--chip-width);
+  height: var(--chip-height);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -852,6 +939,146 @@ a {
   position: absolute;
   inset: 0;
   opacity: 0;
+}
+
+/* Every filter chip keeps the same footprint, so a long value (region name, several
+   fuels) truncates instead of stretching its chip past the neighbours. */
+.select-chip > span,
+.multi-chip-button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-chip > svg,
+.multi-chip-button > svg {
+  flex: 0 0 auto;
+}
+
+/* Boolean chip (favorites): same footprint as the other filters, on/off instead of a list. */
+.toggle-chip {
+  flex: 0 0 var(--chip-width);
+  width: var(--chip-width);
+  height: var(--chip-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.toggle-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toggle-chip > svg {
+  flex: 0 0 auto;
+}
+
+.toggle-chip.on {
+  border-color: rgba(201, 29, 50, 0.28);
+  background: var(--red-soft);
+  color: var(--red-dark);
+  animation: chip-pop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Multi-value chip (fuel filter): same look as .select-chip, but the menu stays open
+   so several fuels can be ticked in one pass. */
+.multi-chip {
+  position: relative;
+  flex: 0 0 var(--chip-width);
+  width: var(--chip-width);
+}
+
+.multi-chip-button {
+  width: 100%;
+  height: var(--chip-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.multi-chip.filled .multi-chip-button {
+  border-color: rgba(201, 29, 50, 0.28);
+  background: var(--red-soft);
+  color: var(--red-dark);
+  animation: chip-pop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Portalled to <body>, positioned from the button's viewport rect.
+   Above the filter sheet (z-index 40), below the PWA guide (1200). */
+.multi-chip-menu {
+  position: fixed;
+  z-index: 1100;
+  max-height: 280px;
+  overflow-y: auto;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.multi-chip-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 13.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.multi-chip-option:hover {
+  background: var(--surface-2);
+}
+
+.multi-chip-option input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--red);
+  cursor: pointer;
+}
+
+.multi-chip-clear {
+  margin-top: 2px;
+  padding: 7px 8px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 7px 7px;
+  background: transparent;
+  color: var(--red-dark);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
 }
 
 .content-grid {
@@ -1218,7 +1445,7 @@ a {
   justify-content: center;
   gap: 8px;
   padding: 0 12px;
-  border: 1px solid #f0d99b;
+  border: 1px solid var(--amber);
   border-radius: 8px;
   background: var(--amber-soft);
   color: var(--amber-soft-text);
@@ -2185,7 +2412,7 @@ a {
   gap: 8px;
   border: 1px solid rgba(201, 29, 50, 0.24);
   border-radius: 8px;
-  background: var(--red);
+  background: var(--red-fill);
   color: white;
   font-weight: 760;
   cursor: pointer;
@@ -2451,30 +2678,25 @@ a {
   color: var(--amber-soft-text);
 }
 
-.badge.status.green {
-  background: var(--green-soft);
-  color: var(--green-soft-text);
-}
+.badge.status.active,
+.status-chip.tone-active { background: #e5f5ed; color: #0c7248; }
 
-.badge.status.blue {
-  background: var(--blue-soft);
-  color: var(--blue-soft-text);
-}
+.badge.status.codo,
+.status-chip.tone-codo { background: #e7f7ef; color: #167d57; }
 
-.badge.status.amber {
-  background: var(--amber-soft);
-  color: var(--amber-soft-text);
-}
+.badge.status.rented,
+.status-chip.tone-rented { background: #f0f8e4; color: #54852b; }
 
-.badge.status.red {
-  background: var(--red-soft);
-  color: var(--red-soft-text);
-}
+.badge.status.reconstruction,
+.status-chip.tone-reconstruction { background: #f0f2f4; color: #626d78; }
 
-.badge.status.gray {
-  background: var(--neutral-soft);
-  color: var(--muted);
-}
+.badge.status.conservation,
+.status-chip.tone-conservation { background: #fbe9eb; color: #a72734; }
+
+.badge.status.paused,
+.status-chip.tone-paused { background: #fdf0e3; color: #ae621e; }
+
+.badge.status.gray { background: var(--neutral-soft); color: var(--muted); }
 
 .favorite-dot {
   width: 34px;
@@ -2615,7 +2837,7 @@ a {
   align-content: center;
   gap: 8px;
   padding: 18px;
-  border: 1px dashed var(--line-strong);
+  border: 1px dashed var(--line-mid);
   border-radius: 8px;
   background: var(--surface-translucent-strong);
   color: var(--muted);
@@ -2866,26 +3088,6 @@ a {
   background: currentColor;
 }
 
-.status-chip.tone-green {
-  background: var(--green-soft);
-  color: var(--green-soft-text);
-}
-
-.status-chip.tone-blue {
-  background: var(--blue-soft);
-  color: var(--blue-soft-text);
-}
-
-.status-chip.tone-amber {
-  background: var(--amber-soft);
-  color: var(--amber-soft-text);
-}
-
-.status-chip.tone-red {
-  background: var(--red-soft);
-  color: var(--red-soft-text);
-}
-
 .status-chip.tone-gray {
   background: var(--neutral-soft);
   color: var(--muted);
@@ -2962,7 +3164,7 @@ a {
 
 .action-button.primary {
   border-color: var(--red);
-  background: var(--red);
+  background: var(--red-fill);
   color: white;
   box-shadow: 0 10px 24px rgba(201, 29, 50, 0.22);
 }
@@ -3625,7 +3827,7 @@ a {
   top: 35px;
   bottom: -1px;
   left: 12px;
-  border-left: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-mid);
 }
 
 .fuel-outage-marker {
@@ -3876,6 +4078,20 @@ a {
   font: inherit;
   font-size: 13px;
   padding: 6px 30px 6px 10px;
+  /* Тот же нарисованный треугольник, что у .ui-select: стрелка одинаковая
+     во всех выпадающих списках и перекрашивается вместе с темой. */
+  appearance: none;
+  background-image: var(--field-arrow);
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.period-select:hover { border-color: var(--line-strong); }
+.period-select:focus-visible {
+  outline: none;
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px var(--red-soft);
 }
 
 .period-navigator {
@@ -4237,7 +4453,7 @@ a {
   top: 10px;
   height: 4px;
   border-radius: 99px;
-  background: var(--line-strong);
+  background: var(--line-mid);
 }
 
 .sheet-title {
@@ -4253,7 +4469,9 @@ a {
   overflow: visible;
 }
 
-.filter-sheet .select-chip {
+.filter-sheet .select-chip,
+.filter-sheet .multi-chip,
+.filter-sheet .toggle-chip {
   width: 100%;
 }
 
@@ -4318,7 +4536,9 @@ a {
   100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-color, #14945f) 0%, transparent), 0 0 0 4px color-mix(in srgb, var(--status-color, #14945f) 14%, transparent); }
 }
 
-.status-dot.tone-green {
+.status-dot.tone-active,
+.status-dot.tone-codo,
+.status-dot.tone-rented {
   animation: azs-pulse 2.4s cubic-bezier(0.36, 0.11, 0.89, 0.32) infinite;
 }
 
@@ -4471,7 +4691,9 @@ a {
   .reset-button {
     transition-duration: 0.01ms !important;
   }
-  .status-dot.tone-green,
+  .status-dot.tone-active,
+  .status-dot.tone-codo,
+  .status-dot.tone-rented,
   .hero-orb,
   .analytics-kpi,
   .geo-toast,
@@ -4574,9 +4796,12 @@ a {
     z-index: 30;
     min-height: 70px;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 4px;
-    padding: 6px;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    /* 3px вместо 4px и 5px полей: отыгранные 3px ширины нужны подписи
+       «Аналитика» — на 390px она без этого обрезается в «Аналити…». */
+    gap: 3px;
+    padding: 5px;
     border: 1px solid var(--line);
     border-radius: 16px;
     background: var(--surface-translucent-strong);
@@ -4593,7 +4818,7 @@ a {
     place-items: center;
     align-content: center;
     gap: 2px;
-    padding: 5px 3px 4px;
+    padding: 5px 2px 4px;
     border: 0;
     border-radius: 12px;
     background: transparent;
@@ -4639,6 +4864,8 @@ a {
     white-space: nowrap;
     font-size: 10.5px;
     font-weight: 780;
+    /* лёгкий минус-трекинг: слово целиком важнее, чем идеальные пробелы */
+    letter-spacing: -0.015em;
     line-height: 1.05;
   }
 
@@ -4660,7 +4887,7 @@ a {
   }
 
   .bottom-strip button.active .bottom-nav-meta {
-    background: var(--red);
+    background: var(--red-fill);
     color: white;
   }
 
@@ -5037,9 +5264,14 @@ a {
     flex-basis: 78px;
   }
 
-  .select-chip {
-    height: 42px;
-    min-width: 104px;
+  :root {
+    --chip-width: 142px;
+    --chip-height: 42px;
+  }
+
+  .select-chip,
+  .multi-chip-button,
+  .toggle-chip {
     font-size: 14px;
   }
 
@@ -5371,25 +5603,29 @@ a {
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --bg: #0e1014;
-    --surface: #1a1d23;
-    --surface-2: #252a33;
-    --surface-raised: #313741;
-    --surface-translucent: rgba(26, 29, 35, 0.88);
-    --surface-translucent-strong: rgba(26, 29, 35, 0.96);
-    --line: #3b424f;
-    --line-strong: #556171;
-    --text: #f4f5f7;
-    --text-secondary: #d2d7df;
-    --muted: #a5afbd;
-    --icon-muted: #98a4b5;
-    --red: #ff4058;
-    --red-dark: #ff6b7f;
+    --bg: #0E1013;
+    --surface: #181B20;
+    --surface-2: #252830;
+    --surface-raised: #2F333D;
+    --surface-translucent: rgba(24, 27, 32, 0.88);
+    --surface-translucent-strong: rgba(24, 27, 32, 0.96);
+    --line: #3A404A;
+    --line-strong: #5E6778;
+    --line-mid: #464D59;
+    --hairline: #2E333C;
+    --text: #F3F4F7;
+    --text-secondary: #D6D9E1;
+    --muted: #AEB4C2;
+    --icon-muted: #929AAA;
+    --red: #FF4A4F;
+    --red-dark: #FF7A7E;
+    --red-fill: #E31E24;
+    --red-fill-hover: #B8171C;
     --green: #4bd79c;
     --amber: #f4bd58;
     --blue: #70a9ff;
-    --red-soft: rgba(255, 64, 88, 0.14);
-    --red-soft-hover: rgba(255, 64, 88, 0.22);
+    --red-soft: rgba(227, 30, 36, 0.20);
+    --red-soft-hover: rgba(227, 30, 36, 0.28);
     --green-soft: rgba(75, 215, 156, 0.14);
     --blue-soft: rgba(112, 169, 255, 0.14);
     --amber-soft: rgba(244, 189, 88, 0.14);
@@ -5397,9 +5633,13 @@ a {
     --green-soft-text: #7ee7b9;
     --blue-soft-text: #9fc5ff;
     --amber-soft-text: #ffd27d;
-    --red-soft-text: #ff8797;
+    --red-soft-text: #FF8E90;
     --scrim: rgba(0, 0, 0, 0.62);
     --shadow: 0 18px 52px rgba(0, 0, 0, 0.52);
+    /* На тёмном фоне тень почти не видна, поэтому уровень задаётся
+       подсветкой верхней кромки плюс более глубокой тенью. */
+    --e1: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 6px 20px rgba(0, 0, 0, 0.36);
+    --e2: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 18px 48px rgba(0, 0, 0, 0.56);
   }
 
   .mode-active-bg,
@@ -5526,25 +5766,23 @@ a {
     color: var(--amber);
   }
 
-  .badge.status.green {
-    background: rgba(26, 184, 111, 0.14);
-    color: var(--green);
-  }
+  .badge.status.active,
+  .status-chip.tone-active { background: rgba(20, 148, 95, 0.2); color: #69d59e; }
 
-  .badge.status.blue {
-    background: rgba(75, 143, 238, 0.14);
-    color: var(--blue);
-  }
+  .badge.status.codo,
+  .status-chip.tone-codo { background: rgba(47, 159, 114, 0.2); color: #75d9aa; }
 
-  .badge.status.amber {
-    background: rgba(224, 156, 26, 0.14);
-    color: var(--amber);
-  }
+  .badge.status.rented,
+  .status-chip.tone-rented { background: rgba(116, 174, 69, 0.2); color: #b2de83; }
 
-  .badge.status.red {
-    background: rgba(232, 37, 62, 0.14);
-    color: var(--red);
-  }
+  .badge.status.reconstruction,
+  .status-chip.tone-reconstruction { background: rgba(143, 153, 168, 0.2); color: #c5cbd4; }
+
+  .badge.status.conservation,
+  .status-chip.tone-conservation { background: rgba(200, 58, 69, 0.2); color: #ff9da6; }
+
+  .badge.status.paused,
+  .status-chip.tone-paused { background: rgba(217, 130, 43, 0.2); color: #ffc07f; }
 
   .badge.status.gray {
     background: var(--surface-2);
@@ -5552,26 +5790,6 @@ a {
   }
 
   /* Status chips */
-  .status-chip.tone-green {
-    background: rgba(26, 184, 111, 0.14);
-    color: var(--green);
-  }
-
-  .status-chip.tone-blue {
-    background: rgba(75, 143, 238, 0.14);
-    color: var(--blue);
-  }
-
-  .status-chip.tone-amber {
-    background: rgba(224, 156, 26, 0.14);
-    color: var(--amber);
-  }
-
-  .status-chip.tone-red {
-    background: rgba(232, 37, 62, 0.14);
-    color: var(--red);
-  }
-
   .status-chip.tone-gray {
     background: var(--surface-2);
     color: var(--muted);
@@ -5796,13 +6014,6 @@ a {
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
   }
 
-  /* Period select */
-  .period-select {
-    background: var(--surface);
-    border-color: var(--line);
-    color: var(--text);
-  }
-
   /* Density toggle active */
   .density-toggle button.active {
     background: var(--surface-raised);
@@ -5849,4 +6060,1803 @@ a {
     border-color: rgba(232, 37, 62, 0.22);
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Admin dashboard (usage statistics)
+--------------------------------------------------------------------------- */
+.admin-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.admin-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-head h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+}
+
+.admin-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-days-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.admin-days-toggle button {
+  border: 0;
+  background: transparent;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.admin-days-toggle button.active {
+  background: var(--red-fill);
+  color: #fff;
+}
+
+.admin-refresh,
+.admin-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.admin-refresh:hover,
+.admin-back:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.admin-error {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--red-soft);
+  color: var(--red-soft-text);
+  font-size: 14px;
+}
+
+.admin-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.admin-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.admin-summary-card small {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.admin-summary-card strong {
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.admin-summary-card em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.admin-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  min-width: 0;
+}
+
+.admin-card h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.admin-subhead {
+  margin-top: 14px !important;
+}
+
+.admin-bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.admin-bar-row {
+  display: grid;
+  grid-template-columns: minmax(88px, 150px) 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.admin-bar-label {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-bar-track {
+  display: block;
+  height: 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.admin-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  background: var(--red);
+}
+
+.admin-bar-value {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 44px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.admin-bar-value em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.admin-bar-caption {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-table th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 2px solid var(--line-mid);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.admin-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.admin-table tbody tr:nth-child(even) {
+  background: var(--surface-2);
+}
+
+.admin-table td strong {
+  display: block;
+}
+
+.admin-table td small {
+  display: block;
+  color: var(--muted);
+}
+
+.admin-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .admin-pane {
+    padding: 12px;
+  }
+
+  .admin-head-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .admin-bar-row {
+    grid-template-columns: minmax(72px, 110px) 1fr auto;
+  }
+}
+
+/* Admin: user deletion */
+.admin-info {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--green-soft);
+  color: var(--green-soft-text);
+  font-size: 13px;
+}
+
+.admin-users-card .admin-error {
+  margin-bottom: 10px;
+}
+
+.admin-actions-cell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.admin-delete-btn {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--red);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.admin-delete-btn:hover {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
+.admin-delete-btn.confirm {
+  background: var(--red-fill);
+  border-color: var(--red);
+  color: #fff;
+  font-weight: 700;
+}
+
+.admin-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.admin-self-tag {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ===========================================================================
+   Единые поля ввода и выпадающие списки
+   Всё построено на переменных темы, поэтому светлая и тёмная выглядят
+   одинаково осмысленно. Своя стрелка у select — чтобы списки не отличались
+   между браузерами; сам выпадающий список остаётся системным и подхватывает
+   тему операционной системы через color-scheme на :root.
+   ========================================================================= */
+:root {
+  --field-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23646C7D' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+}
+
+.ui-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ui-field > span { font-size: 12px; color: var(--muted); }
+
+.ui-select,
+.ui-input,
+.ui-textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.ui-select {
+  appearance: none;
+  padding-right: 32px;
+  background-image: var(--field-arrow);
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  cursor: pointer;
+}
+
+.ui-textarea { resize: vertical; }
+
+.ui-select:hover,
+.ui-input:hover,
+.ui-textarea:hover { border-color: var(--line-strong); }
+
+.ui-select:focus-visible,
+.ui-input:focus-visible,
+.ui-textarea:focus-visible {
+  outline: none;
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px var(--red-soft);
+}
+
+.ui-select:disabled,
+.ui-input:disabled,
+.ui-textarea:disabled { background: var(--surface-2); color: var(--muted); cursor: default; }
+
+/* Кнопки форм — та же геометрия, что у полей */
+.ui-button {
+  border: 0;
+  border-radius: 9px;
+  background: var(--red-fill);
+  color: #fff;
+  cursor: pointer;
+  padding: 9px 18px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 120ms ease, opacity 120ms ease;
+}
+.ui-button:hover:not(:disabled) { background: var(--red-fill-hover); }
+.ui-button:disabled { background: var(--surface-2); color: var(--muted); cursor: default; }
+.ui-button.ghost { background: var(--surface-2); color: var(--text-secondary); font-weight: 500; }
+.ui-button.ghost:hover:not(:disabled) { background: var(--neutral-soft); }
+
+.ui-link-button {
+  align-self: flex-start;
+  border: 0; background: none; cursor: pointer; padding: 0;
+  font: inherit; font-size: 13px; color: var(--red); text-decoration: underline;
+}
+
+/* --- Раздел «ИИ-аналитик» -------------------------------------------------
+   Слева история диалогов, в центре лента фиксированной ширины, внизу поле
+   вопроса. Всё построено на системных шкалах: отступы кратны 4, радиусов
+   четыре, уровней три. Обводка осталась только там, где элемент действительно
+   поднят над страницей — у боковой панели, поля вопроса и модального окна.
+   Остальное разделяют воздух и уровень.
+   ========================================================================= */
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.ai-shell {
+  display: grid;
+  grid-template-columns: 276px minmax(0, 1fr);
+  /* Вторая строка — кромка для перетаскивания. */
+  grid-template-rows: minmax(0, 1fr) auto;
+  column-gap: var(--s5);
+  row-gap: var(--s2);
+  align-items: stretch;
+  /* Высота приходит от раскладки: раздел занимает ровно то, что осталось под
+     шапкой и переключателем. Подобранное число здесь было ошибкой — при любой
+     другой высоте шапки поле вопроса уезжало под нижний край. */
+  min-height: 420px;
+  /* --ai-extra задаётся перетаскиванием нижней кромки. */
+  height: calc(100% + var(--ai-extra, 0px));
+}
+.ai-shell-side { align-self: stretch; min-height: 0; }
+
+/* --- Орб ИИ-аналитика -----------------------------------------------------
+   Облик согласован владельцем: «Облик_ИИ_аналитика_заполнено.xlsx» (З-16).
+   Круг с красным контуром и тремя белыми столбцами, восемь состояний,
+   корпоративная гамма. Красный — энергия и работа ИИ, белый — ядро данных
+   и результат, графит и чёрный — материал корпуса.
+
+   Это обязательный уровень, а не заглушка: крупный орб рисует шейдер, но при
+   prefers-reduced-motion, на слабом устройстве и в статике показывается
+   именно он. Поэтому здесь нет ничего, что нельзя показать неподвижно.
+
+   Рамки из спецификации, которые нельзя нарушать: без кислотного неона,
+   без постоянного быстрого вращения, без частиц и искр, без сильного bloom,
+   без хромированной «игровой» эстетики и без агрессивного мигания. Движение
+   точное и дорогое, а не громкое.
+   ========================================================================= */
+.ai-mark {
+  --orb-graphite: #17191D;
+  --orb-smoke: #090A0C;
+  --orb-red: #E31E24;
+  --orb-white: #F5F5F3;
+  --orb-muted: #8A8D92;
+
+  /* Значения по состояниям задаются ниже; здесь — покой. */
+  --orb-body: var(--orb-graphite);
+  --orb-core-op: 0.40;     /* красное внутреннее свечение, 35–45% в покое */
+  --orb-ring-op: 0.85;
+  --orb-flow-op: 0;        /* потоки видны только на составлении и чтении */
+  --orb-layer-op: 0.05;
+  --orb-bar-fill: var(--orb-white);
+  --orb-halo: 0;           /* свечение под орбом — только тёмная тема, 8–12% */
+  --orb-stroke: 1.6;       /* в единицах viewBox: на 240 px это ~3,8 реальных */
+  --orb-light: 1;          /* множитель яркости света: мелкий знак ярче */
+
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  line-height: 0;
+  width: var(--ai-mark-size, 24px);
+  height: var(--ai-mark-size, 24px);
+  border-radius: 50%;
+
+  /* Корпус и внутреннее свечение — фоном, а не кругами в SVG: только так
+     красный получается светом, который идёт изнутри и гаснет к краю.
+     Плоский круг поверх графита превращал орб в красную кнопку.
+     Порядок слоёв сверху вниз:
+       1) красное ядро — смещено вниз, как источник света внутри шара;
+       2) широкий красный разлив — то самое «течёт красный свет»;
+       3) сам графит с бликом сверху: дорогой материал, а не плоская заливка. */
+  background: radial-gradient(circle at 50% 22%,
+              #272B32 0%, var(--orb-body) 58%, var(--orb-smoke) 100%);
+
+  /* Свечение под орбом — тенью. В светлой теме его нет: спецификация
+     разрешает его только на тёмной, 8–12%. */
+  box-shadow: 0 0 calc(var(--ai-mark-size, 24px) * 0.22) rgba(227, 30, 36, var(--orb-halo));
+}
+/* Свет отдельным слоем, а не в фоне корпуса: «течение» в покое — это
+   плавная смена его прозрачности, а анимировать пользовательскую
+   переменную без @property браузер не станет (получился бы рывок). */
+.ai-mark::before {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  opacity: calc(var(--orb-core-op) * var(--orb-light));
+  background:
+    radial-gradient(circle at 50% 63%,
+      rgba(227, 30, 36, 1) 0%, rgba(227, 30, 36, 0.45) 26%, transparent 52%),
+    radial-gradient(circle at 50% 55%,
+      rgba(227, 30, 36, 0.38) 0%, transparent 78%);
+}
+.ai-mark svg { display: block; position: relative; width: 100%; height: 100%; }
+
+.orb-ring   { fill: none; stroke: var(--orb-red); stroke-width: var(--orb-stroke); opacity: var(--orb-ring-op); }
+.orb-sheen  { fill: #ffffff; opacity: 0.07; }
+.orb-bar    { fill: var(--orb-bar-fill); transform-box: fill-box; transform-origin: 50% 100%; }
+
+.orb-layer {
+  fill: none; stroke: var(--orb-white); stroke-width: 0.8;
+  opacity: var(--orb-layer-op);
+}
+.orb-stream {
+  fill: none; stroke: var(--orb-red); stroke-width: 1.6; stroke-linecap: round;
+  opacity: var(--orb-flow-op);
+  transform-box: view-box; transform-origin: 50px 50px;
+}
+/* Длина штриха — дуга примерно в 60° от длины окружности своего радиуса. */
+.orb-stream.s1 { stroke-dasharray: 43 215; }
+.orb-stream.s2 { stroke-dasharray: 36 178; }
+.orb-stream.s3 { stroke-dasharray: 28 142; }
+
+.orb-pulse {
+  fill: none; stroke: var(--orb-red); stroke-width: var(--orb-stroke); opacity: 0;
+  transform-box: view-box; transform-origin: 50px 50px;
+}
+
+/* Облегчённая сборка: строка «думает», значок навигации, всё мельче 64 px.
+   Толщина контура задана в единицах viewBox, поэтому на маленьком знаке
+   она превращается в доли пикселя и красный контур пропадает — а он и есть
+   акцент, ради которого орб стоит в навигации. Поэтому здесь контур толще
+   пропорционально, а красного света больше: мелкий знак должен читаться
+   красным с одного взгляда, иначе в ряду он выглядит тёмной точкой. */
+.ai-mark-simple {
+  --orb-stroke: 6;
+  /* Не переопределяем --orb-core-op: его задают состояние и тема, и такая
+     правка либо перебила бы их, либо проиграла бы им по весу селектора —
+     смотря где оказалась в файле. Множитель складывается с обоими. */
+  --orb-light: 1.65;
+}
+.ai-mark-simple .orb-sheen { opacity: 0.04; }
+
+/* --- Состояния ------------------------------------------------------------
+   Каждое отличается и неподвижно тоже: яркостью свечения, контуром
+   и высотой столбцов. Анимация добавляет характер, но не несёт смысла
+   в одиночку — иначе при отключённой анимации состояния слились бы. */
+
+/* Покой: вопроса нет. Не должен выглядеть как индикатор загрузки. */
+.ai-mark-idle { --orb-core-op: 0.38; }
+
+/* Разбор вопроса: ИИ понял, что получил вопрос. */
+.ai-mark-parse { --orb-core-op: 0.58; --orb-layer-op: 0.09; }
+
+/* Составление запроса: потоки данных по окружности, встречные. */
+.ai-mark-draft { --orb-core-op: 0.52; --orb-flow-op: 0.85; --orb-layer-op: 0.08; }
+
+/* Проверка: самое короткое состояние, ощущается как checkpoint. */
+.ai-mark-check { --orb-core-op: 0.46; --orb-layer-op: 0.12; }
+
+/* Чтение витрины: основная стадия, вложенные слои и нити данных. */
+.ai-mark-read { --orb-core-op: 0.60; --orb-flow-op: 0.7; --orb-layer-op: 0.14; }
+
+/* Ответ готов: чистый знак, пригодный для стоп-кадра и иконки. */
+.ai-mark-done { --orb-core-op: 0.44; --orb-ring-op: 1; }
+
+/* Отказ: корректный контролируемый исход, а не авария. Красный приглушён
+   до 20–30%, корпус матовый, столбцы — на одном уровне. */
+.ai-mark-refused {
+  --orb-core-op: 0.24; --orb-ring-op: 0.45; --orb-layer-op: 0.04;
+  --orb-bar-fill: var(--orb-muted);
+}
+.ai-mark-refused .orb-bar { transform: scaleY(var(--orb-level, 1)); }
+.ai-mark-refused .orb-bar.b1 { --orb-level: 1; }
+.ai-mark-refused .orb-bar.b2 { --orb-level: 0.69; }   /* 18/26 — до высоты первого */
+.ai-mark-refused .orb-bar.b3 { --orb-level: 0.53; }   /* 18/34 */
+
+/* Ошибка: читается по нарушению порядка, а не по красной сирене.
+   «Слой сместился на несколько градусов» — это обязательно дуга: круг,
+   повёрнутый на 12°, выглядит ровно так же, как неповёрнутый, и состояние
+   было бы неотличимо от отказа. Поэтому сбившийся слой показывает поток. */
+.ai-mark-error {
+  --orb-core-op: 0.18; --orb-ring-op: 0.35; --orb-layer-op: 0.03;
+  --orb-bar-fill: var(--orb-muted);
+  --orb-flow-op: 0.5;
+}
+.ai-mark-error .orb-stream { stroke: var(--orb-muted); }
+.ai-mark-error .orb-stream.s1,
+.ai-mark-error .orb-stream.s3 { opacity: 0; }
+.ai-mark-error .orb-stream.s2 { transform: rotate(-24deg); }
+
+/* Тёмная тема: корпус уходит в smoke black, красное свечение поднимается
+   до 45–55%, под орбом допускается мягкое красное свечение 8–12%. */
+/* Приложение атрибут темы не ставит — тема только системная. Селектор
+   :root:not([data-theme="light"]) здесь применялся бы всегда, и тёмные
+   значения попадали бы в светлую тему (так и было 21–22.09.2026). */
+@media (prefers-color-scheme: dark) {
+  .ai-mark { --orb-body: var(--orb-smoke); --orb-halo: 0.10; }
+  .ai-mark-idle { --orb-core-op: 0.48; }
+  .ai-mark-read { --orb-core-op: 0.72; }
+  .ai-mark-refused, .ai-mark-error { --orb-halo: 0; }
+}
+
+/* --- Движение -------------------------------------------------------------
+   Всё под prefers-reduced-motion: no-preference. При отключённой анимации
+   остаётся статичный знак — состояния по-прежнему различимы по яркости,
+   контуру и высоте столбцов. */
+@media (prefers-reduced-motion: no-preference) {
+  /* Покой: дыхание ±2,5%, цикл 5,5 с. Движение почти подсознательное. */
+  .ai-mark-idle svg { animation: orbBreath 5.5s ease-in-out infinite; }
+  .ai-mark-idle::before { animation: orbDrift 6s ease-in-out infinite; }
+
+  /* Разбор: мягкая волна по поверхности, столбцы — спокойный waveform. */
+  .ai-mark-parse svg { animation: orbWave 1.8s ease-in-out infinite; }
+  .ai-mark-parse .orb-bar { animation: orbWaveBar 1.8s ease-in-out infinite; }
+  .ai-mark-parse .orb-bar.b2 { animation-delay: 0.2s; }
+  .ai-mark-parse .orb-bar.b3 { animation-delay: 0.4s; }
+
+  /* Составление: потоки идут по разным слоям и навстречу друг другу. */
+  .ai-mark-draft .orb-stream.s1 { animation: orbSpin 2.2s linear infinite; }
+  .ai-mark-draft .orb-stream.s2 { animation: orbSpinBack 2.5s linear infinite; }
+  .ai-mark-draft .orb-stream.s3 { animation: orbSpin 2.0s linear infinite; }
+
+  /* Проверка: кольцо сжимается на 2–3%, проходит один контрольный импульс. */
+  .ai-mark-check svg { animation: orbSqueeze 0.85s ease-in-out infinite; }
+  .ai-mark-check .orb-pulse { animation: orbCheckPulse 0.85s ease-out infinite; }
+
+  /* Чтение витрины: слои дышат вразнобой, столбцы меняют высоту. */
+  .ai-mark-read .orb-stream.s1 { animation: orbSpin 3.4s linear infinite; }
+  .ai-mark-read .orb-stream.s3 { animation: orbSpinBack 3.0s linear infinite; }
+  .ai-mark-read .orb-layer.l1 { animation: orbErode 3.2s ease-in-out infinite; }
+  .ai-mark-read .orb-layer.l2 { animation: orbErode 3.2s ease-in-out infinite 0.5s; }
+  .ai-mark-read .orb-layer.l3 { animation: orbErode 3.2s ease-in-out infinite 1s; }
+  .ai-mark-read .orb-bar { animation: orbMorphBar 3.2s ease-in-out infinite; }
+  .ai-mark-read .orb-bar.b2 { animation-delay: 0.45s; }
+  .ai-mark-read .orb-bar.b3 { animation-delay: 0.9s; }
+
+  /* Ответ готов: слои собираются, один короткий pulse — и покой. */
+  .ai-mark-done svg { animation: orbAssemble 1s cubic-bezier(0.22, 1, 0.36, 1) 1; }
+  .ai-mark-done .orb-pulse { animation: orbDonePulse 0.4s ease-out 0.5s 1; }
+
+  /* Отказ: потоки встали, кольцо слегка закрылось внутрь. Один раз. */
+  .ai-mark-refused svg { animation: orbClose 0.9s cubic-bezier(0.22, 1, 0.36, 1) 1; }
+
+  /* Ошибка: слой теряет синхронность на мгновение и фиксируется. */
+  .ai-mark-error .orb-stream.s2 { animation: orbSlip 0.32s ease-out 1; }
+
+}
+
+@keyframes orbBreath { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+/* «Внутри едва заметно течёт красный свет»: меняется яркость слоя света,
+   а не всего знака — иначе бледнели бы и белые столбцы. */
+@keyframes orbDrift {
+  0%, 100% { opacity: calc(var(--orb-core-op) * var(--orb-light) * 0.78); }
+  50%      { opacity: calc(var(--orb-core-op) * var(--orb-light)); }
+}
+@keyframes orbWave {
+  0%, 100% { transform: scale(1, 1); }
+  35%      { transform: scale(1.02, 0.985); }
+  70%      { transform: scale(0.985, 1.015); }
+}
+@keyframes orbWaveBar { 0%, 100% { transform: scaleY(0.72); } 50% { transform: scaleY(1.12); } }
+@keyframes orbSpin     { to { transform: rotate(360deg); } }
+@keyframes orbSpinBack { to { transform: rotate(-360deg); } }
+@keyframes orbSqueeze  { 0%, 100% { transform: scale(1); } 45% { transform: scale(0.975); } }
+@keyframes orbCheckPulse {
+  0%   { opacity: 0.65; transform: scale(0.9); }
+  100% { opacity: 0;    transform: scale(1.02); }
+}
+@keyframes orbErode {
+  0%, 100% { opacity: var(--orb-layer-op);            transform: scale(1); }
+  50%      { opacity: calc(var(--orb-layer-op) * 2.4); transform: scale(0.93); }
+}
+@keyframes orbMorphBar { 0%, 100% { transform: scaleY(0.85); } 50% { transform: scaleY(1.15); } }
+@keyframes orbAssemble { from { transform: scale(0.94); } to { transform: scale(1); } }
+@keyframes orbDonePulse {
+  0%   { opacity: 1; stroke: var(--orb-white); transform: scale(0.98); }
+  100% { opacity: 0; stroke: var(--orb-red);   transform: scale(1.1); }
+}
+@keyframes orbClose { from { transform: scale(1.04); } to { transform: scale(1); } }
+@keyframes orbSlip  { from { transform: rotate(0deg); } to { transform: rotate(-24deg); } }
+
+/* --- Орб на WebGL в ленте -------------------------------------------------
+   Блок ожидания и передача «готово» в пришедшем ответе свёрстаны одинаково,
+   поэтому орб при смене одного на другой остаётся на месте. Холст не
+   получает фон и рамку: он и есть объект, карточка вокруг него — лишнее. */
+.ai-think-orb {
+  display: flex; justify-content: center;
+  padding: var(--s2) 0 var(--s3);
+  --ai-orb-pending: 120px;
+}
+.ai-think-orb .ai-orb { gap: 0; }
+/* Орб на прозрачном фоне везде — решение владельца от 22.09.2026 (тёмная
+   круглая сцена снята). На светлой теме частицы рисуются темнее: движок
+   получает mode="light", как в оригинальном компоненте. */
+.ai-orb canvas { background: transparent; border-radius: 0; box-shadow: none; }
+@media (max-width: 860px) {
+  .ai-think-orb { --ai-orb-pending: 96px; padding: var(--s1) 0 var(--s2); }
+}
+/* Пустой экран: орб кликабелен — ставит курсор в поле. Явная цель фокуса
+   не нужна, клавиатура идёт в само поле. */
+.ai-welcome-orb { gap: 0; }
+.ai-welcome-orb canvas { max-width: 100%; }
+
+/* --- Прежний мелкий знак (вариант plain) ---------------------------------
+   Графитовый круг с тремя белыми столбцами, без красного контура — как было
+   до 21.09.2026. Стоит в строке разбора, шапке отказа и на боковой панели.
+   Фон обёртки орба здесь не нужен: убираем свет и тень. */
+.ai-mark-plain { background: none; box-shadow: none; }
+.ai-mark-plain::before { content: none; }
+.ai-plain-body  { fill: #1A1D23; }
+.ai-plain-sheen { fill: #ffffff; opacity: 0.08; }
+.ai-plain-bar   { fill: #F5F5F3; transform-box: fill-box; transform-origin: 50% 100%; }
+.ai-mark-plain.is-bad .ai-plain-bar { fill: #FF9A9D; }
+@media (prefers-reduced-motion: no-preference) {
+  .ai-mark-plain.is-busy .ai-plain-bar { animation: aiPlainBar 1.6s ease-in-out infinite; }
+  .ai-mark-plain.is-busy .ai-plain-bar.b2 { animation-delay: 0.18s; }
+  .ai-mark-plain.is-busy .ai-plain-bar.b3 { animation-delay: 0.36s; }
+}
+@keyframes aiPlainBar { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(1.4); } }
+
+/* --- Размеры по местам ----------------------------------------------------
+   Из спецификации, лист «Размеры и места». Каждое место названо, чтобы не
+   подбирать размер заново при следующей правке вёрстки. */
+.ai-welcome .ai-mark { --ai-mark-size: clamp(200px, 26vh, 280px); }  /* пустой экран, базовый 240 */
+.ai-welcome { --ai-orb-size: clamp(200px, 26vh, 280px); }              /* орб на WebGL — тот же коридор */
+.ai-think .ai-mark   { --ai-mark-size: 32px; }                        /* строка «думает» */
+/* Шапка ответа, 56 px: сборка полная, но контур в единицах viewBox даёт
+   здесь меньше пикселя — поднимаем его и свет, иначе знак темнеет. */
+.ai-verdict .ai-mark { --ai-mark-size: 56px; --orb-stroke: 3; --orb-light: 1.25; }
+.ai-sidebar-brand .ai-mark { --ai-mark-size: 28px; }
+/* Навигация: спецификация даёт коридор 20–24 px. Берём нижнюю границу —
+   соседние значки в верхнем ряду 16 px, на нижней панели 19 px, и орб
+   в 24 px выбивался бы из ряда сильнее, чем нужно для акцента. */
+.mode-icon .ai-mark { --ai-mark-size: 20px; }
+.bottom-nav-icon .ai-mark { --ai-mark-size: 22px; }
+.mode-icon, .bottom-nav-icon { display: inline-flex; align-items: center; justify-content: center; }
+
+/* Значок навигации: короткий внутренний импульс при наведении и фокусе,
+   без вращения. Сложного здесь быть не должно — это иконка. */
+@media (prefers-reduced-motion: no-preference) {
+  .mode-row button:hover .ai-mark .orb-pulse,
+  .mode-row button:focus-visible .ai-mark .orb-pulse,
+  .bottom-strip button:hover .ai-mark .orb-pulse,
+  .bottom-strip button:focus-visible .ai-mark .orb-pulse {
+    animation: orbCheckPulse 0.5s ease-out 1;
+  }
+}
+
+/* --- боковая панель ------------------------------------------------------- */
+.ai-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--e1);
+  overflow: hidden;
+}
+.ai-sidebar-head { padding: var(--s4) var(--s3) var(--s3); display: flex; flex-direction: column; gap: var(--s3); }
+.ai-sidebar-brand {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: 0 var(--s1);
+  /* 17px вместо var(--t-ui): владелец просил подпись чуть крупнее (22.09.2026) */
+  font-size: 17px; font-weight: 650; letter-spacing: -0.012em;
+}
+.ai-sidebar-close {
+  margin-left: auto; width: 32px; height: 32px; display: none;
+  align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--muted); cursor: pointer;
+}
+.ai-new { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); }
+
+.ai-search {
+  display: flex; align-items: center; gap: var(--s2);
+  height: 38px; padding: 0 var(--s3);
+  border: 0; border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--muted);
+}
+.ai-search input {
+  flex: 1; min-width: 0; border: 0; outline: none; background: transparent;
+  color: var(--text); font: inherit; font-size: var(--t-ui);
+}
+.ai-search input::-webkit-search-cancel-button { filter: grayscale(1); }
+
+.ai-sidebar-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding: 0 var(--s2) var(--s3);
+  display: flex; flex-direction: column; gap: var(--s4);
+}
+.ai-sidebar-empty { margin: var(--s2); font-size: var(--t-ui); line-height: 1.6; color: var(--muted); }
+.ai-dialog-group { display: flex; flex-direction: column; gap: 2px; }
+.ai-group-name {
+  margin: 0 0 var(--s1) var(--s3); font-size: 11.5px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted);
+}
+
+.ai-dialog { position: relative; display: flex; align-items: stretch; border-radius: var(--r-sm); }
+.ai-dialog:hover { background: var(--surface-2); }
+.ai-dialog.active { background: var(--red-soft); }
+.ai-dialog.editing { padding: var(--s1); }
+.ai-dialog.editing .ui-input { width: 100%; padding: 7px var(--s2); font-size: var(--t-ui); }
+.ai-dialog-open {
+  flex: 1 1 auto; min-width: 0; text-align: left; cursor: pointer;
+  border: 0; background: none; padding: var(--s2) var(--s1) var(--s2) var(--s3); font: inherit;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.ai-dialog-title {
+  display: flex; align-items: center; gap: var(--s1); min-width: 0;
+  font-size: var(--t-ui); font-weight: 500; color: var(--text-secondary);
+}
+.ai-dialog-title svg { flex: 0 0 auto; }
+/* Многоточие живёт на внутреннем элементе: у flex-контейнера text-overflow
+   не срабатывает, и название обрезалось бы «в никуда». */
+.ai-dialog-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-dialog.active .ai-dialog-title { font-weight: 600; color: var(--text); }
+.ai-dialog-last {
+  font-size: var(--t-meta); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ai-dialog-more {
+  flex: 0 0 auto; width: 32px; margin: var(--s1) var(--s1) var(--s1) 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-sm); background: none;
+  color: var(--icon-muted); cursor: pointer; opacity: 0;
+  transition: opacity 120ms ease;
+}
+.ai-dialog:hover .ai-dialog-more,
+.ai-dialog.active .ai-dialog-more,
+.ai-dialog-more:focus-visible { opacity: 1; }
+/* На устройствах без наведения кнопка видна всегда — иначе её не найти. */
+@media (hover: none) { .ai-dialog-more { opacity: 1; } }
+.ai-dialog-more:hover { background: var(--surface); color: var(--text); }
+
+.ai-menu-scrim { position: fixed; inset: 0; z-index: 39; border: 0; background: transparent; cursor: default; }
+.ai-dialog-menu {
+  position: absolute; z-index: 40; top: calc(100% - var(--s1)); right: var(--s2); min-width: 184px;
+  padding: var(--s1); border-radius: var(--r-md);
+  background: var(--surface-raised); box-shadow: var(--e2);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.ai-dialog-menu button {
+  display: flex; align-items: center; gap: var(--s2); width: 100%;
+  padding: var(--s2) var(--s3); border: 0; border-radius: var(--r-sm); background: none;
+  color: var(--text-secondary); cursor: pointer; font: inherit; font-size: var(--t-ui); text-align: left;
+}
+.ai-dialog-menu button:hover { background: var(--surface-2); color: var(--text); }
+.ai-dialog-menu button.danger { color: var(--red); }
+.ai-dialog-menu button.danger:hover { background: var(--red-soft); }
+
+.ai-sidebar-foot {
+  flex: 0 0 auto; padding: var(--s3) var(--s4);
+  border-top: 1px solid var(--hairline);
+  display: flex; align-items: center; gap: var(--s2); min-width: 0;
+}
+.ai-avatar {
+  width: 30px; height: 30px; flex: 0 0 auto; border-radius: 50%;
+  background: var(--surface-2); color: var(--text-secondary);
+  font-size: var(--t-meta); font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+.ai-who { min-width: 0; display: flex; flex-direction: column; }
+.ai-who strong { font-size: var(--t-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-who small { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- шапка рабочей области ------------------------------------------------ */
+.ai-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: var(--s5); }
+.ai-main-head { display: flex; align-items: center; gap: var(--s3); }
+.ai-main-head h2 {
+  margin: 0; font-size: var(--t-title); font-weight: 600; letter-spacing: -0.015em; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ai-head-gap { flex: 1 1 auto; }
+.ai-chip {
+  flex: 0 0 auto; padding: var(--s1) var(--s2); border-radius: var(--r-full);
+  background: var(--surface-2); color: var(--muted); font-size: var(--t-meta);
+}
+.ai-head-button {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s2);
+  height: 36px; padding: 0 var(--s3); cursor: pointer;
+  border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--muted); font: inherit; font-size: var(--t-ui);
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-head-button:hover { background: var(--surface-2); color: var(--text); }
+.ai-head-button.on { background: var(--red-soft); color: var(--red-soft-text); }
+/* На широком экране история всегда на виду слева — кнопка не нужна. */
+.ai-drawer-btn { display: none; }
+@media (max-width: 860px) { .ai-drawer-btn { display: inline-flex; } }
+
+.ai-settings {
+  display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: var(--s3) var(--s4);
+  padding: var(--s4); border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--e1);
+}
+.ai-settings-note { grid-column: 1 / -1; margin: 0; font-size: var(--t-meta); line-height: 1.55; color: var(--muted); }
+.ai-own-role { padding: var(--s2) 0; font-size: 14px; color: var(--text); }
+.ai-model { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) 0; font-size: var(--t-meta); color: var(--muted); }
+.ai-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.ai-dot.ok { background: var(--green); }
+.ai-dot.off { background: var(--red); }
+
+/* --- лента ---------------------------------------------------------------- */
+.ai-feed { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.ai-turns { display: flex; flex-direction: column; gap: var(--s7); }
+.ai-turn {
+  width: 100%; max-width: 720px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: var(--s5);
+}
+.ai-ask-row { display: flex; justify-content: flex-end; }
+.ai-question {
+  margin: 0; max-width: 540px; padding: var(--s3) var(--s4);
+  border-radius: var(--r-md) var(--r-md) var(--s1) var(--r-md);
+  background: var(--surface-2);
+  font-size: 15px; line-height: 1.5; color: var(--text);
+}
+.ai-reply { display: flex; flex-direction: column; gap: var(--s5); min-width: 0; }
+
+/* --- строка рассуждения --------------------------------------------------- */
+.ai-think { display: flex; flex-direction: column; gap: var(--s3); }
+.ai-think-line {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: var(--s2);
+  padding: var(--s1) var(--s3) var(--s1) var(--s1); cursor: pointer;
+  border: 0; border-radius: var(--r-full);
+  background: var(--surface-2); color: var(--text); font: inherit; font-size: var(--t-meta);
+  transition: background 120ms ease;
+}
+.ai-think-line:hover { background: var(--surface); box-shadow: var(--e1); }
+.ai-think.pending .ai-think-line { cursor: default; background: transparent; }
+.ai-think-line strong { font-weight: 600; }
+.ai-think-ms { color: var(--muted); font-variant-numeric: tabular-nums; }
+.ai-caret { color: var(--icon-muted); flex: 0 0 auto; transition: transform 160ms ease; }
+.ai-think-line .ai-caret.open { transform: rotate(180deg); }
+.ai-fold-head .ai-caret.open { transform: rotate(90deg); }
+
+.ai-think-dots { display: inline-flex; gap: 3px; }
+.ai-think-dots i {
+  width: 4px; height: 4px; border-radius: 50%; background: var(--muted);
+  animation: aiDot 1.2s ease-in-out infinite;
+}
+.ai-think-dots i:nth-child(2) { animation-delay: 0.15s; }
+.ai-think-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes aiDot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+.ai-think-body {
+  margin-left: var(--s3); padding: var(--s1) 0 var(--s1) var(--s4);
+  border-left: 2px solid var(--hairline);
+  display: flex; flex-direction: column; gap: var(--s3);
+}
+.ai-stage {
+  display: flex; align-items: center; gap: var(--s2);
+  font-size: var(--t-ui); line-height: 1.45; color: var(--muted);
+}
+.ai-stage-mark { display: inline-flex; flex: 0 0 auto; color: var(--green); }
+.ai-stage.failed { color: var(--red-soft-text); }
+.ai-stage.failed .ai-stage-mark { color: var(--red); }
+.ai-stage.current { color: var(--text); font-weight: 600; }
+/* Этап, который проверка отклонила, а модель переписывает заново. */
+.ai-stage.retry { color: var(--muted); }
+.ai-stage.retry .ai-stage-mark { color: var(--amber); }
+.ai-stage .ai-stage-spin { margin: 0; }
+.ai-stage-ms { margin-left: auto; padding-left: var(--s3); font-size: var(--t-meta); font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ai-stage-spin {
+  width: 13px; height: 13px; flex: 0 0 auto; border-radius: 50%;
+  border: 2px solid var(--red); border-top-color: transparent;
+  animation: aiSpin 0.9s linear infinite;
+}
+.ai-think-note { margin: 0; font-size: var(--t-ui); line-height: 1.65; color: var(--muted); }
+.ai-think-note > span {
+  display: block; margin-bottom: var(--s1); font-size: 11.5px; font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
+}
+
+.ai-skeleton { display: flex; flex-direction: column; gap: var(--s2); }
+.ai-skeleton i {
+  height: 13px; border-radius: 7px; background: var(--surface-2);
+  animation: aiPulse 1.6s ease-in-out infinite;
+}
+.ai-skeleton i:nth-child(2) { animation-delay: 0.2s; }
+.ai-skeleton i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes aiPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+/* --- тело ответа ----------------------------------------------------------
+   Ни числа, ни таблица больше не завёрнуты в рамку: они лежат прямо на
+   странице, а отделяет их воздух. */
+.ai-hero { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2) var(--s3); }
+.ai-hero-value {
+  font-size: var(--t-display); font-weight: 650; letter-spacing: -0.03em;
+  color: var(--text); font-variant-numeric: tabular-nums; line-height: 1;
+}
+.ai-hero-label { font-size: 15px; color: var(--muted); }
+.ai-hero-scope { margin-left: auto; font-size: var(--t-meta); color: var(--muted); }
+
+.ai-facts { display: flex; flex-wrap: wrap; gap: var(--s5) var(--s6); }
+.ai-fact { flex: 0 1 auto; min-width: 140px; display: flex; flex-direction: column; gap: var(--s1); }
+.ai-fact-value { font-size: 28px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.1; letter-spacing: -0.02em; }
+.ai-fact-label { font-size: var(--t-meta); color: var(--muted); }
+
+.ai-summary { margin: 0; font-size: var(--t-body); line-height: 1.65; color: var(--text); }
+.ai-empty { font-size: 14px; color: var(--muted); }
+
+.ai-table-card { display: flex; flex-direction: column; gap: var(--s2); }
+.ai-table-head { display: flex; align-items: baseline; gap: var(--s2); }
+.ai-table-title { font-size: var(--t-meta); font-weight: 600; color: var(--text-secondary); }
+.ai-table-count { font-size: var(--t-meta); color: var(--muted); }
+.ai-table-wrap { overflow-x: auto; }
+.ai-table { border-collapse: collapse; width: 100%; font-size: var(--t-ui); }
+.ai-table th,
+.ai-table td { padding: var(--s2) var(--s3); text-align: left; white-space: nowrap; }
+.ai-table th:first-child,
+.ai-table td:first-child { padding-left: 0; }
+.ai-table th:last-child,
+.ai-table td:last-child { padding-right: 0; }
+.ai-table th {
+  font-size: var(--t-meta); font-weight: 500; color: var(--muted);
+  border-bottom: 1px solid var(--hairline); padding-bottom: var(--s2);
+}
+.ai-table td { color: var(--text); border-bottom: 1px solid var(--hairline); }
+.ai-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ai-table tbody tr:last-child td { border-bottom: 0; }
+.ai-table tbody tr:hover td { background: var(--surface-2); }
+
+.ai-notes { margin: 0; padding-left: var(--s4); font-size: var(--t-meta); line-height: 1.55; color: var(--muted); }
+.ai-notes li { margin: var(--s1) 0; }
+
+/* --- свёрнутые блоки -------------------------------------------------------
+   Строкой со стрелкой, а не кнопкой в рамке: раньше «Откуда число» выглядело
+   так же весомо, как сам ответ. */
+.ai-folds { display: flex; flex-direction: column; gap: var(--s2); }
+.ai-fold { display: flex; flex-direction: column; gap: var(--s2); }
+.ai-fold-head {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: var(--s2);
+  max-width: 100%; text-align: left; cursor: pointer;
+  padding: var(--s1) var(--s2) var(--s1) 0; border: 0; background: none;
+  color: var(--muted); font: inherit; font-size: var(--t-ui);
+  transition: color 120ms ease;
+}
+.ai-fold-head:hover { color: var(--text); }
+.ai-fold-head strong { font-weight: 500; color: var(--text-secondary); }
+.ai-fold-head:hover strong { color: var(--text); }
+.ai-fold-meta {
+  padding-left: var(--s1); font-size: var(--t-meta); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ai-fold-body { font-size: var(--t-ui); }
+.ai-source-text {
+  margin: 0; padding: var(--s3) var(--s4); border-radius: var(--r-sm);
+  background: var(--surface-2); font-size: var(--t-ui); line-height: 1.6; color: var(--text-secondary);
+}
+.ai-sql {
+  margin: 0; padding: var(--s4); border-radius: var(--r-sm);
+  background: #0B0D11; color: #E8EAF0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--t-meta); line-height: 1.7;
+  /* Перенос по словам рвал запрос посреди идентификатора, поэтому
+     длинная строка уезжает вбок, как в любом редакторе кода. */
+  overflow-x: auto; white-space: pre;
+}
+.ai-sql.bad { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), inset 3px 0 0 var(--red); }
+
+/* --- отказ, уточнение и ошибка -------------------------------------------- */
+.ai-verdict {
+  padding: var(--s4) var(--s5); border-radius: var(--r-md);
+  background: var(--red-soft); box-shadow: inset 3px 0 0 var(--red);
+  display: flex; flex-direction: column; gap: var(--s3);
+}
+.ai-verdict.clarify { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--text); }
+.ai-verdict-head { display: flex; align-items: center; gap: var(--s3); }
+.ai-verdict-head p { margin: 0; font-size: var(--t-ui); font-weight: 600; color: var(--red-soft-text); }
+.ai-verdict.clarify .ai-verdict-head p { color: var(--text); }
+.ai-verdict-text { margin: 0; font-size: var(--t-body); line-height: 1.6; color: var(--text); }
+.ai-verdict-hint { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text-secondary); }
+
+.ai-error {
+  width: 100%; max-width: 720px; margin: 0 auto;
+  display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s3) var(--s4); border-radius: var(--r-sm);
+  background: var(--red-soft); box-shadow: inset 3px 0 0 var(--red);
+  font-size: var(--t-ui); color: var(--red-soft-text);
+}
+
+/* --- действия под ответом ------------------------------------------------- */
+.ai-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.ai-actions-gap { flex: 1 1 auto; }
+.ai-action {
+  display: inline-flex; align-items: center; gap: var(--s2);
+  height: 36px; padding: 0 var(--s3); cursor: pointer;
+  border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--muted); font: inherit; font-size: var(--t-meta);
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-action:hover { background: var(--surface-2); color: var(--text); }
+.ai-action.rate { font-weight: 600; color: var(--text-secondary); }
+.ai-action.rate svg { color: var(--red); }
+.ai-rated { font-size: var(--t-meta); color: var(--muted); }
+
+/* --- пустой экран --------------------------------------------------------- */
+.ai-welcome {
+  flex: 1 1 auto;
+  /* min-height здесь мешал: блок переставал сжиматься и переставал помещаться
+     в отведённую разделу высоту. */
+  min-height: 0;
+  display: flex; flex-direction: column; align-items: center;
+  /* safe center — при нехватке места центрирование срезает верх, и знак
+     уходил под кромку ленты. С safe блок прижимается к началу и целиком
+     остаётся досягаемым прокруткой. */
+  justify-content: safe center;
+  gap: clamp(var(--s3), 2.2vh, var(--s5));
+  padding: var(--s4) 0;
+}
+/* Заголовок и подсказки подстраиваются под высоту окна: на низком экране
+   блок уменьшается, а не уезжает за край. Размер самого орба задан
+   в его собственном блоке — по листу «Размеры и места» спецификации. */
+.ai-welcome-text,
+.ai-welcome-examples { flex: 0 0 auto; }
+/* Пошире: на 560px подпись ложилась в три строки и съедала высоту,
+   на 640px — в две, а читаться хуже не стала. */
+.ai-welcome-text { text-align: center; max-width: 640px; }
+.ai-welcome-title { margin: 0 0 var(--s2); font-size: clamp(19px, 1.1vh + 17px, 26px); font-weight: 650; letter-spacing: -0.02em; }
+.ai-welcome-sub { margin: 0; font-size: clamp(13.5px, 0.3vh + 13px, 15px); line-height: 1.6; color: var(--muted); }
+/* Ширина по колонке, а не 720px: три подсказки укладываются в одну строку
+   вместо двух и не вылезают за нижний контур. */
+.ai-welcome-examples {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  gap: var(--s2); max-width: 100%;
+}
+.ai-welcome-examples button {
+  padding: var(--s3) var(--s4); cursor: pointer;
+  border: 0; border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--e1);
+  color: var(--text-secondary); font: inherit; font-size: 14px;
+  transition: color 120ms ease, transform 120ms ease;
+}
+.ai-welcome-examples button:hover { color: var(--red); transform: translateY(-1px); }
+
+/* Совсем низкое окно: подсказки становятся компактнее. Прокрутка остаётся
+   запасным вариантом — safe center не даёт срезать верх, поэтому ничего
+   не пропадает совсем. */
+/* Низкое окно: сначала поджимаем отступы и знак, и только в самом крайнем
+   случае убираем пояснение — та же мысль повторяется в блоке «Откуда число»
+   под каждым ответом, поэтому потеря небольшая. */
+@media (min-width: 861px) and (max-height: 800px) {
+  .ai-welcome { padding: var(--s2) 0; }
+  .ai-welcome-examples button { padding: var(--s2) var(--s3); font-size: var(--t-ui); }
+}
+@media (min-width: 861px) and (max-height: 760px) {
+  /* Держимся нижней границы спецификации (200 px), пока хватает места. */
+  .ai-welcome .ai-mark { --ai-mark-size: clamp(168px, 25vh, 200px); }
+  .ai-welcome { --ai-orb-size: clamp(168px, 25vh, 200px); }
+}
+
+@media (min-width: 861px) and (max-height: 620px) {
+  /* Здесь уже выбор между орбом и полем вопроса — выигрывает поле:
+     спрятанный ввод ломает работу, уменьшенный орб только вид. */
+  .ai-welcome .ai-mark { --ai-mark-size: clamp(96px, 16vh, 132px); }
+  .ai-welcome { --ai-orb-size: clamp(96px, 16vh, 132px); }
+}
+@media (min-width: 861px) and (max-height: 660px) {
+  .ai-welcome-sub { display: none; }
+}
+
+/* --- поле вопроса ---------------------------------------------------------
+   Единственный по-настоящему поднятый элемент ленты: заливка и уровень, а не
+   рамка, говорят, что сюда пишут. */
+.ai-composer-wrap {
+  position: sticky; bottom: 0; z-index: 12;
+  display: flex; flex-direction: column; align-items: center; gap: var(--s3);
+  padding: var(--s4) 0 var(--s2);
+  background: linear-gradient(to bottom, transparent, var(--bg) 26%);
+}
+.ai-chips { width: 100%; max-width: 720px; display: flex; flex-wrap: wrap; gap: var(--s2); }
+.ai-chips button {
+  height: 32px; padding: 0 var(--s3); cursor: pointer;
+  border: 0; border-radius: var(--r-full);
+  background: var(--surface-2); color: var(--muted); font: inherit; font-size: var(--t-meta);
+  transition: color 120ms ease, background 120ms ease;
+}
+.ai-chips button:hover { background: var(--red-soft); color: var(--red-soft-text); }
+
+.ai-composer {
+  position: relative; width: 100%; max-width: 720px;
+  padding: var(--s4) var(--s4) 52px;
+  border: 1px solid var(--hairline); border-radius: var(--r-lg);
+  background: var(--surface); box-shadow: var(--e1);
+  transition: box-shadow 140ms ease, border-color 140ms ease;
+}
+.ai-composer:focus-within { border-color: var(--red); box-shadow: var(--e2); }
+.ai-composer textarea {
+  width: 100%; border: 0; outline: none; resize: none; background: transparent;
+  color: var(--text); font: inherit; font-size: 15px; line-height: 1.5;
+}
+.ai-composer-hint {
+  position: absolute; left: var(--s4); bottom: var(--s4);
+  font-size: var(--t-meta); color: var(--muted);
+  opacity: 0; transition: opacity 140ms ease;
+}
+.ai-composer:focus-within .ai-composer-hint { opacity: 1; }
+.ai-send {
+  position: absolute; right: var(--s3); bottom: var(--s3);
+  width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: var(--red-fill); color: #ffffff; cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+.ai-send:hover:not(:disabled) { background: var(--red-fill-hover); transform: scale(1.04); }
+.ai-send:disabled { background: var(--surface-2); color: var(--icon-muted); cursor: default; }
+
+/* --- окно оценки ---------------------------------------------------------- */
+.ai-modal-scrim {
+  position: fixed; inset: 0; z-index: 90; background: var(--scrim);
+  display: flex; align-items: center; justify-content: center; padding: var(--s4);
+}
+.ai-modal {
+  width: min(460px, 100%); max-height: calc(100dvh - 40px); overflow-y: auto;
+  padding: var(--s5); border-radius: var(--r-lg);
+  background: var(--surface-raised); box-shadow: var(--e2);
+  display: flex; flex-direction: column; gap: var(--s4);
+}
+.ai-modal-head { display: flex; align-items: flex-start; gap: var(--s3); }
+.ai-modal-head > div { flex: 1 1 auto; min-width: 0; }
+.ai-modal-head .icon-button { width: 36px; height: 36px; flex: 0 0 auto; border: 0; background: var(--surface-2); }
+.ai-modal-title { margin: 0 0 var(--s1); font-size: 18px; font-weight: 650; letter-spacing: -0.015em; }
+.ai-modal-sub { margin: 0; font-size: var(--t-ui); line-height: 1.5; color: var(--muted); }
+.ai-modal-question {
+  margin: 0; padding: var(--s3); border-radius: var(--r-sm); background: var(--surface-2);
+  font-size: var(--t-ui); line-height: 1.5; color: var(--text-secondary);
+}
+
+.ai-rating-pick { display: flex; flex-direction: column; align-items: center; gap: var(--s2); }
+.ai-stars { display: inline-flex; gap: var(--s1); }
+.ai-stars button { border: 0; background: none; padding: var(--s1); cursor: pointer; line-height: 0; border-radius: var(--r-sm); }
+.ai-stars button:disabled { cursor: default; }
+.ai-stars svg path { fill: none; stroke: var(--line-strong); transition: fill 140ms ease, stroke 140ms ease, transform 140ms ease; }
+.ai-stars button.on svg path { fill: var(--red); stroke: var(--red); }
+.ai-stars button:hover:not(:disabled) svg path { stroke: var(--red); }
+.ai-rating-hint { font-size: var(--t-ui); font-weight: 600; color: var(--text-secondary); }
+
+.ai-required { color: var(--red-soft-text); }
+.ui-textarea.invalid { border-color: var(--red); }
+.ai-modal-error { margin: 0; font-size: var(--t-ui); color: var(--red-soft-text); }
+.ai-modal-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.ai-modal-note { flex: 1 1 100%; font-size: var(--t-meta); line-height: 1.45; color: var(--muted); }
+.ai-modal-note.warn { color: var(--red-soft-text); }
+
+/* --- телефон и планшет ---------------------------------------------------- */
+.ai-drawer { position: fixed; inset: 0; z-index: 60; background: var(--scrim); display: flex; }
+.ai-drawer-panel { width: min(320px, 88vw); height: 100%; background: var(--surface); }
+.ai-drawer-panel .ai-sidebar { height: 100%; max-height: none; border-radius: 0; box-shadow: none; }
+.ai-drawer-panel .ai-sidebar-close { display: inline-flex; }
+
+@media (max-width: 1100px) {
+  .ai-shell { grid-template-columns: 244px minmax(0, 1fr); gap: var(--s4); }
+  .ai-settings { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 860px) {
+  /* Колонка вместо сетки: история уезжает в выдвижную панель, а поле вопроса
+     остаётся внизу экрана. */
+  /* min-width: 0 по всей цепочке. На широком экране это даёт колонка
+     minmax(0, 1fr), а в мобильной колонке flex-элементы по умолчанию не
+     сжимаются уже своего содержимого — и широкая таблица внутри ответа
+     растягивала весь раздел за правый край экрана. */
+  .ai-shell,
+  .ai-main,
+  .ai-feed,
+  .ai-turns,
+  .ai-turn,
+  .ai-reply,
+  .ai-composer-wrap,
+  .ai-table-card { min-width: 0; }
+  .ai-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .ai-main { flex: 1 1 auto; min-height: 0; gap: var(--s4); }
+  .ai-shell-side { display: none; }
+  .ai-chip { display: none; }
+  .ai-turn { max-width: none; gap: var(--s4); }
+  .ai-turns { gap: var(--s6); }
+  .ai-reply { gap: var(--s4); }
+  .ai-error, .ai-chips, .ai-composer { max-width: none; }
+  .ai-main-head h2 { font-size: 17px; }
+  .ai-hero-value { font-size: 34px; }
+  .ai-hero-scope { margin-left: 0; flex-basis: 100%; }
+  .ai-fact { min-width: 45%; }
+  .ai-welcome { min-height: 240px; gap: var(--s4); }
+  /* Телефон: базовый 144 px, коридор 120–160 по спецификации. */
+  .ai-welcome .ai-mark { --ai-mark-size: clamp(120px, 18vh, 160px); }
+  .ai-welcome { --ai-orb-size: clamp(120px, 18vh, 160px); }
+  /* Раньше каждая подсказка занимала строку целиком — три штуки съедали
+     120 px. Теперь встают в поток и укладываются в одну-две строки. */
+  .ai-welcome-examples { gap: var(--s2); }
+  .ai-welcome-examples button { padding: var(--s2) var(--s3); font-size: var(--t-ui); }
+  /* Поле вопроса в одну строку: кнопка стоит рядом с текстом, а не под ним.
+     Так на ленту остаётся примерно на 60 px больше, и три подсказки
+     помещаются над полем целиком. */
+  .ai-composer-wrap { padding: var(--s2) 0 var(--s1); gap: var(--s2); }
+  .ai-composer {
+    display: flex; flex-direction: row; align-items: flex-end; gap: var(--s2);
+    padding: var(--s2) var(--s2) var(--s2) var(--s3);
+    border-radius: var(--r-md);
+  }
+  .ai-composer label { display: block; flex: 1 1 auto; min-width: 0; }
+  .ai-composer textarea { min-height: 40px; max-height: 120px; padding: 9px 0; }
+  .ai-composer-hint { display: none; }
+  .ai-send { position: static; flex: 0 0 auto; width: 40px; height: 40px; }
+  /* Цели нажатия на телефоне — не меньше 44px. */
+  .ai-action { height: 44px; padding: 0 var(--s4); font-size: var(--t-ui); }
+  .ai-actions-gap { display: none; }
+  .ai-rated { flex-basis: 100%; }
+  .ai-fold-meta { display: none; }
+  .ai-dialog-more { width: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Движение орба выключается своим @media (no-preference) — здесь только
+     остальное. */
+  .ai-skeleton i,
+  .ai-think-dots i { animation: none; }
+  .ai-send:hover:not(:disabled),
+  .ai-welcome-examples button:hover { transform: none; }
+}
+
+/* --- Раздел ИИ: страница не прокручивается целиком -------------------------
+   Лента и история листаются внутри себя, поэтому поле вопроса всегда на виду,
+   а обе колонки заканчиваются на одной линии. Высота считается раскладкой:
+   рабочая область отдаёт разделу ровно то, что осталось от шапки и
+   переключателя разделов. Подобранное число здесь было ошибкой — при другой
+   высоте шапки поле вопроса уезжало под нижний край.
+   ========================================================================= */
+.app-shell.ai-mode .workspace {
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+}
+.app-shell.ai-mode .topbar,
+.app-shell.ai-mode .mode-row,
+.app-shell.ai-mode .scope-notice { flex: 0 0 auto; }
+
+.app-shell.ai-mode .view-stage {
+  /* Сжимается до свободного места — иначе высота считалась бы по длине
+     ленты, и поле вопроса снова уехало бы под нижний край. */
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.app-shell.ai-mode .analytics-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  padding-bottom: 0;
+  /* Здесь нужен именно visible: overflow у предка отрезал бы ленту от
+     прокручиваемой области, и поле вопроса переставало бы держаться снизу. */
+  overflow: visible;
+}
+.app-shell.ai-mode .analytics-pane > .ai-shell { flex: 1 1 auto; }
+
+.ai-feed { overflow-y: auto; overscroll-behavior: contain; }
+/* Поле вопроса держится снизу самой раскладкой, а не липким позиционированием:
+   оно заканчивается ровно там же, где история. */
+.ai-composer-wrap { position: static; background: none; padding-bottom: 0; }
+
+@media (min-width: 861px) {
+  /* Только на широком экране: рабочая область прокручивается, когда нижнюю
+     кромку раздела тянут ниже экрана. */
+  .app-shell.ai-mode .workspace { overflow-y: auto; }
+
+  /* Нижняя кромка: её можно потянуть и дать разделу больше высоты. */
+  .ai-resize {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    height: 14px;
+    margin: 0;
+    border: 0;
+    padding: 0;
+    background: none;
+    cursor: ns-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+  }
+  .ai-resize::before {
+    content: "";
+    width: 56px;
+    height: 4px;
+    border-radius: var(--r-full);
+    background: var(--line);
+    transition: background 120ms ease, width 120ms ease;
+  }
+  .ai-resize:hover::before,
+  .ai-resize:focus-visible::before { background: var(--line-strong); width: 76px; }
+  .ai-resize.dragging::before { background: var(--red); width: 76px; }
+}
+
+@media (max-width: 860px) {
+  /* На телефоне тянуть нечего: раздел и так во весь экран. */
+  .ai-resize { display: none; }
+  .app-shell.ai-mode .workspace { overflow-y: hidden; }
+  .app-shell.ai-mode .view-stage { overflow: hidden; }
+}
+
+/* --- Полоса с областью данных -------------------------------------------- */
+.scope-notice {
+  margin: 0 0 14px; padding: 10px 14px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--blue-soft);
+  font-size: 13px; line-height: 1.5; color: var(--text-secondary);
+}
+.scope-notice.blocked { border-color: var(--red); background: var(--red-soft); color: var(--red-soft-text); }
+
+/* --- Роль и область данных в админ-панели -------------------------------- */
+.admin-role-cell { display: flex; flex-direction: column; gap: 2px; min-width: 190px; }
+.admin-role-cell strong { color: var(--text); }
+.admin-role-cell small { font-size: 11.5px; color: var(--muted); }
+.admin-role-warn { color: var(--red); }
+.admin-role-edit {
+  align-self: flex-start; margin-top: 4px;
+  border: 0; background: none; cursor: pointer; padding: 0;
+  font: inherit; font-size: 12px; color: var(--red); text-decoration: underline;
+}
+.admin-role-cell.editing { gap: 6px; min-width: 230px; }
+.admin-role-cell.editing .ui-select,
+.admin-role-cell.editing .ui-input { padding: 6px 9px; font-size: 12.5px; }
+.admin-role-cell.editing .ui-select { padding-right: 28px; background-position: right 9px center; }
+.admin-role-buttons { display: flex; gap: 6px; }
+.admin-role-buttons .ui-button { padding: 6px 12px; font-size: 12.5px; }
+
+
+
+/* --- Раздел «Свод» -------------------------------------------------------
+   Плитки и настройка состава. Цвета берутся только из переменных темы,
+   поэтому отдельного тёмного блока здесь нет: он получается сам.
+   ========================================================================= */
+.summary-pane { display: flex; flex-direction: column; gap: 14px; }
+
+.summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.summary-head-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.summary-period { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
+.summary-note { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+
+.summary-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.summary-period-field { width: 190px; }
+.summary-settings { align-self: flex-end; }
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
+  gap: 12px;
+  transition: opacity 140ms ease;
+}
+.summary-grid.loading { opacity: 0.55; }
+
+.summary-tile {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.summary-tile-title {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.summary-tile-mark {
+  flex: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  cursor: help;
+}
+.summary-tile-value {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.summary-tile-value strong {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.summary-tile-unit { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.summary-tile-foot {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+.summary-tile-prev { color: var(--muted); }
+
+.summary-delta {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--neutral-soft);
+  color: var(--muted);
+}
+.summary-delta.up { background: var(--green-soft); color: var(--green-soft-text); }
+.summary-delta.down { background: var(--red-soft); color: var(--red-soft-text); }
+
+.summary-message {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.summary-message.error { border-left: 3px solid var(--red); color: var(--red-soft-text); background: var(--red-soft); }
+
+.summary-source { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+
+/* --- Настройка состава --- */
+.summary-editor {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.summary-editor-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+.summary-editor-count { font-size: 12.5px; color: var(--muted); }
+.summary-editor-count.warn { color: var(--red); }
+.summary-editor-note { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+
+.summary-group { border: 0; margin: 0; padding: 0; min-width: 0; }
+.summary-group legend {
+  padding: 0 0 7px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.summary-group-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 8px;
+}
+
+.summary-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  padding: 9px 11px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+.summary-option:hover { border-color: var(--line-strong); }
+.summary-option.checked { border-color: var(--red); background: var(--red-soft); color: var(--text); }
+.summary-option.locked { opacity: 0.5; cursor: default; }
+.summary-option.locked:hover { border-color: var(--line); }
+.summary-option input { accent-color: var(--red); width: 15px; height: 15px; flex: none; cursor: inherit; }
+.summary-option-title { flex: 1 1 auto; min-width: 0; }
+.summary-option-unit { flex: none; font-size: 11.5px; color: var(--muted); }
+
+.summary-editor-error {
+  margin: 0;
+  border-left: 3px solid var(--red);
+  border-radius: 6px;
+  background: var(--red-soft);
+  padding: 9px 11px;
+  font-size: 12.5px;
+  color: var(--red-soft-text);
+}
+.summary-editor-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.summary-editor-actions .ui-link-button:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+
+@media (max-width: 640px) {
+  .summary-head { align-items: stretch; }
+  .summary-controls { width: 100%; }
+  .summary-period-field { flex: 1 1 160px; width: auto; }
+  .summary-settings { flex: 1 1 140px; }
+  .summary-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .summary-tile { padding: 12px 13px; }
+  .summary-tile-value strong { font-size: 22px; }
+  .summary-group-items { grid-template-columns: 1fr; }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --field-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23a5afbd' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+  }
+}
+
+/* --- Раздел «Качество ответов» --------------------------------------------
+   Живёт в админке, поэтому наследует её карточку, но внутри собран на тех же
+   шкалах, что и раздел ИИ: отступы кратны 4, рамок нет, разделяют воздух
+   и уровень.
+   ========================================================================= */
+.quality-card { display: flex; flex-direction: column; gap: var(--s4); }
+
+.quality-head { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.quality-head h3 { margin: 0; }
+.quality-head-gap { flex: 1 1 auto; }
+.quality-period .ui-select { width: 140px; }
+.quality-head .ai-action { text-decoration: none; height: 38px; }
+
+
+/* Плитки встают ровными рядами по четыре: при auto-fit восьмая уезжала
+   на вторую строку одна и выглядела оторванной. */
+.quality-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s5) var(--s4);
+}
+@media (max-width: 1100px) { .quality-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.quality-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.quality-tile-value {
+  font-size: 26px; font-weight: 650; letter-spacing: -0.02em;
+  color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.quality-tile.warn .quality-tile-value { color: var(--amber-soft-text); }
+.quality-tile.bad .quality-tile-value { color: var(--red-soft-text); }
+.quality-tile-label { font-size: var(--t-meta); color: var(--muted); }
+.quality-tile-note { font-size: 11.5px; color: var(--icon-muted); }
+
+.quality-spread { display: flex; flex-direction: column; gap: var(--s1); }
+.quality-spread-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 52px 60px;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--t-meta);
+  color: var(--muted);
+}
+.quality-spread-star { font-weight: 600; color: var(--text-secondary); text-align: center; }
+.quality-spread-track { height: 8px; border-radius: var(--r-full); background: var(--surface-2); overflow: hidden; }
+.quality-spread-fill { display: block; height: 100%; border-radius: var(--r-full); background: var(--green); }
+.quality-spread-fill.low { background: var(--red); }
+.quality-spread-count { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+.quality-spread-share { text-align: right; font-variant-numeric: tabular-nums; }
+
+.quality-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--s3);
+}
+
+.quality-entries { display: flex; flex-direction: column; gap: var(--s4); }
+.quality-entry {
+  display: flex; flex-direction: column; gap: var(--s2);
+  padding: var(--s4) 0 0;
+  border-top: 1px solid var(--hairline);
+}
+.quality-entry.overdue { box-shadow: inset 3px 0 0 var(--red); padding-left: var(--s4); }
+.quality-entry-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.quality-entry-head .ai-stars button { padding: 0; }
+.quality-entry-gap { flex: 1 1 auto; }
+.quality-entry-meta { font-size: var(--t-meta); color: var(--muted); }
+
+.quality-chip {
+  padding: 2px var(--s2); border-radius: var(--r-full);
+  font-size: 11.5px; font-weight: 600;
+  background: var(--surface-2); color: var(--muted);
+}
+.quality-chip.ok { background: var(--green-soft); color: var(--green-soft-text); }
+.quality-chip.refused { background: var(--red-soft); color: var(--red-soft-text); }
+.quality-chip.failed { background: var(--amber-soft); color: var(--amber-soft-text); }
+
+.quality-question { margin: 0; font-size: 15px; line-height: 1.5; color: var(--text); }
+.quality-comment {
+  margin: 0; padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm); background: var(--surface-2);
+  font-size: var(--t-ui); line-height: 1.55; color: var(--text-secondary);
+}
+.quality-entry-facts {
+  display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3);
+  font-size: var(--t-meta); color: var(--muted);
+}
+.quality-golden { display: inline-flex; align-items: center; gap: 4px; color: var(--green-soft-text); }
+.quality-overdue { color: var(--red-soft-text); font-weight: 600; }
+
+.quality-entry-actions { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.quality-status .ui-select { width: 150px; padding: 6px 30px 6px 10px; font-size: var(--t-ui); }
+
+.quality-note { display: flex; flex-direction: column; gap: var(--s2); }
+.quality-note-actions { display: flex; gap: var(--s2); }
+.quality-note-actions .ui-button { padding: 7px 14px; font-size: var(--t-ui); }
+.quality-note-text {
+  margin: 0; font-size: var(--t-ui); line-height: 1.55; color: var(--text-secondary);
+}
+
+.quality-subhead { margin: var(--s3) 0 0; font-size: var(--t-ui); font-weight: 650; color: var(--text); }
+
+@media (max-width: 720px) {
+  .quality-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4) var(--s3); }
+  .quality-tile-value { font-size: 22px; }
+  .quality-spread-row { grid-template-columns: 16px minmax(0, 1fr) 44px 52px; }
+  .quality-entry-gap { display: none; }
+  .quality-head .ai-action { height: 44px; }
+}
+
+/* Значок ИИ красится корпоративным красным — единственный акцент
+   в навигации, и он ведёт туда, куда мы хотим привести человека. */
+.mode-icon.accent { color: var(--red); }
+.mode-row button.active .mode-icon.accent { color: var(--red); }
+.bottom-nav-icon.accent { color: var(--red); }
+.bottom-strip button.active .bottom-nav-icon.accent { color: var(--red); }
+
+/* Узкие телефоны (iPhone SE 2/3 и 8 — 375px, Galaxy S8/S9 — 360px):
+   пяти колонкам там не хватает 2–8px на слово «Аналитика». Уменьшаем кегль
+   на полпункта и подбираем поля только здесь — на 390px+ подписи прежние.
+   На 320px («SE» 2016 года) слово всё равно не влезает и усекается: делать
+   ради него подпись в 8px значит испортить её на всех остальных телефонах. */
+@media (max-width: 389px) {
+  .bottom-strip button { padding-right: 1px; padding-left: 1px; }
+  .bottom-nav-label { font-size: 10px; letter-spacing: -0.04em; }
+}
+
+/* --- Вкладки администрирования --------------------------------------------
+   Три раздела вместо одной длинной страницы: пользовательская аналитика,
+   перечень пользователей и качество ответов ИИ.
+   ========================================================================= */
+.admin-tabs {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: var(--s1);
+  padding: var(--s1);
+  margin-bottom: var(--s4);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.admin-tabs button {
+  min-height: 40px;
+  padding: 0 var(--s3);
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--t-ui);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 140ms ease, color 140ms ease;
+}
+.admin-tabs button:hover { color: var(--text); }
+.admin-tabs button.active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--e1);
+}
+
+@media (max-width: 720px) {
+  .admin-tabs { margin-bottom: var(--s3); }
+  /* Отступы поуже и шрифт мельче: иначе «Пользователи» в активной вкладке
+     становится жирнее, перестаёт помещаться и обрезается многоточием. */
+  .admin-tabs button { min-height: 44px; padding: 0 var(--s1); font-size: 11.5px; }
 }

@@ -63,23 +63,6 @@ export default defineConfig({
     },
   },
   build: {
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (id.includes("node_modules/react/") || id.includes("node_modules/react-dom/")) {
-            return "vendor-react";
-          }
-          if (id.includes("node_modules/framer-motion/")) {
-            return "vendor-motion";
-          }
-          if (id.includes("node_modules/d3-array/") || id.includes("node_modules/d3-scale/")) {
-            return "vendor-d3";
-          }
-          if (id.includes("node_modules/lucide-react/")) {
-            return "vendor-lucide";
-          }
-        },
-      },
-    },
+    target: ["es2018", "safari13"],
   },
 });
