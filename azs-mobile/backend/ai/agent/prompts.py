@@ -62,6 +62,8 @@ def triage_user(question: str, today: str, semantic: Semantic, history_block: st
         dims = [d["key"] for d in hits.get("dimensions", [])[:5]]
         parts.append(f"Похоже на вопрос: показатели {found or '—'}, измерения {dims or '—'}"
                      + (f", отсутствует: {hits['absent']}" if hits.get("absent") else "") + ".")
+    if hits and hits.get("people"):
+        parts.append(hits["people"])
     if history_block:
         parts.append("История диалога (от старых к новым):\n" + history_block)
     parts.append(f"Вопрос: {question}\nJSON:")
@@ -147,6 +149,8 @@ def agent_user(question: str, plan_dict: dict, scope_label: str, today: str,
             parts.append("Подходящие измерения: " + "; ".join(dims) + ".")
         if hits.get("absent"):
             parts.append("В витрине нет: " + "; ".join(hits["absent"]) + " — учти в limitations.")
+        if hits.get("people"):
+            parts.append(hits["people"])
     parts.append(
         f"Задача: {question}\nТип: {plan_dict.get('taskType')}, глубина: {plan_dict.get('depth')}."
     )

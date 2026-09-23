@@ -24,6 +24,7 @@ from . import dialogs as dialog_store
 from . import executor, generator, journal, pipeline, quality, quality_export
 from .. import roles as role_model
 from .scope import REFERENCE_DB, UNRESTRICTED_ROLES
+from . import dwh_scope
 
 
 def demo_enabled() -> bool:
@@ -196,6 +197,13 @@ def _may_see_sql(user) -> bool:
 
 def _identities(limit_per_role: int = 12) -> list[Identity]:
     items = [Identity(role="admin", roleTitle=ROLE_TITLES["admin"], binding=None, stations=0)]
+    if dwh_scope.enabled():
+        # ИИ живёт в ДВХ: «от имени» предлагаем тех, кто есть в справочниках ОХД.
+        items.extend(
+            Identity(role=role, roleTitle=ROLE_TITLES[role], binding=binding, stations=count)
+            for role, binding, count in dwh_scope.identities(limit_per_role)
+        )
+        return items
     if not Path(REFERENCE_DB).exists():
         return items
     conn = sqlite3.connect(f"file:{REFERENCE_DB}?mode=ro", uri=True)

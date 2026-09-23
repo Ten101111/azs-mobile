@@ -404,7 +404,7 @@ class PipelineFastPathTests(StandCase):
         from backend.ai import generator
 
         saved = (generator.generate, generator.narrate)
-        generator.generate = lambda q, f=None, m=None: generator.Generated(
+        generator.generate = lambda q, f=None, m=None, **kw: generator.Generated(
             sql="SELECT ROUND(SUM(checks)) AS \"Чеки за вчера\" FROM station_kpi_daily WHERE metric_date = '2031-01-01'",
             raw="", model="fake", elapsed_ms=1)
         generator.narrate = lambda *a, **k: ("не должно вызываться", 1)

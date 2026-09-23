@@ -447,7 +447,7 @@ def main() -> int:
         import backend.ai.pipeline as pipe
         pipe.MODEL_FACTORY = lambda _name: model
 
-        def fake_generate(question, feedback=None, _model=None):
+        def fake_generate(question, feedback=None, _model=None, **_kwargs):
             sql = FAST_SQL.get(question) or "SELECT ROUND(SUM(checks)) AS \"Чеки, шт\" FROM station_kpi_daily WHERE period = strftime('%Y-%m', 'now')"
             return generator.Generated(sql=sql, raw=sql, model="scripted", elapsed_ms=1)
 

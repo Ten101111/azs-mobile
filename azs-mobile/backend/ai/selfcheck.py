@@ -66,7 +66,8 @@ def catalog_probe() -> tuple[str, str, str]:
     """
     from .catalog import CATALOG
 
-    table = next(iter(CATALOG.scoped_tables or CATALOG.tables))
+    # Таблица фактов, а не первая попавшаяся: у справочников РУ/ТМ другой ключ.
+    table = CATALOG.facts_table or sorted(CATALOG.scoped_tables or CATALOG.tables)[0]
     columns = CATALOG.tables[table]
     scope = CATALOG.scope_column
     measure = next((c for c in sorted(columns) if c != scope), scope)
@@ -144,14 +145,23 @@ def check_scope() -> bool:
         step("Изоляция области данных", False, str(err))
         return False
 
-    import sqlite3
-    conn = sqlite3.connect(f"file:{scope_builder.REFERENCE_DB}?mode=ro", uri=True)
-    row = conn.execute(
-        "SELECT territory_manager, COUNT(*) AS n FROM stations "
-        "WHERE territory_manager IS NOT NULL AND is_active=1 "
-        "GROUP BY territory_manager ORDER BY n DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
+    from . import dwh_scope
+
+    if dwh_scope.enabled():
+        # На витрине ОХД область ТМ берётся из bds.l_azs_tm_dt_vers — оттуда же и проверка.
+        tms = [item for item in dwh_scope.identities(12) if item[0] == "territory_manager"]
+        row = (tms[0][1], tms[0][2]) if tms else None
+    elif not scope_builder.REFERENCE_DB.exists():
+        row = None
+    else:
+        import sqlite3
+        conn = sqlite3.connect(f"file:{scope_builder.REFERENCE_DB}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT territory_manager, COUNT(*) AS n FROM stations "
+            "WHERE territory_manager IS NOT NULL AND is_active=1 "
+            "GROUP BY territory_manager ORDER BY n DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
     if not row:
         step("Изоляция области данных", None, "в справочнике нет ни одного ТМ")
         return True

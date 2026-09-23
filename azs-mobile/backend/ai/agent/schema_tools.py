@@ -286,7 +286,8 @@ def get_dimension_values(ctx: ToolContext, dimension: str, search: str = "", lim
     # Регистр сравнивается в Python: LOWER() в SQLite не понижает кириллицу,
     # а значений у измерения немного — читаем до 500 и отбираем здесь.
     clean = re.sub(r"[^\w\s\-.]", "", search or "").strip().lower().replace("ё", "е")
-    entity_key = ctx.catalog.scope_column
+    # Ключ объекта у справочников РУ/ТМ свой (ksss_code), у витрин — ksss_azs_code.
+    entity_key = ctx.catalog.scope_columns.get(table_name, ctx.catalog.scope_column)
     counter = f"COUNT(DISTINCT {entity_key})" if entity_key in ctx.catalog.tables.get(table_name, set()) else "COUNT(*)"
     fetch = 500 if clean else limit
     sql = (f"SELECT {column} AS value, {counter} AS objects FROM {qualified} WHERE {column} IS NOT NULL"

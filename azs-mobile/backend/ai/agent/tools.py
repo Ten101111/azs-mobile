@@ -43,10 +43,11 @@ class ToolContext:
             pass
 
     def qualified(self, table: str) -> str:
-        schema = (self.catalog.schema or "").strip()
-        if schema and "." not in table:
-            return f"{schema}.{table}"
-        return table
+        # Схема своя у каждой таблицы: витрины — dm, справочники РУ/ТМ — bds.
+        if "." in table:
+            return table
+        schema = (self.catalog.table_schemas.get(table) or self.catalog.schema or "").strip()
+        return f"{schema}.{table}" if schema else table
 
 
 class ToolError(Exception):

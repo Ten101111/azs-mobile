@@ -28,6 +28,8 @@ DEFAULT_ROW_LIMIT = 200
 # Каталог задаётся файлом data/ai_catalog.json; по умолчанию — стенд на SQLite.
 SCOPED_TABLES = CATALOG.scoped_tables
 SCOPE_COLUMN = CATALOG.scope_column
+# Таблицы, из которых выходят только столбцы каталога (см. Catalog.projected_tables).
+PROJECTED_TABLES = CATALOG.projected_tables
 
 FORBIDDEN_NODES = (
     exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create, exp.Alter,
@@ -125,6 +127,11 @@ def _cte_names(tree: exp.Expression) -> set[str]:
     return names
 
 
+def _expected_schema(name: str) -> str:
+    """Схема таблицы каталога: своя у справочников (bds), общая у витрин (dm)."""
+    return CATALOG.table_schemas.get(name) or ALLOWED_SCHEMA
+
+
 def _check_tables(tree: exp.Expression, known_ctes: set[str]) -> None:
     for table in tree.find_all(exp.Table):
         name = (table.name or "").lower()
@@ -135,8 +142,23 @@ def _check_tables(tree: exp.Expression, known_ctes: set[str]) -> None:
         if name not in CATALOG.tables:
             raise Rejected("unknown_table", f"Таблица вне каталога: {table.name}")
         schema = (table.db or "").lower()
-        if table.catalog or (schema and schema != ALLOWED_SCHEMA):
+        if table.catalog or (schema and schema != _expected_schema(name)):
             raise Rejected("qualified_table", "Обращение к внешней схеме запрещено")
+
+
+def _qualify(tree: exp.Expression, known_ctes: set[str]) -> None:
+    """Таблицам из своей схемы дописывает схему, если модель её опустила.
+
+    Витрины dm адресуются так, как написано в примерах; справочники из другой
+    схемы (bds) без префикса в Postgres не найдутся — префикс ставит система.
+    """
+    for table in tree.find_all(exp.Table):
+        name = (table.name or "").lower()
+        if not name or name in known_ctes or table.db:
+            continue
+        schema = CATALOG.table_schemas.get(name)
+        if schema:
+            table.set("db", exp.to_identifier(schema))
 
 
 def _query_aliases(tree: exp.Expression) -> set[str]:
@@ -170,7 +192,7 @@ def _check_columns(tree: exp.Expression, known_ctes: set[str]) -> None:
 
 # --- подстановка области данных --------------------------------------------
 
-def _scope_predicate(scope: Scope) -> str:
+def _scope_predicate(scope: Scope, column: str = SCOPE_COLUMN) -> str:
     if not scope.ksss:
         # Пустая область данных: запрос корректен, но результата не даёт.
         return "0 = 1"
@@ -184,7 +206,44 @@ def _scope_predicate(scope: Scope) -> str:
         values = ", ".join(scope.ksss)
     else:
         values = ", ".join(f"'{value}'" for value in scope.ksss)
-    return f"{SCOPE_COLUMN} IN ({values})"
+    return f"{column} IN ({values})"
+
+
+def _referenced_columns(tree: exp.Expression) -> set[str]:
+    """Имена столбцов, к которым запрос обращается хоть где-нибудь (включая JOIN … USING)."""
+    names = {(column.name or "").lower() for column in tree.find_all(exp.Column)}
+    for join in tree.find_all(exp.Join):
+        for ident in join.args.get("using") or []:
+            names.add((getattr(ident, "name", "") or "").lower())
+    names.discard("")
+    return names
+
+
+def _star_projection(tree: exp.Expression) -> bool:
+    """В запросе есть проекция `*` или `t.*` (COUNT(*) проекцией не считается)."""
+    for select in tree.find_all(exp.Select):
+        for item in select.expressions:
+            if isinstance(item, exp.Star):
+                return True
+            if isinstance(item, exp.Column) and isinstance(item.this, exp.Star):
+                return True
+    return False
+
+
+def _projection(name: str, referenced: set[str], star: bool) -> list[str]:
+    """Столбцы, которые выпускаются из таблицы: только из каталога и только нужные запросу.
+
+    При `SELECT *` — все столбцы каталога, но не больше. Если запросу не нужен
+    ни один столбец (COUNT(*)), выпускается ключ объекта: подзапросу нужен хотя бы один.
+    """
+    allowed = CATALOG.columns_of(name)
+    if star:
+        return allowed
+    picked = [column for column in allowed if column in referenced]
+    if picked:
+        return picked
+    key = CATALOG.scope_column_of(name)
+    return [key] if key in allowed else allowed[:1]
 
 
 def _apply_scope(tree: exp.Expression, scope: Scope, known_ctes: set[str]) -> bool:
@@ -193,26 +252,40 @@ def _apply_scope(tree: exp.Expression, scope: Scope, known_ctes: set[str]) -> bo
     Приём выбран намеренно: дописывать условие в WHERE ненадёжно при
     соединениях и вложенных запросах, а подмена самой таблицы ограничивает
     её всюду, где бы она ни встретилась.
-    """
-    if scope.unrestricted:
-        return False
 
-    predicate = _scope_predicate(scope)
+    Тот же подзапрос отсекает лишние столбцы у таблиц из projected_tables:
+    вместо `SELECT *` в нём перечислены только столбцы каталога, нужные
+    запросу. Поэтому даже `SELECT *` или обращение из CTE не вытащит из
+    таблицы полей вне каталога (служебные, закрытые решением владельца,
+    лишние поля справочников). Проекция действует для любой роли, фильтр
+    области — только для ограниченной. Возвращает, подставлен ли фильтр.
+    """
     applied = False
+    # Считается до подмены: подставленные подзапросы добавят свои столбцы.
+    referenced = _referenced_columns(tree)
+    star = _star_projection(tree)
 
     def transform(node: exp.Expression) -> exp.Expression:
         nonlocal applied
         if not isinstance(node, exp.Table):
             return node
         name = (node.name or "").lower()
-        if name in known_ctes or name not in SCOPED_TABLES:
+        if name in known_ctes or name not in CATALOG.tables:
+            return node
+        scoped = name in SCOPED_TABLES and not scope.unrestricted
+        projected = name in PROJECTED_TABLES
+        if not scoped and not projected:
             return node
         alias = node.alias or node.name
         # Копия ссылки на таблицу сохраняет схему: dm.foo останется dm.foo.
         source = node.copy()
         source.set("alias", None)
-        inner = exp.select("*").from_(source).where(predicate, dialect=DIALECT)
-        applied = True
+        columns = _projection(name, referenced, star) if projected else ["*"]
+        inner = exp.select(*columns).from_(source)
+        if scoped:
+            column = CATALOG.scope_column_of(name)
+            inner = inner.where(_scope_predicate(scope, column), dialect=DIALECT)
+            applied = True
         return exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier(alias)))
 
     tree.transform(transform, copy=False)
@@ -244,6 +317,7 @@ def validate(sql: str, scope: Scope, row_limit: int = DEFAULT_ROW_LIMIT) -> Vali
     _check_columns(tree, ctes)
 
     notes: list[str] = []
+    _qualify(tree, ctes)
     scope_applied = _apply_scope(tree, scope, ctes)
     if scope_applied:
         notes.append(f"Подставлен фильтр области данных: {scope.label}")

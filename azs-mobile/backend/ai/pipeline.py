@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable
 
-from . import contract, executor, generator, journal, scope as scope_builder
+from . import contract, executor, generator, journal, people as people_resolver, scope as scope_builder
 from .validator import Rejected, Scope, validate
 
 MAX_ATTEMPTS = 2
@@ -118,8 +118,14 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
         depth = "auto"
     history = history or []
 
+    # Кто из людей в вопросе РУ, а кто ТМ — решает код по справочникам, а не модель.
+    people = people_resolver.resolve(question, scope)
+    context = people.prompt_block() if people else ""
+    person_note = people.note() if people else ""
+
     if not AGENT_ENABLED or (depth == "fast" and not history):
-        return _ask_fast(question, question, scope, role, binding, actor, model, on_stage)
+        return _ask_fast(question, question, scope, role, binding, actor, model, on_stage,
+                         context=context, person_note=person_note)
 
     # Разбор задачи: эвристика для очевидных фактов, иначе одна подсказка модели.
     from .agent import loop as agent_loop, schema_tools, tools as agent_tools
@@ -130,6 +136,8 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
     probe = agent_tools.ToolContext(question=question, scope=scope, budget=Budget.for_depth("analyze"))
     data_range = schema_tools.data_range(probe)
     hits = probe.semantic.find(question)
+    if context:
+        hits = {**hits, "people": context}
     today = date.today().isoformat()
 
     _notify(on_stage, "plan", "active", kind="plan")
@@ -149,7 +157,8 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
 
     if plan.depth == "fast":
         answer = _ask_fast(question, plan.standalone_question or question, scope, role, binding,
-                           actor, model, on_stage, plan_ms=plan.elapsed_ms)
+                           actor, model, on_stage, plan_ms=plan.elapsed_ms,
+                           context=context, person_note=person_note)
         answer.plan = plan.as_dict()
         answer.frame.update({"standalone": plan.standalone_question or question,
                              "taskType": plan.task_type, "metrics": plan.metrics,
@@ -158,10 +167,15 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
 
     outcome = agent_loop.run(
         question, scope, plan=plan, history=history, model=chat, on_stage=on_stage,
-        generate_sql=lambda q: generator.generate(q, None, model).sql,
+        generate_sql=lambda q: generator.generate(q, None, model, context=context).sql,
         scope_label=scope.label, today=today, data_range=data_range, hits=hits,
     )
     answer = _from_outcome(question, scope, outcome, plan)
+    if person_note:
+        answer.notes = [person_note] + list(answer.notes)
+        if answer.analysis is not None:
+            limits = list(answer.analysis.get("limitations") or [])
+            answer.analysis["limitations"] = [person_note] + limits
     _log(answer, scope, role, binding, actor, "ok" if answer.ok else (answer.rule or "agent_failed"))
     return answer
 
@@ -170,7 +184,7 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
 
 def _ask_fast(question: str, model_question: str, scope: Scope, role: str, binding: str | None,
               actor: str | None, model: str | None, on_stage: Callable[[dict], None] | None,
-              plan_ms: int = 0) -> Answer:
+              plan_ms: int = 0, context: str = "", person_note: str = "") -> Answer:
     answer = Answer(ok=False, question=question, scope_label=scope.label, plan_ms=plan_ms)
 
     feedback: str | None = None
@@ -181,7 +195,7 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
         _notify(on_stage, "draft", "active",
                 note="Составляю запрос заново по замечанию проверки" if attempt > 1 else None)
         try:
-            produced = generator.generate(model_question, feedback, model)
+            produced = generator.generate(model_question, feedback, model, context=context)
         except generator.ModelUnavailable as err:
             answer.error = str(err)
             answer.rule = "model_unavailable"
@@ -221,7 +235,7 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
 
         answer.ok = True
         answer.sql = checked.sql
-        answer.notes = checked.notes
+        answer.notes = ([person_note] if person_note else []) + list(checked.notes)
         answer.columns = result.columns
         answer.rows = [list(row) for row in result.rows]
         answer.truncated = result.truncated

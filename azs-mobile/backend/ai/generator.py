@@ -105,19 +105,20 @@ def available(model: str | None = None) -> bool:
     return any(name == wanted or name.split(":")[0] == wanted.split(":")[0] for name in models)
 
 
-def _user_content(question: str, model: str) -> str:
-    content = user_prompt(question)
+def _user_content(question: str, model: str, context: str = "") -> str:
+    content = user_prompt(question, context)
     if not THINKING and model.lower().startswith("qwen3"):
         # Qwen3 понимает эту директиву и отвечает без блока рассуждения.
         content = f"{content}\n/no_think"
     return content
 
 
-def generate(question: str, feedback: str | None = None, model: str | None = None) -> Generated:
+def generate(question: str, feedback: str | None = None, model: str | None = None,
+             context: str = "") -> Generated:
     model = (model or MODEL).strip()
     messages = [
         {"role": "system", "content": system_prompt()},
-        {"role": "user", "content": _user_content(question, model)},
+        {"role": "user", "content": _user_content(question, model, context)},
     ]
     if feedback:
         messages.append(

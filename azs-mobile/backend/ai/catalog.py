@@ -50,22 +50,53 @@ class Catalog:
     # Секция semantic файла каталога: правки формул и синонимов поверх
     # встроенного профиля (см. backend/ai/semantic.py). None — нет секции.
     semantic: dict | None = None
+    # Таблицы из другой схемы, чем `schema` (например справочники bds рядом
+    # с витринами dm): имя таблицы → её схема.
+    table_schemas: dict[str, str] = field(default_factory=dict)
+    # Свой ключ объекта у таблицы, если он называется иначе, чем scope_column
+    # (в справочниках РУ/ТМ это ksss_code): по нему подставляется область данных.
+    scope_columns: dict[str, str] = field(default_factory=dict)
+    # Таблицы, из которых наружу выходят только столбцы каталога: валидатор
+    # подменяет их подзапросом с явным списком столбцов. Остальные поля таблицы
+    # не видны ни модели, ни результату — даже через SELECT * или CTE.
+    projected_tables: set[str] = field(default_factory=set)
+    # Порядок столбцов таблицы, как в каталоге (для проекции и описаний).
+    column_order: dict[str, list[str]] = field(default_factory=dict)
 
     def column_universe(self) -> set[str]:
         return set().union(*self.tables.values()) if self.tables else set()
 
+    def schema_of(self, table: str) -> str:
+        """Схема, в которой лежит таблица каталога."""
+        return self.table_schemas.get(table, self.schema)
+
+    def scope_column_of(self, table: str) -> str:
+        """Столбец ключа объекта, по которому таблица ограничивается областью данных."""
+        return self.scope_columns.get(table, self.scope_column)
+
+    def qualified(self, table: str) -> str:
+        schema = self.schema_of(table)
+        return f"{schema}.{table}" if schema and "." not in table else table
+
+    def columns_of(self, table: str) -> list[str]:
+        order = self.column_order.get(table)
+        return list(order) if order else sorted(self.tables.get(table, ()))
+
 
 def _from_file(path: Path) -> Catalog:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    specs = payload.get("tables", {})
     tables = {
         name: {str(column).lower() for column in spec.get("columns", [])}
-        for name, spec in payload.get("tables", {}).items()
+        for name, spec in specs.items()
     }
-    scoped = {
-        name for name, spec in payload.get("tables", {}).items()
-        if spec.get("scoped", True)
-    }
+    scoped = {name for name, spec in specs.items() if spec.get("scoped", True)}
     return Catalog(
+        table_schemas={name: spec["schema"].lower() for name, spec in specs.items() if spec.get("schema")},
+        scope_columns={name: spec["scope_column"].lower() for name, spec in specs.items()
+                       if spec.get("scope_column")},
+        projected_tables={name for name, spec in specs.items() if spec.get("project")},
+        column_order={name: [str(c).lower() for c in spec.get("columns", [])] for name, spec in specs.items()},
         tables=tables,
         scoped_tables=scoped,
         scope_column=payload.get("scope_column", "ksss"),
