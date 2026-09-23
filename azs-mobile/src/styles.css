@@ -6500,6 +6500,24 @@ a {
   height: calc(100% + var(--ai-extra, 0px));
 }
 .ai-shell-side { align-self: stretch; min-height: 0; }
+/* Свёрнутая история (ИИ-13): остаётся полоса 56 px со значками. Правило
+   с двумя классами сильнее ширины 244 px на средних экранах. */
+.ai-shell { transition: grid-template-columns 200ms ease; }
+.ai-shell.side-collapsed { grid-template-columns: 56px minmax(0, 1fr); }
+.ai-rail {
+  height: 100%; display: flex; flex-direction: column; align-items: center; gap: var(--s2);
+  padding: var(--s3) 0; border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--e1);
+}
+.ai-rail-button {
+  width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-rail-button:hover { background: var(--surface-2); color: var(--text); }
+.ai-rail-new { background: var(--red-fill); color: #ffffff; }
+.ai-rail-new:hover { background: var(--red-fill-hover); color: #ffffff; }
+.ai-rail-gap { flex: 1 1 auto; }
 
 /* --- Орб ИИ-аналитика -----------------------------------------------------
    Облик согласован владельцем: «Облик_ИИ_аналитика_заполнено.xlsx» (З-16).
@@ -6838,6 +6856,13 @@ a {
   border: 0; border-radius: var(--r-sm);
   background: var(--surface-2); color: var(--muted); cursor: pointer;
 }
+.ai-sidebar-collapse {
+  margin-left: auto; width: 32px; height: 32px; display: inline-flex;
+  align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-sidebar-collapse:hover { background: var(--surface-2); color: var(--text); }
 .ai-new { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); }
 
 .ai-search {
@@ -7002,14 +7027,35 @@ a {
 .ai-think-line .ai-caret.open { transform: rotate(180deg); }
 .ai-fold-head .ai-caret.open { transform: rotate(90deg); }
 
-.ai-think-dots { display: inline-flex; gap: 3px; }
-.ai-think-dots i {
-  width: 4px; height: 4px; border-radius: 50%; background: var(--muted);
-  animation: aiDot 1.2s ease-in-out infinite;
+/* Малый орб (src/orb/miniOrb.js) вместо трёх точек: в строке этапа 20 px,
+   вместо большого орба без WebGL — 64 px. Фигура меняется по этапу:
+   кольцо с фокусом, полоса проверки, три столбца знака, строки текста. */
+.ai-mini-orb { display: block; flex: 0 0 auto; }
+.ai-orb-fallback { display: flex; align-items: center; justify-content: center; }
+
+/* --- ожидание ответа: четыре публичных этапа (ИИ-15) ----------------------
+   Одна строка: малый орб этапа, название этапа и таймер справа; внутренние
+   шаги — по «Подробнее». Полосу из четырёх отрезков владелец снял 23.09.2026
+   как лишний элемент — не возвращать. */
+.ai-think.pending { gap: var(--s2); }
+.ai-think.pending .ai-think-line {
+  align-self: stretch; display: flex; flex-wrap: wrap; row-gap: 2px;
+  padding: 0; font-size: var(--t-ui);
 }
-.ai-think-dots i:nth-child(2) { animation-delay: 0.15s; }
-.ai-think-dots i:nth-child(3) { animation-delay: 0.3s; }
-@keyframes aiDot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+.ai-think-timer {
+  margin-left: auto; padding-left: var(--s3);
+  color: var(--muted); font-size: var(--t-meta); font-variant-numeric: tabular-nums;
+}
+.ai-think-hint { margin: 0; font-size: var(--t-meta); color: var(--muted); }
+.ai-think-more {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: var(--s1);
+  padding: 2px 0; border: 0; background: none; cursor: pointer;
+  color: var(--muted); font: inherit; font-size: var(--t-meta);
+}
+.ai-think-more:hover { color: var(--text); }
+.ai-think-more .ai-caret.open { transform: rotate(180deg); }
+@keyframes aiBreathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
 
 .ai-think-body {
   margin-left: var(--s3); padding: var(--s1) 0 var(--s1) var(--s4);
@@ -7034,6 +7080,10 @@ a {
   border: 2px solid var(--red); border-top-color: transparent;
   animation: aiSpin 0.9s linear infinite;
 }
+/* Кадров aiSpin в стилях не было с коммита 9417ccb (22.09.2026): спиннер
+   этапа стоял на месте у всех пользователей — это и были «статичные круги»
+   (ИИ-14). Не удалять вместе с чисткой неиспользуемых кадров. */
+@keyframes aiSpin { to { transform: rotate(360deg); } }
 .ai-think-note { margin: 0; font-size: var(--t-ui); line-height: 1.65; color: var(--muted); }
 .ai-think-note > span {
   display: block; margin-bottom: var(--s1); font-size: 11.5px; font-weight: 600;
@@ -7247,26 +7297,37 @@ a {
 }
 .ai-chips button:hover { background: var(--red-soft); color: var(--red-soft-text); }
 
+/* Поле в одну строку (ИИ-05, 23.09.2026): текст и кнопка в ряд, высота
+   растёт вместе с текстом до трёх строк (aiFitComposer), дальше —
+   прокрутка внутри поля. Подсказка про Enter и счётчик — строкой под полем. */
 .ai-composer {
   position: relative; width: 100%; max-width: 720px;
-  padding: var(--s4) var(--s4) 52px;
+  display: flex; align-items: flex-end; gap: var(--s2);
+  padding: var(--s2) var(--s2) var(--s2) var(--s4);
   border: 1px solid var(--hairline); border-radius: var(--r-lg);
   background: var(--surface); box-shadow: var(--e1);
   transition: box-shadow 140ms ease, border-color 140ms ease;
 }
 .ai-composer:focus-within { border-color: var(--red); box-shadow: var(--e2); }
+.ai-composer label { display: block; flex: 1 1 auto; min-width: 0; }
 .ai-composer textarea {
-  width: 100%; border: 0; outline: none; resize: none; background: transparent;
+  display: block; width: 100%; padding: 8px 0; overflow-y: hidden;
+  border: 0; outline: none; resize: none; background: transparent;
   color: var(--text); font: inherit; font-size: 15px; line-height: 1.5;
 }
-.ai-composer-hint {
-  position: absolute; left: var(--s4); bottom: var(--s4);
-  font-size: var(--t-meta); color: var(--muted);
-  opacity: 0; transition: opacity 140ms ease;
+.ai-composer textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-composer-meta {
+  width: 100%; max-width: 720px; min-height: 16px;
+  margin-top: calc(-1 * var(--s2)); padding: 0 var(--s4);
+  display: flex; align-items: center; gap: var(--s3);
+  font-size: var(--t-meta); line-height: 16px; color: var(--muted);
 }
-.ai-composer:focus-within .ai-composer-hint { opacity: 1; }
+.ai-composer-hint { opacity: 0; transition: opacity 140ms ease; }
+.ai-composer-wrap:focus-within .ai-composer-hint { opacity: 1; }
+.ai-composer-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.ai-composer-count.full { color: var(--red); font-weight: 600; }
 .ai-send {
-  position: absolute; right: var(--s3); bottom: var(--s3);
+  position: static; flex: 0 0 auto;
   width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 50%; background: var(--red-fill); color: #ffffff; cursor: pointer;
   transition: background 120ms ease, transform 120ms ease;
@@ -7366,9 +7427,11 @@ a {
     padding: var(--s2) var(--s2) var(--s2) var(--s3);
     border-radius: var(--r-md);
   }
-  .ai-composer label { display: block; flex: 1 1 auto; min-width: 0; }
-  .ai-composer textarea { min-height: 40px; max-height: 120px; padding: 9px 0; }
+  /* 16 px: при меньшем кегле iOS увеличивает страницу при фокусе на поле. */
+  .ai-composer textarea { padding: 8px 0; font-size: 16px; }
   .ai-composer-hint { display: none; }
+  .ai-composer-meta { margin-top: 0; min-height: 0; padding: 0 var(--s3); }
+  .ai-composer-meta:not(:has(.ai-composer-count)) { display: none; }
   .ai-send { position: static; flex: 0 0 auto; width: 40px; height: 40px; }
   /* Цели нажатия на телефоне — не меньше 44px. */
   .ai-action { height: 44px; padding: 0 var(--s4); font-size: var(--t-ui); }
@@ -7380,9 +7443,12 @@ a {
 
 @media (prefers-reduced-motion: reduce) {
   /* Движение орба выключается своим @media (no-preference) — здесь только
-     остальное. */
-  .ai-skeleton i,
-  .ai-think-dots i { animation: none; }
+     остальное. Индикатор ожидания при этом не замирает (ИИ-14): вращение и
+     смещения убраны, остаётся медленное изменение прозрачности и таймер —
+     иначе человек не отличит работу от зависания. */
+  .ai-skeleton i { animation: none; }
+  .ai-shell { transition: none; }
+  .ai-stage-spin { animation: aiBreathe 2.4s ease-in-out infinite; }
   .ai-send:hover:not(:disabled),
   .ai-welcome-examples button:hover { transform: none; }
 }

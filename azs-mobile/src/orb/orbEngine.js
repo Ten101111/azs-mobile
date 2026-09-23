@@ -514,8 +514,17 @@ export function createOrb(canvas, options = {}) {
     stop() { demo.running = false; clearTimeout(demoTimer); demoTimer = 0; },
   };
 
+  // Короткий импульс яркости: закончился внутренний шаг ответа. Слабее
+  // вспышки «готово», чтобы шаги не спорили с финалом.
+  function beat() {
+    springs.pulse.x = Math.max(springs.pulse.x, 0.45);
+    springs.pulse.v = 0;
+    kick();
+  }
+
   return {
     setState,
+    beat,
     getState: () => state,
     get params() { const o = {}; for (const k of Object.keys(TARGETS.idle)) o[k] = springs[k].x; return o; },
     get fps() { return fps; },

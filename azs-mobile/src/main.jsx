@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { max } from "d3-array";
@@ -7,6 +7,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 // Орб на WebGL: крупные места — пустой экран и блок ожидания. Мелкие места
 // остаются на SVG-знаке AiMark, как требует спецификация облика.
 import AiOrb, { orbStateFromPipeline } from "./orb/AiOrb.jsx";
+import AiMiniOrb from "./orb/AiMiniOrb.jsx";
 import { AiAnalysis, aiAgentStages, aiAnalysisText, AI_DEPTH_FALLBACK } from "./aiAnalysis.jsx";
 import {
   AlertTriangle,
@@ -34,6 +35,8 @@ import {
   MoreHorizontal,
   Navigation,
   PanelLeft,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Phone,
   Pin,
@@ -4357,65 +4360,167 @@ function aiStageClass(state) {
   return "ai-stage";
 }
 
+// Четыре публичных этапа ответа (ИИ-15). Внутренних шагов у быстрого пути
+// и у агента много и они разные; человеку показываем один и тот же шаблон,
+// а внутренние шаги — только по «Подробнее».
+const AI_PUBLIC_STAGES = ["Понимаю вопрос", "Проверяю данные", "Считаю показатели", "Формирую ответ"];
+// Меньше этого этап на экране не держится: быстрый путь проходит проверку
+// за доли секунды, и без паузы строка мерцала бы.
+const AI_STAGE_MIN_MS = 300;
+const AI_SLOW_HINT_SECONDS = 60;
+// Поле вопроса (ИИ-05): одна строка, растёт до трёх, дальше прокрутка внутри.
+// Лимит совпадает с AskRequest.question на сервере.
+const AI_QUESTION_MAX = 500;
+const AI_COMPOSER_MAX_LINES = 3;
+
+// Сенсорный ввод без физической клавиатуры: телефон и планшет.
+function aiTouchInput() {
+  try {
+    return window.matchMedia("(pointer: coarse)").matches && !window.matchMedia("(pointer: fine)").matches;
+  } catch {
+    return false;
+  }
+}
+
+function aiFitComposer(field) {
+  if (!field) return;
+  const style = window.getComputedStyle(field);
+  const line = parseFloat(style.lineHeight) || 22;
+  const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+  const limit = Math.ceil(line * AI_COMPOSER_MAX_LINES + padding);
+  field.style.height = "auto";
+  // Пустое поле — всегда одна строка: иначе длинная подсказка-плейсхолдер
+  // на узком экране переносится и раздувает поле до двух строк.
+  const wanted = field.value ? field.scrollHeight : Math.ceil(line + padding);
+  field.style.height = `${Math.min(wanted, limit)}px`;
+  field.style.overflowY = wanted > limit ? "auto" : "hidden";
+}
+
+// Внутренний шаг → номер публичного этапа (0…3). Единственное место
+// сопоставления: новый вид шага агента добавляется сюда.
+//   0 «Понимаю вопрос»    — разбор и план задачи, размышление модели;
+//   1 «Проверяю данные»   — выбор источника, составление и проверка запроса;
+//   2 «Считаю показатели» — чтение витрины, расчёты, графики;
+//   3 «Формирую ответ»    — текст ответа.
+function aiPublicStageIndex(stage) {
+  const kind = stage?.kind || "";
+  const key = stage?.key || "";
+  if (kind === "write" || key === "write") return 3;
+  if (kind === "sql" || kind === "python" || kind === "chart" || key === "read") return 2;
+  if (kind === "schema" || key === "draft" || key === "check") return 1;
+  return 0;
+}
+
+// Этапы идут только вперёд: размышление модели между запросами агента
+// сопоставлено с «Понимаю вопрос», но назад строку не откатывает.
+function aiPublicTarget(stages) {
+  return stages.reduce((top, stage) => Math.max(top, aiPublicStageIndex(stage)), 0);
+}
+
+// Публичный этап → состояние малого орба в строке этапа и большого WebGL-орба.
+// Оба орба живут одним этапом: строка, полоса и орбы не расходятся.
+const AI_MINI_STATES = ["understand", "check", "compute", "write"];
+const AI_ORB_STATES = ["listening", "searching", "analyzing", "forming"];
+
+function aiClock(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function AiPending({ stages: live }) {
+  const reduced = useReducedMotion();
+  const [open, setOpen] = useState(false);
+  const [shown, setShown] = useState(0);
+  const startedAt = useRef(Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  const target = aiPublicTarget(live);
+
+  // Таймер тикает всегда, даже при «Уменьшить движение»: это не движение,
+  // а доказательство того, что работа идёт.
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (shown >= target) return undefined;
+    const timer = window.setTimeout(() => setShown((value) => Math.min(value + 1, target)), AI_STAGE_MIN_MS);
+    return () => window.clearTimeout(timer);
+  }, [shown, target]);
+
+  const seconds = Math.max(0, Math.floor((now - startedAt.current) / 1000));
+  const label = AI_PUBLIC_STAGES[shown];
+  // Каждый законченный внутренний шаг — короткий импульс обоих орбов:
+  // видно, что работа идёт шагами, а не висит.
+  const finished = live.filter((stage) => stage.state === "done").length;
+
+  return (
+    <div className="ai-think pending">
+      {/* Орб живёт этапами конвейера: составление и проверка — «ищет»,
+          чтение витрины — «анализирует», формулирование — «формирует».
+          Момент «готово» показывает уже AiSettleOrb в пришедшем ответе —
+          он встаёт ровно на это место, потому что вопрос и ответ свёрстаны
+          одинаково. */}
+      <div className="ai-think-orb">
+        <AiOrb
+          size="var(--ai-orb-pending, 120px)"
+          state={AI_ORB_STATES[shown]}
+          beat={finished}
+          interactive={false}
+          fallback={<AiMiniOrb size={64} state={AI_MINI_STATES[shown]} beat={finished} label={label} />}
+        />
+      </div>
+      <div className="ai-think-line">
+        <AiMiniOrb size={20} state={AI_MINI_STATES[shown]} beat={finished} />
+        <strong>{label}</strong>
+        <span className="ai-think-timer" aria-hidden="true">{aiClock(seconds)}</span>
+        <span className="visually-hidden" role="status" aria-live="polite">
+          {`Этап ${shown + 1} из ${AI_PUBLIC_STAGES.length}: ${label}`}
+        </span>
+      </div>
+      {seconds >= AI_SLOW_HINT_SECONDS && (
+        <p className="ai-think-hint">Сложный вопрос — ответ может занять несколько минут.</p>
+      )}
+      {live.length > 0 && (
+        <button type="button" className="ai-think-more" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+          {open ? "Скрыть подробности" : "Подробнее"}
+          <ChevronDown size={14} className={open ? "ai-caret open" : "ai-caret"} />
+        </button>
+      )}
+      <AiReveal open={open}>
+        <div className="ai-think-body">
+          {live.map((stage) => (
+            <motion.div
+              key={stage.key}
+              className={aiStageClass(stage.state)}
+              initial={reduced ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.18, ease: AI_EASE }}
+            >
+              <span className="ai-stage-mark" aria-hidden="true">
+                {stage.state === "active"
+                  ? <span className="ai-stage-spin" />
+                  : stage.state === "failed"
+                    ? <X size={13} />
+                    : stage.state === "retry"
+                      ? <RefreshCw size={13} />
+                      : <Check size={13} />}
+              </span>
+              <span>{stage.label}</span>
+              {stage.ms ? <span className="ai-stage-ms">{aiMs(stage.ms)}</span> : null}
+            </motion.div>
+          ))}
+        </div>
+      </AiReveal>
+      <div className="ai-skeleton" aria-hidden="true"><i style={{ width: "82%" }} /><i style={{ width: "94%" }} /><i style={{ width: "61%" }} /></div>
+    </div>
+  );
+}
+
 function AiThinking({ answer, pending, stages: live_stages = [] }) {
   const [open, setOpen] = useState(false);
   const reduced = useReducedMotion();
-  if (pending) {
-    // Этапы приходят потоком; пока не пришёл ни один — показываем первый,
-    // чтобы строка не висела пустой.
-    const live = live_stages.length
-      ? live_stages
-      : [{ key: "draft", state: "active", label: "Составляю запрос к витрине" }];
-    const current = [...live].reverse().find((stage) => stage.state === "active") || live[live.length - 1];
-    return (
-      <div className="ai-think pending">
-        {/* Орб живёт этапами конвейера: составление и проверка — «ищет»,
-            чтение витрины — «анализирует», формулирование — «формирует».
-            Это настоящие этапы, а не анимация ради анимации: по ним видно,
-            что модель не ходит в данные сама. Момент «готово» показывает
-            уже AiSettleOrb в пришедшем ответе — он встаёт ровно на это
-            место, потому что вопрос и ответ свёрстаны одинаково. */}
-        <div className="ai-think-orb">
-          <AiOrb
-            size="var(--ai-orb-pending, 120px)"
-            state={orbStateFromPipeline({ pending: true, stages: live })}
-            interactive={false}
-            fallback={<AiMark state={aiMarkState({ pending: true, stages: live })} />}
-          />
-        </div>
-        <span className="ai-think-line">
-          <strong>{current?.label || "Работаю"}</strong>
-          <span className="ai-think-dots" aria-hidden="true"><i /><i /><i /></span>
-        </span>
-        <div className="ai-think-body">
-          <AnimatePresence initial={false}>
-            {live.map((stage) => (
-              <motion.div
-                key={stage.key}
-                className={aiStageClass(stage.state)}
-                initial={reduced ? false : { opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.18, ease: AI_EASE }}
-              >
-                <span className="ai-stage-mark" aria-hidden="true">
-                  {stage.state === "active"
-                    ? <span className="ai-stage-spin" />
-                    : stage.state === "failed"
-                      ? <X size={13} />
-                      : stage.state === "retry"
-                        ? <RefreshCw size={13} />
-                        : <Check size={13} />}
-                </span>
-                <span>{stage.label}</span>
-                {stage.ms ? <span className="ai-stage-ms">{aiMs(stage.ms)}</span> : null}
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-        <div className="ai-skeleton" aria-hidden="true"><i style={{ width: "82%" }} /><i style={{ width: "94%" }} /><i style={{ width: "61%" }} /></div>
-      </div>
-    );
-  }
+  if (pending) return <AiPending stages={live_stages} />;
   if (!answer) return null;
   const stages = aiStages(answer);
   const total = aiTotalMs(answer);
@@ -4662,7 +4767,7 @@ function AiDialogRow({ dialog, active, onOpen, onRename, onPin, onDelete }) {
   );
 }
 
-function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin, onDelete, whoLabel, whoName, onClose }) {
+function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin, onDelete, whoLabel, whoName, onClose, onCollapse, searchRef }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
   const visible = needle
@@ -4682,6 +4787,17 @@ function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin,
               <X size={18} />
             </button>
           )}
+          {onCollapse && !onClose && (
+            <button
+              type="button"
+              className="ai-sidebar-collapse"
+              onClick={onCollapse}
+              aria-label="Свернуть историю диалогов"
+              title="Свернуть историю (Ctrl+B)"
+            >
+              <PanelLeftClose size={18} />
+            </button>
+          )}
         </div>
         <button type="button" className="ui-button ai-new" onClick={onNew}>
           <Plus size={16} /> Новый диалог
@@ -4689,6 +4805,7 @@ function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin,
         <label className="ai-search">
           <Search size={15} />
           <input
+            ref={searchRef}
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -4734,6 +4851,53 @@ function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin,
       </div>
     </aside>
   );
+}
+
+// Свёрнутая история диалогов (ИИ-13): узкая полоса со значками. Папки
+// добавятся сюда вместе с ИИ-10.
+function AiSideRail({ onExpand, onNew, onSearch, whoName }) {
+  return (
+    <nav className="ai-rail" aria-label="История диалогов свёрнута">
+      <button
+        type="button"
+        className="ai-rail-button"
+        onClick={onExpand}
+        aria-label="Развернуть историю диалогов"
+        title="Развернуть историю (Ctrl+B)"
+      >
+        <PanelLeftOpen size={18} />
+      </button>
+      <button type="button" className="ai-rail-button ai-rail-new" onClick={onNew} aria-label="Новый диалог" title="Новый диалог">
+        <Plus size={18} />
+      </button>
+      <button type="button" className="ai-rail-button" onClick={onSearch} aria-label="Поиск по диалогам" title="Поиск по диалогам">
+        <Search size={18} />
+      </button>
+      <span className="ai-rail-gap" />
+      <span className="ai-avatar" title={whoName || undefined} aria-hidden="true">{aiInitials(whoName)}</span>
+    </nav>
+  );
+}
+
+// Состояние панели хранится в браузере: это удобство одного человека, а не
+// данные. Хранилище может быть недоступно (приватный режим) — тогда панель
+// просто раскрыта.
+const AI_SIDE_KEY = "azs:ai-side-collapsed";
+
+function aiReadSideCollapsed() {
+  try {
+    return window.localStorage.getItem(AI_SIDE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function aiWriteSideCollapsed(value) {
+  try {
+    window.localStorage.setItem(AI_SIDE_KEY, value ? "1" : "0");
+  } catch {
+    // хранилище недоступно — состояние живёт до перезагрузки
+  }
 }
 
 function aiInitials(name) {
@@ -5164,6 +5328,8 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   const reducedMotion = useReducedMotion();
   const feedEnd = useRef(null);
   const composer = useRef(null);
+  const sideSearch = useRef(null);
+  const [sideCollapsed, setSideCollapsed] = useState(aiReadSideCollapsed);
   // Идентификаторы ответов, пришедших в этом сеансе: только они въезжают
   // при появлении, загруженная история показывается сразу на своих местах.
   // Сбрасывать при смене диалога не нужно — номера сообщений сквозные.
@@ -5192,6 +5358,36 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   }, []);
 
   useEffect(() => { loadDialogs(); }, [loadDialogs]);
+
+  // Ctrl/Cmd+B сворачивает и раскрывает историю. По коду клавиши, а не по
+  // символу: в русской раскладке это «И».
+  useEffect(() => {
+    function onKey(event) {
+      if (event.code !== "KeyB" || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      if (window.matchMedia("(max-width: 860px)").matches) return;
+      event.preventDefault();
+      setSideCollapsed((value) => {
+        aiWriteSideCollapsed(!value);
+        return !value;
+      });
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  function collapseSide(value) {
+    setSideCollapsed(value);
+    aiWriteSideCollapsed(value);
+  }
+
+  function openSideSearch() {
+    collapseSide(false);
+    window.setTimeout(() => sideSearch.current?.focus(), 60);
+  }
+
+  // Высота поля пересчитывается при каждом изменении текста: и при наборе,
+  // и когда поле очищается после отправки или заполняется подсказкой.
+  useLayoutEffect(() => { aiFitComposer(composer.current); }, [question]);
 
   useEffect(() => {
     if (!activeId) { setItems([]); return; }
@@ -5339,6 +5535,8 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       whoLabel={whoLabel}
       whoName={status?.ownName || status?.ownEmail || ""}
       onClose={drawer ? () => onDrawer(false) : undefined}
+      onCollapse={() => collapseSide(true)}
+      searchRef={drawer ? undefined : sideSearch}
     />
   );
 
@@ -5358,8 +5556,17 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   }
 
   return (
-    <div className="ai-shell" style={{ "--ai-extra": `${Math.round(shellExtra)}px` }}>
-      <div className="ai-shell-side">{sidebar}</div>
+    <div className={sideCollapsed ? "ai-shell side-collapsed" : "ai-shell"} style={{ "--ai-extra": `${Math.round(shellExtra)}px` }}>
+      <div className="ai-shell-side">
+        {sideCollapsed ? (
+          <AiSideRail
+            onExpand={() => collapseSide(false)}
+            onNew={newDialog}
+            onSearch={openSideSearch}
+            whoName={status?.ownName || status?.ownEmail || ""}
+          />
+        ) : sidebar}
+      </div>
       {drawer && (
         <div className="ai-drawer" role="presentation" onClick={() => onDrawer(false)}>
           <div className="ai-drawer-panel" onClick={(event) => event.stopPropagation()}>{sidebar}</div>
@@ -5524,21 +5731,25 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
               <span className="visually-hidden">Вопрос к витрине данных</span>
               <textarea
                 ref={composer}
-                rows={2}
+                rows={1}
+                maxLength={AI_QUESTION_MAX}
                 value={question}
                 placeholder="Спросите о показателях ваших объектов"
                 onChange={(event) => setQuestion(event.target.value)}
                 onFocus={() => setComposing(true)}
                 onBlur={() => setComposing(false)}
+                enterKeyHint={aiTouchInput() ? "enter" : "send"}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    ask();
-                  }
+                  // На телефоне Enter экранной клавиатуры переносит строку —
+                  // отправка только кнопкой; во время набора через IME
+                  // Enter подтверждает слово, а не вопрос.
+                  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent?.isComposing) return;
+                  if (aiTouchInput()) return;
+                  event.preventDefault();
+                  ask();
                 }}
               />
             </label>
-            <span className="ai-composer-hint">Enter — отправить, Shift+Enter — перенос строки</span>
             <button
               type="button"
               className="ai-send"
@@ -5548,6 +5759,14 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
             >
               <Send size={17} />
             </button>
+          </div>
+          <div className="ai-composer-meta">
+            <span className="ai-composer-hint">Enter — отправить, Shift+Enter — перенос строки</span>
+            {question.length >= AI_QUESTION_MAX * 0.8 && (
+              <span className={question.length >= AI_QUESTION_MAX ? "ai-composer-count full" : "ai-composer-count"}>
+                {question.length} / {AI_QUESTION_MAX}
+              </span>
+            )}
           </div>
         </div>
       </div>

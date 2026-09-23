@@ -24,6 +24,7 @@ export default function AiOrb({
   quality = "auto",
   mode = "auto",            // dark | light | auto — палитра под фон страницы
   onStateChange,
+  beat = 0,                 // число: меняется — короткий импульс (закончился шаг)
   fallback = null,          // что показать без WebGL2 (например, <AiMark />)
   engineRef = null,         // ref: получит экземпляр движка — для setState снаружи React
   onTap = null,             // клик по орбу (например, поставить курсор в поле)
@@ -58,6 +59,13 @@ export default function AiOrb({
   }, [supported, quality, mode, interactive, tapToListen]);
 
   useEffect(() => { orbRef.current?.setState(state); }, [state]);
+
+  const lastBeat = useRef(beat);
+  useEffect(() => {
+    if (beat === lastBeat.current) return;
+    lastBeat.current = beat;
+    orbRef.current?.beat?.();
+  }, [beat]);
 
   const px = typeof size === "number" ? `${size}px` : size;
 

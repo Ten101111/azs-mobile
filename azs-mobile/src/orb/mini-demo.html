@@ -1,0 +1,54 @@
+<!doctype html>
+<!-- Витрина состояний малого орба. Открыть на dev-сервере: /src/orb/mini-demo.html -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Малый орб — состояния</title>
+<style>
+  body { margin: 0; font: 14px/1.4 Tahoma, "PT Sans", system-ui, sans-serif; background: #F7F8FA; color: #151A23; }
+  h1 { margin: 0; padding: 20px 24px 4px; font-size: 18px; text-transform: uppercase; letter-spacing: 0.02em; }
+  p.note { margin: 0; padding: 0 24px 16px; color: #646C7D; }
+  .panel { padding: 16px 24px 24px; }
+  .panel.light { --red: #E31E24; --text: #151A23; --icon-muted: #8D95A5; background: #FFFFFF; }
+  .panel.dark { --red: #FF4A4F; --text: #F3F4F7; --icon-muted: #6B7383; background: #181B20; color: #F3F4F7; }
+  .grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 12px; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px 4px; border-radius: 10px; }
+  .panel.light .cell { background: #F7F8FA; }
+  .panel.dark .cell { background: #0E1013; }
+  .cell span { font-size: 12px; text-align: center; min-height: 32px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .inline { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px; }
+  .bar { height: 5px; width: 100%; border-radius: 3px; background: #E31E24; }
+</style>
+</head>
+<body>
+<h1>Малый орб ИИ-аналитика</h1>
+<p class="note">Размеры 64 и 20 px, светлая и тёмная тема. Строка «20 px в тексте» — как в строке этапа.</p>
+<div class="panel light"><div class="grid" data-grid></div></div>
+<div class="panel dark"><div class="grid" data-grid></div></div>
+<script type="module">
+  import { createMiniOrb, MINI_STATES, MINI_LABELS } from "./miniOrb.js";
+  for (const grid of document.querySelectorAll("[data-grid]")) {
+    for (const state of MINI_STATES) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      const big = document.createElement("canvas");
+      big.style.width = big.style.height = "64px";
+      const row = document.createElement("div");
+      row.className = "inline";
+      const small = document.createElement("canvas");
+      small.style.width = small.style.height = "20px";
+      row.append(small, document.createTextNode(state));
+      const label = document.createElement("span");
+      label.textContent = MINI_LABELS[state];
+      cell.append(big, row, label);
+      grid.append(cell);
+      createMiniOrb(big, { size: 64, state });
+      const s = createMiniOrb(small, { size: 20, state });
+      if (["compute", "check"].includes(state)) setInterval(() => s.beat(), 1500);
+    }
+  }
+</script>
+</body>
+</html>
