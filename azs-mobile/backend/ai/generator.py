@@ -22,6 +22,10 @@ MODEL = os.environ.get("AI_MODEL", "qwen3:8b")
 # Для генерации SQL он не нужен и только удлиняет ответ.
 THINKING = (os.environ.get("AI_MODEL_THINK") or "0").strip().lower() in {"1", "true", "yes", "on"}
 TIMEOUT_S = float(os.environ.get("AI_MODEL_TIMEOUT", "120"))
+# Один размер контекста для всех вызовов модели. При разном num_ctx Ollama
+# перезагружает модель на каждом переключении «Лёгкий» ↔ агент: это лишние
+# секунды и пик памяти, при нехватке которой Ollama отвечает ошибкой 500.
+NUM_CTX = int(os.environ.get("AI_NUM_CTX") or os.environ.get("AI_AGENT_NUM_CTX") or "16384")
 # Пояснение текстом можно отключить, если нужен только голый результат.
 NARRATE = (os.environ.get("AI_NARRATE") or "1").strip().lower() in {"1", "true", "yes", "on"}
 # Сколько строк результата показывать модели при составлении пояснения.
@@ -45,7 +49,7 @@ class Generated:
     elapsed_ms: int
 
 
-def _post(path: str, payload: dict) -> dict:
+def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
     request = urllib.request.Request(
         f"{OLLAMA_HOST}{path}",
         data=json.dumps(payload).encode("utf-8"),
@@ -53,8 +57,15 @@ def _post(path: str, payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+        with urllib.request.urlopen(request, timeout=timeout or TIMEOUT_S) as response:
             return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        # Ollama запущена, но не смогла ответить: причина — в теле ответа
+        # («не хватает памяти», «модель не найдена», «процесс завершился»).
+        detail = _error_detail(err)
+        raise ModelUnavailable(
+            f"Модель по адресу {OLLAMA_HOST} ответила ошибкой {err.code}: {detail or err.reason}. {_hint(detail)}"
+        ) from err
     except urllib.error.URLError as err:
         raise ModelUnavailable(
             f"Модель недоступна по адресу {OLLAMA_HOST}: {err.reason}. "
@@ -62,8 +73,32 @@ def _post(path: str, payload: dict) -> dict:
         ) from err
     except TimeoutError as err:
         raise ModelUnavailable(
-            f"Модель не ответила за {TIMEOUT_S:.0f} с"
+            f"Модель не ответила за {timeout or TIMEOUT_S:.0f} с"
         ) from err
+
+
+def _error_detail(err: urllib.error.HTTPError) -> str:
+    try:
+        body = err.read(4000).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - тело ошибки может быть недоступно
+        return ""
+    try:
+        detail = json.loads(body).get("error") or ""
+    except (ValueError, AttributeError):
+        detail = body
+    return " ".join(str(detail).split())[:300]
+
+
+def _hint(detail: str) -> str:
+    text = (detail or "").lower()
+    if "memory" in text or "памят" in text:
+        return (f"Не хватает памяти для модели: закройте тяжёлые приложения или уменьшите AI_NUM_CTX "
+                f"(сейчас {NUM_CTX}) и перезапустите Ollama.")
+    if "not found" in text or "pull" in text:
+        return f"Модель не загружена: выполните «ollama pull {MODEL}»."
+    if any(word in text for word in ("terminated", "exit status", "eof", "signal", "killed")):
+        return "Процесс модели завершился — перезапустите Ollama и повторите вопрос."
+    return "Подробности — в журнале Ollama: ~/.ollama/logs/server.log."
 
 
 def extract_sql(text: str) -> str:
@@ -114,7 +149,7 @@ def _user_content(question: str, model: str, context: str = "") -> str:
 
 
 def generate(question: str, feedback: str | None = None, model: str | None = None,
-             context: str = "") -> Generated:
+             context: str = "", timeout: float | None = None) -> Generated:
     model = (model or MODEL).strip()
     messages = [
         {"role": "system", "content": system_prompt()},
@@ -139,8 +174,9 @@ def generate(question: str, feedback: str | None = None, model: str | None = Non
             "messages": messages,
             "stream": False,
             "think": THINKING,
-            "options": {"temperature": 0, "num_predict": 1024},
+            "options": {"temperature": 0, "num_predict": 1024, "num_ctx": NUM_CTX},
         },
+        timeout=timeout,
     )
     raw = (data.get("message") or {}).get("content", "")
     return Generated(
@@ -151,7 +187,7 @@ def generate(question: str, feedback: str | None = None, model: str | None = Non
     )
 
 
-def _chat(messages: list[dict], model: str, max_tokens: int) -> tuple[str, int]:
+def _chat(messages: list[dict], model: str, max_tokens: int, timeout: float | None = None) -> tuple[str, int]:
     started = time.monotonic()
     data = _post(
         "/api/chat",
@@ -160,15 +196,16 @@ def _chat(messages: list[dict], model: str, max_tokens: int) -> tuple[str, int]:
             "messages": messages,
             "stream": False,
             "think": THINKING,
-            "options": {"temperature": 0, "num_predict": max_tokens},
+            "options": {"temperature": 0, "num_predict": max_tokens, "num_ctx": NUM_CTX},
         },
+        timeout=timeout,
     )
     content = (data.get("message") or {}).get("content", "")
     return content, int((time.monotonic() - started) * 1000)
 
 
 def narrate(question: str, scope: str, columns: list[str], rows: list,
-            model: str | None = None) -> tuple[str, int]:
+            model: str | None = None, timeout: float | None = None) -> tuple[str, int]:
     """Короткое пояснение к результату на человеческом языке.
 
     Модель видит только уже посчитанные строки — новых обращений к данным
@@ -187,7 +224,7 @@ def narrate(question: str, scope: str, columns: list[str], rows: list,
         text, elapsed = _chat(
             [{"role": "system", "content": NARRATION_SYSTEM},
              {"role": "user", "content": content}],
-            model, 400,
+            model, 400, timeout,
         )
     except ModelUnavailable:
         return "", 0

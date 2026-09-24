@@ -32,6 +32,8 @@ class ToolContext:
     run_query: Callable[[str, int], executor.Result] = executor.run
     on_step: Callable[[Step, str], None] | None = None
     sql_ms: int = 0
+    # Предел одного расчёта в песочнице; None — AI_PY_TIMEOUT (у администратора больше).
+    python_timeout_s: float | None = None
     _range: tuple | None = None
 
     def emit(self, step: Step, state: str) -> None:

@@ -20,7 +20,8 @@ from typing import Any, Callable
 
 from .. import generator
 
-NUM_CTX = int(os.environ.get("AI_AGENT_NUM_CTX", "16384"))
+# Тот же размер контекста, что у быстрого пути: иначе Ollama перезагружает модель.
+NUM_CTX = generator.NUM_CTX
 MAX_TOKENS = int(os.environ.get("AI_AGENT_MAX_TOKENS", "1500"))
 
 FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S | re.I)
@@ -127,8 +128,12 @@ def calls_from_text(text: str) -> list[ToolCall]:
 # --- Ollama -------------------------------------------------------------------
 
 class OllamaChat:
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, max_tokens: int | None = None,
+                 timeout_s: float | None = None):
         self.model = (model or generator.MODEL).strip()
+        # Пределы роли (limits.py): у администратора ответ хода длиннее, ожидание дольше.
+        self.max_tokens = max_tokens
+        self.timeout_s = timeout_s
 
     def _prepare(self, messages: list[dict]) -> list[dict]:
         if generator.THINKING or not self.model.lower().startswith("qwen3"):
@@ -142,7 +147,8 @@ class OllamaChat:
         return prepared
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
-             json_mode: bool = False, max_tokens: int = MAX_TOKENS) -> Reply:
+             json_mode: bool = False, max_tokens: int | None = None) -> Reply:
+        max_tokens = max_tokens or self.max_tokens or MAX_TOKENS
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": self._prepare(messages),
@@ -156,7 +162,7 @@ class OllamaChat:
             payload["format"] = "json"
         started = time.monotonic()
         try:
-            data = generator._post("/api/chat", payload)
+            data = generator._post("/api/chat", payload, timeout=self.timeout_s)
         except generator.ModelUnavailable as err:
             raise ModelUnavailable(str(err)) from err
         message = data.get("message") or {}
@@ -174,6 +180,61 @@ class OllamaChat:
         return Reply(content=content, tool_calls=calls,
                      elapsed_ms=int((time.monotonic() - started) * 1000), raw=data, model=self.model)
 
+
+
+def salvage_json(text: str) -> dict | None:
+    """JSON-объект из ответа модели, даже если ответ оборвался на лимите токенов.
+
+    Сначала обычный разбор; если он не удался — ответ обрезается по последнему
+    завершённому значению и незакрытые скобки дописываются. Так оборванный
+    итог («…"happened": ["А", "Б", "В") всё равно даёт заголовок и пункты,
+    а не сырой JSON на экране.
+    """
+    parsed = extract_json(text)
+    if isinstance(parsed, dict):
+        return parsed
+    start = (text or "").find("{")
+    if start < 0:
+        return None
+    body = text[start:]
+    cuts = [i + 1 for i, ch in enumerate(body) if ch in '"]}0123456789el']
+    for cut in reversed(cuts[-400:]):
+        candidate = _close_json(body[:cut])
+        if candidate is None:
+            continue
+        try:
+            value = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and value:
+            return value
+    return None
+
+
+def _close_json(fragment: str) -> str | None:
+    stack: list[str] = []
+    in_string = escaped = False
+    for ch in fragment:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not stack:
+                return None
+            stack.pop()
+    if in_string:
+        return None
+    trimmed = fragment.rstrip().rstrip(",:")
+    return trimmed + "".join(reversed(stack))
 
 # --- сценарная модель ---------------------------------------------------------
 

@@ -7,17 +7,20 @@
 // Компоненты не знают о модели и не считают ничего сами: любой расчёт
 // в интерфейсе был бы вторым источником правды.
 import { useEffect, useRef, useState } from "react";
-import { Check, X, AlertTriangle } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Check, X, AlertTriangle, Maximize2 } from "lucide-react";
 
+// Уровни глубины (ИИ-20, 23.09.2026). Запасной список — если сервер не
+// прислал свой; настоящие подписи и ориентир времени приходят в /api/ai/status.
 export const AI_DEPTH_FALLBACK = [
-  { code: "auto", title: "Авто", hint: "глубину выбирает разбор задачи" },
-  { code: "fast", title: "Быстро", hint: "один запрос и короткий ответ" },
-  { code: "analyze", title: "Анализ", hint: "сравнения, динамика, несколько запросов" },
-  { code: "deep", title: "Глубокий анализ", hint: "причины, аномалии, сценарии" },
+  { code: "auto", title: "Авто", hint: "уровень выбирает ИИ по вопросу", about: "", typical: "" },
+  { code: "fast", title: "Лёгкий", hint: "одна цифра или факт", about: "", typical: "" },
+  { code: "analyze", title: "Средний", hint: "сравнения и динамика", about: "", typical: "" },
+  { code: "deep", title: "Высокий", hint: "причины, отклонения, сценарии", about: "", typical: "" },
 ];
 
-const DEPTH_TITLES = { fast: "быстрый ответ", analyze: "анализ", deep: "глубокий анализ" };
-const TASK_TITLES = {
+export const DEPTH_TITLES = { fast: "Лёгкий", analyze: "Средний", deep: "Высокий" };
+export const TASK_TITLES = {
   lookup: "факт", compare: "сравнение", trend: "динамика", diagnose: "диагностика причин",
   anomaly: "поиск аномалий", opportunity: "точки роста", whatif: "сценарий", other: "разбор",
 };
@@ -116,8 +119,7 @@ function Axes({ width, height, pad, ticks, yScale, xLabels, xPositions, unit }) 
   );
 }
 
-function LineChart({ chart, width }) {
-  const height = 260;
+function LineChart({ chart, width, height = 260 }) {
   const pad = { top: 22, right: 40, bottom: 34, left: 56 };
   const labels = chart.x || [];
   const series = chart.series || [];
@@ -163,12 +165,12 @@ function LineChart({ chart, width }) {
   );
 }
 
-function BarChart({ chart, width, stacked = false }) {
+function BarChart({ chart, width, stacked = false, height: tall = 260 }) {
   const labels = chart.x || [];
   const series = chart.series || [];
   const horizontal = labels.length > 12 || (labels.length > 5 && labels.some((l) => String(l).length > 12));
   if (horizontal) return <HorizontalBars chart={chart} width={width} stacked={stacked} />;
-  const height = 260;
+  const height = tall;
   const pad = { top: 22, right: 16, bottom: 34, left: 56 };
   const totals = labels.map((_, i) => {
     if (!stacked) return series.map((s) => s.values[i] || 0);
@@ -282,7 +284,7 @@ function HorizontalBars({ chart, width, stacked }) {
   );
 }
 
-function Waterfall({ chart, width }) {
+function Waterfall({ chart, width, height: tall = 260 }) {
   const labels = chart.x || [];
   const deltas = (chart.series?.[0]?.values || []).map((v) => v || 0);
   const start = chart.start ?? null;
@@ -294,7 +296,7 @@ function Waterfall({ chart, width }) {
     running += d;
   });
   steps.push({ label: "Итог", from: 0, to: running, kind: "total" });
-  const height = 260;
+  const height = tall;
   const pad = { top: 22, right: 16, bottom: 34, left: 56 };
   const all = steps.flatMap((s) => [s.from, s.to]);
   const min = Math.min(0, ...all);
@@ -328,10 +330,9 @@ function Waterfall({ chart, width }) {
   );
 }
 
-function Scatter({ chart, width }) {
+function Scatter({ chart, width, height = 280 }) {
   const points = chart.points || [];
   if (!points.length) return null;
-  const height = 280;
   const pad = { top: 22, right: 16, bottom: 34, left: 56 };
   const xsRaw = points.map((p) => p.x);
   const ysRaw = points.map((p) => p.y);
@@ -386,50 +387,136 @@ function KpiCards({ chart, fmt }) {
   );
 }
 
-export function AiTable({ columns, rows, fmt, title, meta }) {
+// --- полноэкранный просмотр (ИИ-06) --------------------------------------------
+// Таблицы и графики стоят в одной колонке с текстом ответа (решение владельца
+// от 23.09.2026). Широкую таблицу или мелкий график открывают на весь экран.
+
+export function AiExpandButton({ onClick, label = "На весь экран" }) {
+  return (
+    <button type="button" className="ai-expand" onClick={onClick} aria-label={label} title={label}>
+      <Maximize2 size={14} aria-hidden="true" />
+    </button>
+  );
+}
+
+// Полноэкранный просмотр таблицы или графика: закрывается кнопкой и Esc,
+// фокус возвращается туда, откуда открыли. Рисуется в body — анимации ленты
+// с transform иначе ломали бы position: fixed.
+export function AiFullscreen({ title, onClose, children }) {
+  const closeRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement;
+    closeRef.current?.focus();
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = overflow;
+      previous?.focus?.();
+    };
+  }, []);
+  return createPortal(
+    <div className="ai-fullscreen" role="dialog" aria-modal="true" aria-label={title || "Просмотр на весь экран"}>
+      <div className="ai-fullscreen-head">
+        <strong>{title}</strong>
+        <button ref={closeRef} type="button" className="ai-fullscreen-close" onClick={() => onCloseRef.current()} aria-label="Закрыть (Esc)">
+          <X size={18} aria-hidden="true" />
+        </button>
+      </div>
+      <div className="ai-fullscreen-body">{children}</div>
+    </div>,
+    document.body,
+  );
+}
+
+export function AiTable({ columns, rows, fmt, title, meta, expandable = true }) {
   const decimals = columns.map((_, index) => fmt.decimals(rows, index));
+  const [full, setFull] = useState(false);
+  const table = (
+    <div className="ai-table-wrap">
+      <table className="ai-table">
+        <thead><tr>{columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              {row.map((cell, j) => (
+                <td key={j} className={typeof cell === "number" ? "num" : ""}>{fmt.cell(cell, decimals[j])}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
   return (
     <div className="ai-table-card">
-      {(title || meta) && (
+      {(title || meta || expandable) && (
         <div className="ai-table-head">
           {title && <span className="ai-table-title">{title}</span>}
           {meta && <span className="ai-table-count">{meta}</span>}
+          {expandable && <AiExpandButton onClick={() => setFull(true)} />}
         </div>
       )}
-      <div className="ai-table-wrap">
-        <table className="ai-table">
-          <thead><tr>{columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={i}>
-                {row.map((cell, j) => (
-                  <td key={j} className={typeof cell === "number" ? "num" : ""}>{fmt.cell(cell, decimals[j])}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {table}
+      {full && <AiFullscreen title={title || "Таблица"} onClose={() => setFull(false)}>{table}</AiFullscreen>}
+    </div>
+  );
+}
+
+// Графики с осями можно открыть на весь экран; карточкам KPI и таблице-графику
+// это не нужно.
+const EXPANDABLE_CHARTS = new Set(["line", "bar", "stacked_bar", "waterfall", "scatter"]);
+
+function ChartBody({ chart, fmt, width, height }) {
+  if (chart.type === "line") return <LineChart chart={chart} width={width} height={height} />;
+  if (chart.type === "bar") return <BarChart chart={chart} width={width} height={height} />;
+  if (chart.type === "stacked_bar") return <BarChart chart={chart} width={width} stacked height={height} />;
+  if (chart.type === "waterfall") return <Waterfall chart={chart} width={width} height={height} />;
+  if (chart.type === "scatter") return <Scatter chart={chart} width={width} height={height} />;
+  if (chart.type === "kpi") return <KpiCards chart={chart} fmt={fmt} />;
+  if (chart.type === "table") return <AiTable columns={chart.columns || []} rows={chart.rows || []} fmt={fmt} expandable={false} />;
+  return null;
+}
+
+function FullscreenChart({ chart, fmt }) {
+  const [ref, width] = useWidth(900);
+  const height = Math.max(320, Math.min(640, Math.round((typeof window !== "undefined" ? window.innerHeight : 800) - 220)));
+  return (
+    <div className="ai-chart-card full">
+      <div ref={ref} className="ai-chart-body"><ChartBody chart={chart} fmt={fmt} width={width} height={height} /></div>
+      {chart.type !== "kpi" && chart.type !== "table" && <Legend series={chart.series} />}
+      {chart.note && <div className="ai-chart-note">{chart.note}</div>}
     </div>
   );
 }
 
 export function AiChart({ chart, fmt }) {
   const [ref, width] = useWidth();
-  let body = null;
-  if (chart.type === "line") body = <LineChart chart={chart} width={width} />;
-  else if (chart.type === "bar") body = <BarChart chart={chart} width={width} />;
-  else if (chart.type === "stacked_bar") body = <BarChart chart={chart} width={width} stacked />;
-  else if (chart.type === "waterfall") body = <Waterfall chart={chart} width={width} />;
-  else if (chart.type === "scatter") body = <Scatter chart={chart} width={width} />;
-  else if (chart.type === "kpi") body = <KpiCards chart={chart} fmt={fmt} />;
-  else if (chart.type === "table") body = <AiTable columns={chart.columns || []} rows={chart.rows || []} fmt={fmt} />;
+  const [full, setFull] = useState(false);
+  const expandable = EXPANDABLE_CHARTS.has(chart.type);
   return (
     <figure className="ai-chart-card">
-      {chart.title && <figcaption className="ai-chart-title">{chart.title}</figcaption>}
-      <div ref={ref} className="ai-chart-body">{body}</div>
+      <div className="ai-chart-head">
+        {chart.title && <figcaption className="ai-chart-title">{chart.title}</figcaption>}
+        {expandable && <AiExpandButton onClick={() => setFull(true)} />}
+      </div>
+      <div ref={ref} className="ai-chart-body"><ChartBody chart={chart} fmt={fmt} width={width} /></div>
       {chart.type !== "kpi" && chart.type !== "table" && <Legend series={chart.series} />}
       {chart.note && <div className="ai-chart-note">{chart.note}</div>}
+      {full && (
+        <AiFullscreen title={chart.title || "График"} onClose={() => setFull(false)}>
+          <FullscreenChart chart={chart} fmt={fmt} />
+        </AiFullscreen>
+      )}
     </figure>
   );
 }
@@ -441,7 +528,7 @@ export function aiAgentStages(answer) {
   if (answer.plan || answer.depth !== "fast") {
     stages.push({
       key: "plan",
-      label: `Разобрал задачу: ${TASK_TITLES[answer.taskType] || answer.taskType || "разбор"} · ${DEPTH_TITLES[answer.depth] || answer.depth}`,
+      label: `Разобрал задачу: ${TASK_TITLES[answer.taskType] || answer.taskType || "разбор"} · уровень «${DEPTH_TITLES[answer.depth] || answer.depth}»`,
       ms: answer.planMs,
       done: true,
     });
@@ -458,9 +545,139 @@ function Section({ title, items, tone }) {
     <section className={tone ? `ai-section ${tone}` : "ai-section"}>
       <h4 className="ai-section-title">{title}</h4>
       <ul className="ai-list">
-        {items.map((item, i) => <li key={i}>{item}</li>)}
+        {items.map((item, i) => <li key={i}>{typeof item === "string" ? item : item?.text || item?.action || ""}</li>)}
       </ul>
     </section>
+  );
+}
+
+// --- типы утверждений (ИИ-25) и рекомендации (ИИ-16) -------------------------
+// Тип пункта ставит бэкенд по происхождению чисел. В самом ответе меток нет —
+// пункты идут обычным списком (решение владельца от 23.09.2026: метки у каждой
+// строки перегружают экран). Тип, источники, формулы и поля рекомендаций —
+// в свёрнутом нижнем блоке «Расшифровка ответа».
+
+export const CLAIM_TITLES = { fact: "Факт", calc: "Расчёт", hypothesis: "Гипотеза", recommendation: "Рекомендация" };
+
+function rowsWord(n) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return "строка";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "строки";
+  return "строк";
+}
+
+function sourceText(source) {
+  const rows = typeof source.rows === "number" ? `, ${source.rows.toLocaleString("ru-RU")} ${rowsWord(source.rows)}` : "";
+  const kind = source.kind === "python" ? "вычисление" : "запрос к витрине";
+  return `${kind} «${source.title}»${rows}`;
+}
+
+function shorten(text, max = 90) {
+  const clean = String(text || "").trim();
+  return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
+}
+
+function ClaimTag({ type }) {
+  return <span className={`ai-claim-tag is-${type || "fact"}`}>{CLAIM_TITLES[type] || CLAIM_TITLES.fact}</span>;
+}
+
+function RecommendationSection({ analysis }) {
+  const recs = analysis.recommendations;
+  if (!Array.isArray(recs)) return <Section title="Что можно сделать" items={analysis.actions} />;
+  if (!recs.length && !analysis.recommendationsWithheld) return null;
+  return (
+    <section className="ai-section">
+      <h4 className="ai-section-title">Что можно сделать</h4>
+      {recs.length ? (
+        <ul className="ai-list">
+          {recs.map((rec, i) => <li key={i}>{rec.action}</li>)}
+        </ul>
+      ) : (
+        <p className="ai-rec-empty">Недостаточно данных для рекомендации.</p>
+      )}
+      {recs.length > 0 && analysis.recommendationNote && <p className="ai-rec-note">{analysis.recommendationNote}</p>}
+    </section>
+  );
+}
+
+// Что показать в «Расшифровке ответа» по одному пункту.
+function claimLines(claim) {
+  const lines = [];
+  for (const f of claim.formula || []) lines.push(["Формула", f]);
+  const sources = (claim.sources || []).map(sourceText).join("; ");
+  if (sources) lines.push([claim.type === "hypothesis" ? "Числа сверены с" : "Источник", sources]);
+  if ((claim.columns || []).length) lines.push([claim.columns.length > 1 ? "Столбцы" : "Столбец", claim.columns.map((c) => `«${c}»`).join(", ")]);
+  if (claim.note) lines.push(["Пояснение", claim.note]);
+  if (claim.check) lines.push(["Проверить", claim.check]);
+  return lines;
+}
+
+function BasisEntry({ type, text, lines }) {
+  return (
+    <li className="ai-basis-entry">
+      <div className="ai-basis-head">
+        <ClaimTag type={type} />
+        <span className="ai-basis-quote">{shorten(text)}</span>
+      </div>
+      <dl className="ai-basis-rows">
+        {lines.map(([label, value], i) => (
+          <div key={i} className="ai-basis-row">
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </li>
+  );
+}
+
+// Есть ли что расшифровывать: размеченные пункты или рекомендации.
+export function aiHasBasis(answer) {
+  const a = answer.analysis || {};
+  const marks = a.claims || {};
+  return ["happened", "why", "where"].some((k) => (marks[k] || []).length > 0) || (a.recommendations || []).length > 0;
+}
+
+export function AiClaimsBasis({ answer }) {
+  const a = answer.analysis || {};
+  const marks = a.claims || {};
+  const plan = answer.plan || {};
+  const entries = [];
+  for (const key of ["happened", "why", "where"]) {
+    const items = a[key] || [];
+    const claims = marks[key] || [];
+    if (claims.length !== items.length) continue;
+    items.forEach((text, i) => {
+      const lines = claimLines(claims[i] || {});
+      if (lines.length) entries.push({ key: `${key}-${i}`, type: claims[i]?.type, text, lines });
+    });
+  }
+  (a.recommendations || []).forEach((rec, i) => {
+    const lines = [["Основание", rec.basis], ["Эффект", rec.effect]];
+    for (const f of rec.effectFormula || []) lines.push(["Расчёт эффекта", f]);
+    lines.push(["Не подходит", rec.limits], ["Источник", rec.source], ["Уверенность", rec.confidence]);
+    if (rec.softened) lines.push(["Формулировка", "смягчена: категоричные слова заменены по стоп-листу"]);
+    entries.push({ key: `rec-${i}`, type: "recommendation", text: rec.action, lines });
+  });
+  const context = [
+    plan.period ? `период — ${plan.period}` : "",
+    (plan.filters || []).filter(Boolean).length ? `фильтры — ${plan.filters.filter(Boolean).join(", ")}` : "",
+    answer.scopeLabel ? `область — ${answer.scopeLabel}` : "",
+  ].filter(Boolean).join("; ");
+  return (
+    <div className="ai-basis">
+      <p className="ai-basis-lead">
+        Метку ставит система по происхождению чисел, а не модель: «Факт» — цифра из витрины, «Расчёт» — посчитано
+        из данных ответа, «Гипотеза» — данные её не доказывают.
+        {context ? ` Данные: ${context}.` : ""}
+      </p>
+      {entries.length > 0 && (
+        <ul className="ai-basis-list">
+          {entries.map((e) => <BasisEntry key={e.key} type={e.type} text={e.text} lines={e.lines} />)}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -519,10 +736,16 @@ export function AiAnalysis({ answer, maySeeSql, Fold, fmt }) {
           meta={answer.truncated ? `первые ${fmt.int(rows.length)}` : `${fmt.int(rows.length)} строк`}
         />
       )}
-      <Section title="Что можно сделать" items={analysis.actions} />
+      <RecommendationSection analysis={analysis} />
       <Section title="Ограничения данных" items={analysis.limitations} tone="limits" />
 
       <div className="ai-folds">
+        {/* Расшифровка — отдельным нижним блоком, свёрнутым (решение владельца от 23.09.2026). */}
+        {aiHasBasis(answer) && (
+          <Fold title="Расшифровка ответа" meta="источники, формулы, основания">
+            <AiClaimsBasis answer={answer} />
+          </Fold>
+        )}
         {(answer.tables || []).map((table) => (
           <Fold key={table.id} title={`Таблица: ${table.title}`} meta={`${fmt.int(table.rows.length)} строк`}>
             <AiTable columns={table.columns} rows={table.rows} fmt={fmt} />
@@ -531,7 +754,7 @@ export function AiAnalysis({ answer, maySeeSql, Fold, fmt }) {
         <Fold title="Откуда число" meta={`DWH ЛИКАРД · ${answer.scopeLabel}`}>
           <p className="ai-source-text">
             Источник: DWH ЛИКАРД. Область данных: {answer.scopeLabel} — подставлена системой, а не выбрана моделью.
-            {" "}Режим: {DEPTH_TITLES[answer.depth] || answer.depth}, задача — {TASK_TITLES[answer.taskType] || answer.taskType}.
+            {" "}Уровень: «{DEPTH_TITLES[answer.depth] || answer.depth}», задача — {TASK_TITLES[answer.taskType] || answer.taskType}.
             {" "}Запросов к витрине: {sqlSteps.length}, прочитано строк: {fmt.int(readRows)}.
             {" "}Каждый запрос прошёл проверку допустимости; числа в тексте сверены с результатами расчёта.
           </p>
@@ -551,12 +774,28 @@ export function aiAnalysisText(answer) {
   const parts = [];
   if (a.headline) parts.push(a.headline);
   const block = (title, items) => {
-    if (items && items.length) parts.push(`${title}:\n${items.map((i) => `• ${i}`).join("\n")}`);
+    if (!items || !items.length) return;
+    const lines = items.map((item) => `• ${typeof item === "string" ? item : item?.text || item?.action || ""}`);
+    parts.push(`${title}:\n${lines.join("\n")}`);
   };
   block("Что произошло", a.happened);
   block("Почему", a.why);
   block("Где именно", a.where);
-  block("Что можно сделать", a.actions);
+  if (Array.isArray(a.recommendations)) {
+    if (a.recommendations.length) {
+      const lines = a.recommendations.map((r) => [
+        `• ${r.action}`,
+        `  Основание: ${r.basis}`,
+        `  Эффект: ${r.effect}`,
+        `  Не подходит: ${r.limits}`,
+      ].join("\n"));
+      parts.push(`Что можно сделать:\n${lines.join("\n")}${a.recommendationNote ? `\n${a.recommendationNote}` : ""}`);
+    } else if (a.recommendationsWithheld) {
+      parts.push("Что можно сделать:\nНедостаточно данных для рекомендации.");
+    }
+  } else {
+    block("Что можно сделать", a.actions);
+  }
   block("Ограничения данных", a.limitations);
   return parts.join("\n\n");
 }

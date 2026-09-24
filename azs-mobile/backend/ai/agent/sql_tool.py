@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from .. import executor
+from .. import executor, textstyle
 from ..validator import Rejected, validate
 from . import checks, schema_tools
 from .state import ResultSet, Step
@@ -75,13 +75,16 @@ def run_sql(ctx: ToolContext, sql: str, purpose: str = "") -> dict:
                 "hint": "Проверь синтаксис под диалект и имена колонок; упрости запрос."}
     ctx.sql_ms += result.elapsed_ms
     rows = [list(r) for r in result.rows]
+    # Заголовки — по-русски, даже если модель не дала колонкам псевдонимы:
+    # «vd_per_client» → «ВД на клиента, руб/чек». Модель дальше видит те же имена.
+    columns = textstyle.rename_columns(list(result.columns), ctx.semantic, ctx.catalog)
     # Валидатор сам дописывает LIMIT, поэтому исполнитель не видит «лишней»
     # строки: ровно лимит строк — почти наверняка обрезка.
     truncated = result.truncated or len(rows) >= checked.row_limit
-    warnings = checks.inspect(result.columns, rows, truncated, checked.row_limit,
+    warnings = checks.inspect(columns, rows, truncated, checked.row_limit,
                               _range_pair(ctx))
     rs = ResultSet(
-        id=ctx.workspace.next_id("r"), columns=list(result.columns), rows=rows,
+        id=ctx.workspace.next_id("r"), columns=columns, rows=rows,
         source="sql", purpose=purpose, sql=checked.sql, truncated=truncated,
         warnings=warnings, elapsed_ms=result.elapsed_ms,
     )

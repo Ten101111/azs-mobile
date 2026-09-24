@@ -102,6 +102,28 @@ fi
 
 success "Файлы загружены"
 
+# ── 2а. Справки: токен сборщика с этого мака ─────────────
+# Справку собирает этот мак по витрине ОХД (scripts/install_reports_schedule.sh)
+# и присылает готовой; сервер её только принимает. Токен живёт в .env.local
+# мака, на сервер уходит только его SHA-256. Прежний серверный таймер справок
+# (сборка по базе KPI) снимается: решение владельца 24.09.2026.
+IMPORT_TOKEN="$(grep -E '^REPORTS_IMPORT_TOKEN=' "$APP_DIR_LOCAL/.env.local" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"\r' || true)"
+$SSH "systemctl disable --now azs-reports.timer >/dev/null 2>&1 || true; rm -f /etc/systemd/system/azs-reports.timer /etc/systemd/system/azs-reports.service; systemctl daemon-reload"
+if [ -n "$IMPORT_TOKEN" ]; then
+  info "Разрешаем приём справок с этого мака..."
+  IMPORT_HASH="$(printf '%s' "$IMPORT_TOKEN" | shasum -a 256 | cut -d' ' -f1)"
+  $SSH "APP_ENV=$APP_DIR_REMOTE/.env IMPORT_HASH=$IMPORT_HASH bash -s" <<'REMOTE'
+set -euo pipefail
+upsert() {
+  if grep -q "^$1=" "$APP_ENV"; then sed -i "s|^$1=.*|$1=$2|" "$APP_ENV"; else printf '%s=%s\n' "$1" "$2" >> "$APP_ENV"; fi
+}
+upsert REPORTS_IMPORT_TOKEN_SHA256 "$IMPORT_HASH"
+REMOTE
+  success "Приём справок включён"
+else
+  warn "Справки не принимаются: нет REPORTS_IMPORT_TOKEN (scripts/install_reports_schedule.sh)"
+fi
+
 # ── 3. Устанавливаем Python-зависимости ───────────────────
 info "Устанавливаем Python-зависимости..."
 $SSH "

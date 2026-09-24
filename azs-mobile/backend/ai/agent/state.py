@@ -42,7 +42,23 @@ class Budget:
     used_schema: int = 0
 
     @classmethod
-    def for_depth(cls, depth: str) -> "Budget":
+    def for_depth(cls, depth: str, limits=None) -> "Budget":
+        """Бюджет глубины; `limits` (backend/ai/limits.py) заменяет пределы роли, например администратора."""
+        base = cls._standard(depth)
+        if limits is None or not getattr(limits, "unlimited", False):
+            return base
+        return cls(
+            depth=base.depth,
+            sql_calls=limits.sql_calls or base.sql_calls,
+            python_calls=limits.python_calls or base.python_calls,
+            charts=limits.charts or base.charts,
+            model_turns=limits.model_turns or base.model_turns,
+            row_limit=limits.agent_rows or base.row_limit,
+            schema_calls=max(base.schema_calls, limits.sql_calls or 0),
+        )
+
+    @classmethod
+    def _standard(cls, depth: str) -> "Budget":
         if depth == "deep":
             return cls(
                 depth="deep",
@@ -217,6 +233,10 @@ class Plan:
         }
 
 
+# Строка под блоком рекомендаций (ИИ-16): рекомендация — не распоряжение.
+RECOMMENDATION_NOTE = "Рекомендации носят справочный характер; решение принимает руководитель."
+
+
 @dataclass
 class Analysis:
     headline: str = ""
@@ -225,11 +245,38 @@ class Analysis:
     where: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
+    # Что подтвердит гипотезу — по тексту пункта «почему» (ИИ-25), и поля
+    # рекомендаций от модели: действие, основание, эффект, ограничения… (ИИ-16).
+    checks: dict[str, str] = field(default_factory=dict)
+    recs: list[dict] = field(default_factory=list)
+    # Итог разметки кодом: типы пунктов, принятые рекомендации, сколько снято.
+    claims: dict = field(default_factory=dict)
+    recommendations: list[dict] | None = None
+    withheld: int = 0
+    recs_asked: bool = True
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "headline": self.headline, "happened": self.happened, "why": self.why,
             "where": self.where, "actions": self.actions, "limitations": self.limitations,
+        }
+        if self.claims:
+            out["claims"] = self.claims
+        if self.recommendations is not None:
+            out["recommendations"] = self.recommendations
+            if self.recommendations:
+                out["recommendationNote"] = RECOMMENDATION_NOTE
+            elif self.withheld and self.recs_asked:
+                # «Недостаточно данных для рекомендации» — только если о них просили.
+                out["recommendationsWithheld"] = self.withheld
+        return out
+
+    def model_view(self) -> dict:
+        """Черновик в формате finish — чтобы попросить модель исправить его."""
+        why = [{"text": t, "check": self.checks[t]} if self.checks.get(t) else t for t in self.why]
+        return {
+            "headline": self.headline, "happened": self.happened, "why": why, "where": self.where,
+            "actions": self.recs or self.actions, "limitations": self.limitations,
         }
 
     def text(self) -> str:

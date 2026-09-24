@@ -248,7 +248,7 @@ def run_python(ctx: ToolContext, code: str, purpose: str = "", inputs: list[str]
     step = Step(key=ctx.workspace.next_id("s"), kind="python", label=f"Считаю: {short}", purpose=purpose, code=code)
     ctx.workspace.steps.append(step)
     ctx.emit(step, "active")
-    outcome = execute(textwrap.dedent(code), frames)
+    outcome = execute(textwrap.dedent(code), frames, timeout_s=ctx.python_timeout_s or TIMEOUT_S)
     step.ms = outcome.get("elapsed_ms", 0)
     step.output = (outcome.get("stdout") or "")[:4000]
     if outcome.get("error"):

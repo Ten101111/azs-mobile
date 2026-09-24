@@ -20,6 +20,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import contract
+from . import limits as ai_limits
 from . import dialogs as dialog_store
 from . import executor, generator, journal, pipeline, quality, quality_export
 from .. import roles as role_model
@@ -95,6 +96,8 @@ class AskResponse(BaseModel):
     plan: dict | None = None
     grounding: dict | None = None
     planMs: int = 0
+    totalMs: int = 0
+    depthRequested: str = "auto"
 
 
 class Identity(BaseModel):
@@ -123,17 +126,76 @@ class StatusResponse(BaseModel):
     depths: list[dict] = []
 
 
+# Уровни глубины (ИИ-20, 23.09.2026). Коды прежние — fast, analyze, deep:
+# их хранят журнал, диалоги и API. Меняются только подписи для людей.
+# «limit» — ориентир, пока в журнале мало ответов этого уровня.
 DEPTH_OPTIONS = [
-    {"code": "auto", "title": "Авто", "hint": "глубину выбирает разбор задачи"},
-    {"code": "fast", "title": "Быстро", "hint": "один запрос и короткий ответ"},
-    {"code": "analyze", "title": "Анализ", "hint": "сравнения, динамика, несколько запросов"},
-    {"code": "deep", "title": "Глубокий анализ", "hint": "причины, аномалии, сценарии: серия запросов, Python, графики"},
+    {"code": "auto", "title": "Авто",
+     "hint": "уровень выбирает ИИ по вопросу",
+     "about": "Факт — «Лёгкий», сравнение и динамика — «Средний», причины и сценарии — «Высокий». "
+              "Выбранный уровень виден в ответе.",
+     "limit": ""},
+    {"code": "fast", "title": "Лёгкий",
+     "hint": "одна цифра или факт",
+     "about": "Один запрос к витрине и короткий ответ, без графиков. Например: «Выручка НТУ за август».",
+     "limit": "обычно быстрее всего"},
+    {"code": "analyze", "title": "Средний",
+     "hint": "сравнения и динамика",
+     "about": "Несколько запросов, расчёты и до двух графиков. Например: «Сравни конверсию по ОНПО с прошлым годом».",
+     "limit": "до 4 мин"},
+    {"code": "deep", "title": "Высокий",
+     "hint": "причины, отклонения, сценарии",
+     "about": "Серия запросов, расчёты и до трёх графиков — дольше всего. Например: «Почему упала выручка НТУ на 58-123».",
+     "limit": "до 4 мин"},
 ]
+TIMING_MIN_SAMPLES = 5
+
+
+def _seconds_label(ms: int) -> str:
+    seconds = max(1, round(ms / 1000))
+    if seconds < 60:
+        return f"{seconds} с"
+    minutes, rest = divmod(seconds, 60)
+    return f"{minutes} мин {rest} с" if rest else f"{minutes} мин"
+
+
+def depth_options(unlimited: bool = False) -> list[dict]:
+    """Уровни с ориентиром времени: медиана из журнала за неделю, иначе предел.
+
+    `unlimited` — у роли нет пределов (администратор): вместо «до 4 мин» — «без ограничения времени».
+    """
+    try:
+        timings = journal.depth_timings(days=7)
+    except Exception:  # noqa: BLE001 - без журнала ориентир берётся из пределов
+        timings = {}
+    out = []
+    for option in DEPTH_OPTIONS:
+        item = dict(option)
+        stat = timings.get(option["code"])
+        if stat and stat["count"] >= TIMING_MIN_SAMPLES:
+            item["typical"] = f"обычно около {_seconds_label(stat['median_ms'])}"
+            item["samples"] = stat["count"]
+        else:
+            item["typical"] = option["limit"]
+            item["samples"] = stat["count"] if stat else 0
+        if unlimited and option["code"] in ("analyze", "deep") and not (stat and stat["count"] >= TIMING_MIN_SAMPLES):
+            item["typical"] = "без ограничения времени"
+        out.append(item)
+    return out
 
 
 def _strip_code(steps: list[dict]) -> list[dict]:
     """Шаги без SQL и кода — для ролей, которым текст запроса не показывается."""
     return [{k: v for k, v in step.items() if k not in {"sql", "code", "output"}} for step in steps]
+
+
+def _public_grounding(grounding: dict | None, show_sql: bool) -> dict | None:
+    """Снятые рекомендации (ИИ-16): текст — только тем, кому виден SQL; остальным — причины."""
+    if not grounding or show_sql or not isinstance(grounding.get("claims"), dict):
+        return grounding
+    claims = dict(grounding["claims"])
+    claims["withheld"] = [{"reason": item.get("reason", "")} for item in claims.get("withheld") or []]
+    return {**grounding, "claims": claims}
 
 
 def _response(answer, show_sql: bool) -> "AskResponse":
@@ -167,8 +229,10 @@ def _response(answer, show_sql: bool) -> "AskResponse":
         steps=steps if show_sql else _strip_code(steps),
         frame=dict(getattr(answer, "frame", {}) or {}),
         plan=getattr(answer, "plan", None),
-        grounding=getattr(answer, "grounding", None),
+        grounding=_public_grounding(getattr(answer, "grounding", None), show_sql),
         planMs=int(getattr(answer, "plan_ms", 0) or 0),
+        totalMs=int(getattr(answer, "total_ms", 0) or 0),
+        depthRequested=getattr(answer, "depth_requested", "auto") or "auto",
     )
 
 
@@ -270,7 +334,7 @@ def build_router(require_admin: Callable, require_user: Callable | None = None) 
             ownName=getattr(user, "name", "") or "",
             ownEmail=getattr(user, "email", "") or "",
             agentEnabled=pipeline.AGENT_ENABLED,
-            depths=DEPTH_OPTIONS if pipeline.AGENT_ENABLED else [],
+            depths=depth_options(ai_limits.for_role(getattr(user, "role", "")).unlimited) if pipeline.AGENT_ENABLED else [],
         )
 
     def _identity(payload: AskRequest, user) -> tuple[str, str | None, str | None]:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import time
 from datetime import date
@@ -16,11 +17,14 @@ from .. import executor
 from ..catalog import CATALOG, Catalog
 from ..semantic import SEMANTIC, Semantic
 from ..validator import Scope
-from . import grounding, memory, prompts, schema_tools, tools
-from .llm import ModelUnavailable, OllamaChat, Reply, extract_json
+from . import claims, grounding, memory, prompts, recommend, schema_tools, tools
+from .. import textstyle
+from .llm import ModelUnavailable, OllamaChat, Reply, extract_json, salvage_json
 from .state import DEPTHS, TASK_TYPES, AgentOutcome, Analysis, Budget, Plan, Step, Workspace
 
 MAX_SECONDS = float(os.environ.get("AI_AGENT_MAX_SECONDS", "240"))
+# Итог в JSON: рекомендации по шаблону длиннее прежних строк.
+FINAL_TOKENS = int(os.environ.get("AI_AGENT_FINAL_TOKENS", "1500"))
 MAX_CALLS_PER_TURN = 3
 MAX_NUDGES = 1
 TOOL_TEXT_LIMIT = int(os.environ.get("AI_AGENT_TOOL_TEXT", "3500"))
@@ -111,14 +115,38 @@ def _analysis_from(payload: dict) -> Analysis:
             return []
         if isinstance(value, str):
             return [value.strip()] if value.strip() else []
-        return [str(v).strip() for v in value if str(v).strip()]
+        return [_text(v) for v in value if _text(v)]
+
+    def _text(value) -> str:
+        if isinstance(value, dict):
+            value = value.get("text") or value.get("hypothesis") or value.get("action") or ""
+        return " ".join(str(value).split())
+
+    # «Почему» — гипотезы: текст и что их подтвердит (ИИ-25).
+    why, checks = [], {}
+    raw_why = payload.get("why") or []
+    for item in ([raw_why] if isinstance(raw_why, (str, dict)) else raw_why):
+        text = _text(item)
+        if not text:
+            continue
+        why.append(text)
+        if isinstance(item, dict) and item.get("check"):
+            checks[text] = " ".join(str(item["check"]).split())[:300]
+    # «Что можно сделать» — рекомендации с полями шаблона (ИИ-16).
+    raw_actions = payload.get("actions") or []
+    if isinstance(raw_actions, (str, dict)):
+        raw_actions = [raw_actions]
+    recs = [recommend.normalize(item) for item in raw_actions]
+    recs = [rec for rec in recs if rec["action"]]
     return Analysis(
-        headline=str(payload.get("headline") or "").strip(),
+        headline=_text(payload.get("headline") or ""),
         happened=as_list(payload.get("happened")),
-        why=as_list(payload.get("why")),
+        why=why,
         where=as_list(payload.get("where")),
-        actions=as_list(payload.get("actions")),
+        actions=[rec["action"] for rec in recs],
         limitations=as_list(payload.get("limitations")),
+        checks=checks,
+        recs=recs,
     )
 
 
@@ -173,19 +201,25 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
         run_query: Callable[[str, int], executor.Result] | None = None,
         catalog: Catalog | None = None, semantic: Semantic | None = None,
         today: str | None = None, scope_label: str = "", data_range: dict | None = None,
-        hits: dict | None = None) -> AgentOutcome:
-    """Прогон агента в глубине analyze/deep. Режим fast обслуживает pipeline."""
+        hits: dict | None = None, limits=None) -> AgentOutcome:
+    """Прогон агента в глубине analyze/deep. Режим fast обслуживает pipeline.
+
+    `limits` — пределы роли (backend/ai/limits.py); у администратора их нет.
+    """
     catalog = catalog or CATALOG
     semantic = semantic or SEMANTIC
     model = model or OllamaChat()
     today = today or date.today().isoformat()
-    budget = Budget.for_depth(plan.depth)
+    budget = Budget.for_depth(plan.depth, limits)
+    max_seconds = MAX_SECONDS if limits is None or limits.max_seconds is None else limits.max_seconds
+    final_tokens = (limits.final_tokens if limits is not None else None) or FINAL_TOKENS
     workspace = Workspace()
     ctx = tools.ToolContext(
         question=plan.standalone_question or question, scope=scope, budget=budget, workspace=workspace,
         catalog=catalog, semantic=semantic, generate_sql=generate_sql,
         run_query=run_query or executor.run,
         on_step=lambda step, state: _emit(on_stage, _stage_from_step(step, state)),
+        python_timeout_s=limits.python_timeout_s if limits is not None else None,
     )
     if data_range is None:
         data_range = schema_tools.data_range(ctx)
@@ -194,13 +228,15 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
 
     outcome = AgentOutcome(ok=False, plan=plan, analysis=Analysis(), workspace=workspace,
                            model=getattr(model, "model", None))
+    # Рекомендации — только по просьбе или когда без них ответ неполон (решение владельца 23.09.2026).
+    asked = recommend.requested(question, plan.standalone_question)
     started = time.monotonic()
     tool_specs = [spec.as_ollama() for spec in tools.specs()] + [prompts.FINISH_TOOL]
     messages = [
         {"role": "system", "content": prompts.agent_system(semantic, catalog.dialect)},
         {"role": "user", "content": prompts.agent_user(
             plan.standalone_question or question, plan.as_dict(), scope_label or scope.label, today,
-            data_range, hits, budget.remaining())},
+            data_range, hits, budget.remaining(), asked=asked)},
     ]
 
     finish_payload: dict | None = None
@@ -213,11 +249,20 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
             if budget.exhausted():
                 stop_reason = "лимит ходов модели"
                 break
-            if time.monotonic() - started > MAX_SECONDS:
+            if max_seconds and time.monotonic() - started > max_seconds:
                 stop_reason = "лимит времени"
                 break
             _emit(on_stage, {"key": "model", "state": "active", "label": think_step.label, "kind": "plan"})
-            reply = model.chat(messages, tools=tool_specs)
+            try:
+                reply = model.chat(messages, tools=tool_specs)
+            except ModelUnavailable:
+                # Ход модели сорвался (например, Ollama не разобрала обрезанный вызов
+                # инструмента и ответила 500). Если данные уже собраны — итог пишется
+                # отдельным шагом по ним, а не теряется весь ответ.
+                if any(rs.rows for rs in workspace.results.values()):
+                    stop_reason = "сбой хода модели"
+                    break
+                raise
             budget.used_turns += 1
             outcome.model_ms += reply.elapsed_ms
             outcome.turns += 1
@@ -225,7 +270,10 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
                 messages.append(_assistant_message(reply))
                 for call in reply.tool_calls[:MAX_CALLS_PER_TURN]:
                     if call.name == "finish":
-                        finish_payload = call.arguments if isinstance(call.arguments, dict) else {}
+                        args = call.arguments
+                        if isinstance(args, str):
+                            args = salvage_json(args) or {}
+                        finish_payload = args if isinstance(args, dict) else {}
                         break
                     result = tools.call(ctx, call.name, call.arguments)
                     messages.append({
@@ -238,7 +286,7 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
                 _trim(messages)
                 continue
             # Нет вызовов: модель либо уже отвечает текстом, либо застряла.
-            parsed = extract_json(reply.text)
+            parsed = salvage_json(reply.text)
             if isinstance(parsed, dict) and ("headline" in parsed or "happened" in parsed):
                 finish_payload = parsed
                 stop_reason = "finish-text"
@@ -273,13 +321,13 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
     notes = [w for rs in workspace.results.values() for w in rs.warnings]
     main_result = (finish_payload or {}).get("main_result")
     if analysis.empty() or not analysis.headline:
-        analysis, main_result = _finalize(model, outcome, plan, evidence, notes, stop_reason)
+        analysis, main_result = _finalize(model, outcome, plan, evidence, notes, stop_reason, asked, final_tokens)
     if main_result:
         outcome.frame["mainResult"] = str(main_result)
 
     report = grounding.check(analysis, workspace)
     if report["unverified"]:
-        repaired = _repair(model, outcome, analysis, plan, evidence, notes, report["unverified"])
+        repaired = _repair(model, outcome, analysis, plan, evidence, notes, report["unverified"], asked, final_tokens)
         if repaired is not None:
             analysis = repaired
             report = grounding.check(analysis, workspace)
@@ -294,6 +342,10 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
             analysis.limitations.append(f"В витрине нет данных: {item}.")
     if stop_reason and stop_reason not in ("finish", "finish-text", "prose"):
         analysis.limitations.append(f"Анализ остановлен ({stop_reason}); выводы по собранным данным.")
+    # Типы утверждений и правила рекомендаций ставит код, а не модель (ИИ-25, ИИ-16).
+    outcome.grounding["claims"] = claims.annotate(analysis, workspace, asked=asked)
+    # Единый стиль текста: русские названия, без технических скобок, заголовок всегда есть.
+    _polish(analysis, semantic, catalog)
 
     write_step.ms = int((time.monotonic() - write_started) * 1000)
     write_step.label = "Сформулировал ответ"
@@ -311,39 +363,80 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
     return outcome
 
 
+def _polish(analysis: Analysis, semantic, catalog) -> None:
+    def clean(text: str) -> str:
+        return textstyle.clean(text, semantic, catalog)
+
+    fallback = analysis.happened[0] if analysis.happened else "Ответ сформирован по данным ниже."
+    analysis.headline = textstyle.headline(analysis.headline, fallback, semantic, catalog)
+    for name in ("happened", "why", "where", "limitations"):
+        setattr(analysis, name, [clean(item) for item in getattr(analysis, name)])
+    for rec in analysis.recommendations or []:
+        for field_name in ("action", "basis", "effect", "limits"):
+            if rec.get(field_name):
+                rec[field_name] = clean(rec[field_name])
+    if analysis.recommendations is not None:
+        analysis.actions = [rec["action"] for rec in analysis.recommendations]
+    for marks in (analysis.claims or {}).values():
+        for claim in marks:
+            if claim.get("check"):
+                claim["check"] = clean(claim["check"])
+
+
 def _finalize(model, outcome: AgentOutcome, plan: Plan, evidence: str, notes: list[str],
-              stop_reason: str) -> tuple[Analysis, str | None]:
+              stop_reason: str, asked: bool = False, final_tokens: int = 0) -> tuple[Analysis, str | None]:
     messages = [
         {"role": "system", "content": prompts.FINALIZE_SYSTEM},
         {"role": "user", "content": prompts.finalize_user(
-            plan.standalone_question, plan.as_dict(), evidence or "Результатов нет: ни один запрос не вернул данных.", notes)},
+            plan.standalone_question, plan.as_dict(), evidence or "Результатов нет: ни один запрос не вернул данных.", notes,
+            asked=asked)},
     ]
     try:
-        reply = model.chat(messages, json_mode=True, max_tokens=1200)
+        reply = model.chat(messages, json_mode=True, max_tokens=final_tokens or FINAL_TOKENS)
     except ModelUnavailable as err:
         outcome.error = str(err)
         outcome.rule = "model_unavailable"
         return Analysis(), None
     outcome.model_ms += reply.elapsed_ms
-    parsed = extract_json(reply.text)
+    parsed = salvage_json(reply.text)
     if isinstance(parsed, dict):
         return _analysis_from(parsed), parsed.get("main_result")
-    text = reply.text.strip()
-    return (Analysis(headline=text[:400]) if text else Analysis()), None
+    return _analysis_from_prose(reply.text), None
+
+
+HEADLINE_RE = re.compile(r'"headline"\s*:\s*"((?:[^"\\]|\\.)*)')
+
+
+def _analysis_from_prose(text: str) -> Analysis:
+    """Модель ответила не JSON: заголовок — первая фраза, пункты — следующие.
+
+    Сырой JSON на экран не попадает никогда: если ответ похож на JSON, но не
+    разбирается, из него достаётся только заголовок.
+    """
+    text = (text or "").strip()
+    if not text:
+        return Analysis()
+    if textstyle.looks_like_json(text):
+        match = HEADLINE_RE.search(text)
+        headline = match.group(1).replace('\\"', '"') if match else ""
+        return Analysis(headline=headline)
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    return Analysis(headline=sentences[0] if sentences else "", happened=sentences[1:6])
 
 
 def _repair(model, outcome: AgentOutcome, analysis: Analysis, plan: Plan, evidence: str,
-            notes: list[str], unverified: list[str]) -> Analysis | None:
+            notes: list[str], unverified: list[str], asked: bool = False, final_tokens: int = 0) -> Analysis | None:
     messages = [
         {"role": "system", "content": prompts.FINALIZE_SYSTEM},
-        {"role": "user", "content": prompts.finalize_user(plan.standalone_question, plan.as_dict(), evidence, notes)},
-        {"role": "assistant", "content": json.dumps(analysis.as_dict(), ensure_ascii=False)},
+        {"role": "user", "content": prompts.finalize_user(plan.standalone_question, plan.as_dict(), evidence, notes,
+                                                          asked=asked)},
+        {"role": "assistant", "content": json.dumps(analysis.model_view(), ensure_ascii=False)},
         {"role": "user", "content": prompts.REPAIR_USER.format(numbers=", ".join(unverified[:12]))},
     ]
     try:
-        reply = model.chat(messages, json_mode=True, max_tokens=1200)
+        reply = model.chat(messages, json_mode=True, max_tokens=final_tokens or FINAL_TOKENS)
     except ModelUnavailable:
         return None
     outcome.model_ms += reply.elapsed_ms
-    parsed = extract_json(reply.text)
+    parsed = salvage_json(reply.text)
     return _analysis_from(parsed) if isinstance(parsed, dict) else None

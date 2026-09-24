@@ -3476,6 +3476,72 @@ try:
 except Exception as _roles_err:  # noqa: BLE001
     logger.warning("Roles router not mounted: %s", _roles_err)
 
+# --- Справки (СП-01…СП-05, 23.09.2026) ---------------------------------------
+def send_notice_email(to: str, subject: str, text: str) -> None:
+    """Служебное письмо простым текстом — тем же каналом, что коды входа."""
+    html_content = "<p>" + html.escape(text).replace("\n", "<br>") + "</p>"
+    if resend_configured():
+        _send_via_resend(to, subject, html_content, text)
+        return
+    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
+    from_name = os.getenv("SMTP_FROM_NAME", "Классификатор АЗС").strip()
+    username = os.getenv("SMTP_USERNAME", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = int(os.getenv("SMTP_PORT", "587"))
+    timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
+    use_ssl = env_bool("SMTP_USE_SSL", False)
+    use_tls = env_bool("SMTP_USE_TLS", not use_ssl)
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = f"{from_name} <{from_email}>"
+    message["To"] = to
+    message.set_content(text)
+    message.add_alternative(html_content, subtype="html")
+    if use_ssl:
+        with smtplib.SMTP_SSL(host, port, timeout=timeout) as smtp:
+            if username or password:
+                smtp.login(username or from_email, password)
+            smtp.send_message(message)
+    else:
+        with smtplib.SMTP(host, port, timeout=timeout) as smtp:
+            smtp.ehlo()
+            if use_tls:
+                smtp.starttls()
+                smtp.ehlo()
+            if username or password:
+                smtp.login(username or from_email, password)
+            smtp.send_message(message)
+
+
+def notify_report_admins(subject: str, text: str) -> None:
+    """Письмо администраторам о несформированной справке (СП-03)."""
+    if not email_configured():
+        logger.warning("Report notice not sent (email is not configured): %s", subject)
+        return
+    for email in sorted(admin_emails()):
+        send_notice_email(email, subject, text)
+
+
+def require_reports_import_token(request: Request):
+    """Готовые справки присылает компьютер владельца (сборка по витрине ОХД под VPN) — со своим токеном."""
+    _require_bearer_token(
+        request,
+        os.getenv("REPORTS_IMPORT_TOKEN", ""),
+        os.getenv("REPORTS_IMPORT_TOKEN_SHA256", "").strip().lower(),
+        "Reports import",
+    )
+
+
+try:
+    from backend.reports.api import build_router as _build_reports_router
+
+    app.include_router(_build_reports_router(require_user, require_admin, require_reports_import_token,
+                                             notify_report_admins))
+    logger.info("Reports router mounted")
+except Exception as _reports_err:  # noqa: BLE001
+    logger.warning("Reports router not mounted: %s", _reports_err)
+
 try:
     from backend.ai.api import build_router as _build_ai_router
 

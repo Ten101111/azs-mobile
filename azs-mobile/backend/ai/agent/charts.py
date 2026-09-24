@@ -20,6 +20,69 @@ from .tools import ToolContext, ToolError, tool
 CHART_TYPES = ("line", "bar", "stacked_bar", "scatter", "waterfall", "kpi", "table")
 MAX_POINTS = 400
 MAX_CATEGORIES = 60
+# Графики с одной осью значений: все ряды должны быть в одной единице (ИИ-17).
+ONE_AXIS = ("line", "bar", "stacked_bar", "waterfall")
+# Ряды без единицы в названии, отличающиеся по величине в столько раз и больше,
+# на одной оси нечитаемы: меньший ряд лежит на нуле.
+SCALE_GAP = 100.0
+UNIT_ALIASES = {
+    "₽": "₽", "руб": "₽", "руб.": "₽", "рублей": "₽", "р": "₽", "р.": "₽",
+    "тыс. ₽": "тыс. ₽", "тыс ₽": "тыс. ₽", "тыс. руб": "тыс. ₽", "тыс руб": "тыс. ₽",
+    "млн ₽": "млн ₽", "млн руб": "млн ₽", "млн. руб": "млн ₽",
+    "л": "л", "литры": "л", "литров": "л", "тыс. л": "тыс. л", "тыс л": "тыс. л",
+    "т": "т", "тонн": "т", "тонны": "т", "тыс. т": "тыс. т",
+    "шт": "шт", "шт.": "шт",
+    "%": "%", "п.п": "п.п.", "п.п.": "п.п.", "п. п.": "п.п.", "п. п": "п.п.",
+}
+
+
+def column_unit(name: str) -> str | None:
+    """Единица из названия колонки: «Объём, т» → «т», «Конверсия НТУ, %» → «%»."""
+    text = " ".join(str(name or "").split())
+    tail = ""
+    if "," in text:
+        tail = text.rsplit(",", 1)[1]
+    elif text.endswith(")") and "(" in text:
+        tail = text[text.rindex("(") + 1:-1]
+    elif text.endswith("%"):
+        tail = "%"
+    tail = tail.strip().lower()
+    if not tail or len(tail) > 12:
+        return None
+    return UNIT_ALIASES.get(tail, UNIT_ALIASES.get(tail.rstrip("."), tail))
+
+
+def _peak(values: list) -> float:
+    present = [abs(v) for v in values if isinstance(v, (int, float))]
+    return max(present) if present else 0.0
+
+
+def split_by_unit(series: list[dict]) -> tuple[list[dict], list[dict], str | None]:
+    """Оставить ряды в единице главного (первого) ряда; вернуть оставленные, снятые и единицу.
+
+    Ряд с другой известной единицей снимается всегда («л» и «т», «₽» и «%»).
+    Ряд без единицы снимается, если он отличается от главного по величине
+    в SCALE_GAP раз и больше: на общей оси он неотличим от нуля.
+    """
+    units = [column_unit(s["column"]) for s in series]
+    main_unit = units[0] or next((u for u in units if u), None)
+    main_peak = _peak(series[0]["values"]) if series else 0.0
+    kept, dropped = [], []
+    for item, unit in zip(series, units):
+        if not kept:
+            kept.append(item)
+            continue
+        if unit and main_unit and unit != main_unit:
+            dropped.append(item)
+            continue
+        if not (unit and unit == main_unit):
+            peak = _peak(item["values"])
+            low, high = sorted((peak, main_peak))
+            if low > 0 and high / low >= SCALE_GAP:
+                dropped.append(item)
+                continue
+        kept.append(item)
+    return kept, dropped, main_unit
 
 
 def _number(value: Any) -> float | None:
@@ -142,12 +205,25 @@ def build(rs: ResultSet, spec: dict, chart_id: str) -> dict:
                     "points": points[:MAX_POINTS]})
         return out
 
+    if kind in ONE_AXIS and len(series) > 1 and not (group and group in rs.columns):
+        series, dropped, axis_unit = split_by_unit(series)
+        if dropped:
+            names = ", ".join(f"«{d['name']}»" for d in dropped)
+            out["dropped"] = [d["name"] for d in dropped]
+            out["note"] = (f"Не показаны {names}: другая единица измерения или масштаб, "
+                           f"чем у «{series[0]['name']}», — на одной оси их не сравнить.")
+    else:
+        axis_unit = column_unit(series[0]["column"]) if series else None
+    if axis_unit:
+        # Единица оси берётся из данных: подпись модели не может ей противоречить.
+        out["unit"] = axis_unit
+
     limit = MAX_POINTS if kind == "line" else MAX_CATEGORIES
     if len(x_values) > limit:
         x_values = x_values[:limit]
         for item in series:
             item["values"] = item["values"][:limit]
-        out["note"] = f"показаны первые {limit} точек"
+        out["note"] = (out.get("note", "") + " " if out.get("note") else "") + f"Показаны первые {limit} точек."
     out["x"] = [str(v) if v is not None else "" for v in x_values]
     out["xTitle"] = str(spec.get("xTitle") or x_name)
     out["series"] = [{"name": s["name"], "values": s["values"]} for s in series]
@@ -205,4 +281,8 @@ def create_chart(ctx: ToolContext, source: str, type: str, **spec) -> dict:
     summary = {k: v for k, v in chart.items() if k not in {"x", "series", "rows", "points"}}
     summary["points"] = len(chart.get("x") or chart.get("points") or chart.get("rows") or [])
     summary["series"] = [s["name"] for s in chart.get("series", [])]
-    return {"chart": summary, "hint": "График сохранён и будет показан пользователю; в finish его повторно описывать не нужно."}
+    hint = "График сохранён и будет показан пользователю; в finish его повторно описывать не нужно."
+    if chart.get("dropped"):
+        hint += (" Часть рядов снята: у них другая единица измерения. Если они важны — "
+                 "построй для них отдельный график.")
+    return {"chart": summary, "hint": hint}

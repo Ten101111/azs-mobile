@@ -81,6 +81,10 @@ TILES: tuple[Tile, ...] = (
 
     Tile("checks_total", "Чеки всего", "шт", "Поток",
          "SUM(f.cnt_cheq)", ("cnt_cheq",)),
+    # Выручка всего — топливо и НТУ без НДС (плитка для еженедельной справки, 23.09.2026).
+    Tile("revenue_total", "Выручка всего", "руб", "Поток",
+         "SUM(f.sum_receipt_netto_tu) + SUM(f.sum_receipt_netto_ntu)",
+         ("sum_receipt_netto_tu", "sum_receipt_netto_ntu"), hint="Топливо и НТУ, без НДС"),
     Tile("loyalty_share", "Доля чеков с картой лояльности", "%", "Лояльность",
          "100.0 * SUM(f.cnt_cheq_kl) / NULLIF(SUM(f.cnt_cheq), 0)",
          ("cnt_cheq_kl", "cnt_cheq"), decimals=1),
@@ -128,6 +132,8 @@ STAND_TILES: tuple[Tile, ...] = (
          ("checks_ntu", "checks"), decimals=1),
     Tile("checks_total", "Чеки всего", "шт", "Поток",
          "SUM(f.checks)", ("checks",)),
+    Tile("revenue_total", "Выручка всего", "руб", "Поток",
+         "SUM(f.revenue)", ("revenue",)),
 )
 
 TILES_BY_CODE = {tile.code: tile for tile in TILES}

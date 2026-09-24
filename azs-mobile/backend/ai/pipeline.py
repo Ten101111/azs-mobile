@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable
 
-from . import contract, executor, generator, journal, people as people_resolver, scope as scope_builder
+from . import contract, executor, generator, journal, people as people_resolver, scope as scope_builder, textstyle
+from . import limits as ai_limits
 from .validator import Rejected, Scope, validate
 
 MAX_ATTEMPTS = 2
@@ -38,7 +40,9 @@ STAGES = {
     "write": ("Формулирую ответ", "Сформулировал ответ"),
 }
 
-DEPTH_TITLES = {"fast": "быстрый ответ", "analyze": "анализ", "deep": "глубокий анализ"}
+# Названия уровней для людей (ИИ-20, 23.09.2026). Коды в API и журнале
+# прежние: fast, analyze, deep — меняются только подписи.
+DEPTH_TITLES = {"fast": "Лёгкий", "analyze": "Средний", "deep": "Высокий"}
 TASK_TITLES = {
     "lookup": "факт", "compare": "сравнение", "trend": "динамика", "diagnose": "диагностика причин",
     "anomaly": "поиск аномалий", "opportunity": "точки роста", "whatif": "сценарий", "other": "разбор",
@@ -91,6 +95,9 @@ class Answer:
     error: str | None = None
     rule: str | None = None
     journal_id: int | None = None
+    # Полное время ответа и уровень, который выбрал человек (auto — «Авто»).
+    total_ms: int = 0
+    depth_requested: str = "auto"
     # Агент: глубина, тип задачи, структурированный вывод, графики, таблицы, шаги.
     depth: str = "fast"
     task_type: str = "lookup"
@@ -108,11 +115,30 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
         model: str | None = None,
         on_stage: Callable[[dict], None] | None = None,
         depth: str = "auto", history: list[dict] | None = None) -> Answer:
+    """Ответ на вопрос с полным временем ожидания — для ориентира на уровнях."""
+    started = time.monotonic()
+    requested = (depth or "auto").strip().lower()
+    answer = _ask(question, role, binding, actor, model, on_stage, depth, history)
+    answer.depth_requested = requested if requested in DEPTHS else "auto"
+    answer.total_ms = int((time.monotonic() - started) * 1000)
+    try:
+        journal.set_total_ms(answer.journal_id, answer.total_ms)
+    except Exception:  # noqa: BLE001 - журнал не должен ронять ответ
+        pass
+    return answer
+
+
+def _ask(question: str, role: str, binding: str | None, actor: str | None = None,
+         model: str | None = None,
+         on_stage: Callable[[dict], None] | None = None,
+         depth: str = "auto", history: list[dict] | None = None) -> Answer:
     question = (question or "").strip()
     if not question:
         return Answer(ok=False, question="", scope_label="", error="Пустой вопрос")
 
     scope: Scope = scope_builder.build(role, binding)
+    # Решение владельца 23.09.2026: у администратора ограничений в рамках лимитов нет.
+    limits = ai_limits.for_role(role)
     depth = (depth or "auto").strip().lower()
     if depth not in DEPTHS:
         depth = "auto"
@@ -125,7 +151,7 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
 
     if not AGENT_ENABLED or (depth == "fast" and not history):
         return _ask_fast(question, question, scope, role, binding, actor, model, on_stage,
-                         context=context, person_note=person_note)
+                         context=context, person_note=person_note, limits=limits)
 
     # Разбор задачи: эвристика для очевидных фактов, иначе одна подсказка модели.
     from .agent import loop as agent_loop, schema_tools, tools as agent_tools
@@ -133,6 +159,9 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
     from .agent.state import Budget
 
     chat = (MODEL_FACTORY or OllamaChat)(model)
+    if isinstance(chat, OllamaChat):
+        chat.max_tokens = limits.turn_tokens
+        chat.timeout_s = limits.model_timeout_s
     probe = agent_tools.ToolContext(question=question, scope=scope, budget=Budget.for_depth("analyze"))
     data_range = schema_tools.data_range(probe)
     hits = probe.semantic.find(question)
@@ -152,13 +181,14 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
         _notify(on_stage, "plan", "failed", note="Модель недоступна", kind="plan")
         _log(answer, scope, role, binding, actor, "model_unavailable")
         return answer
-    plan_note = f"Разобрал задачу: {TASK_TITLES.get(plan.task_type, plan.task_type)} · {DEPTH_TITLES.get(plan.depth, plan.depth)}"
+    plan_note = (f"Разобрал задачу: {TASK_TITLES.get(plan.task_type, plan.task_type)} · "
+                 f"уровень «{DEPTH_TITLES.get(plan.depth, plan.depth)}»")
     _notify(on_stage, "plan", "done", ms=plan.elapsed_ms or None, note=plan_note, kind="plan")
 
     if plan.depth == "fast":
         answer = _ask_fast(question, plan.standalone_question or question, scope, role, binding,
                            actor, model, on_stage, plan_ms=plan.elapsed_ms,
-                           context=context, person_note=person_note)
+                           context=context, person_note=person_note, limits=limits)
         answer.plan = plan.as_dict()
         answer.frame.update({"standalone": plan.standalone_question or question,
                              "taskType": plan.task_type, "metrics": plan.metrics,
@@ -167,8 +197,10 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
 
     outcome = agent_loop.run(
         question, scope, plan=plan, history=history, model=chat, on_stage=on_stage,
-        generate_sql=lambda q: generator.generate(q, None, model, context=context).sql,
-        scope_label=scope.label, today=today, data_range=data_range, hits=hits,
+        generate_sql=lambda q: generator.generate(q, None, model, context=context, **_timeout(limits)).sql,
+        run_query=((lambda sql, n: executor.run(sql, n, timeout_s=limits.sql_timeout_s))
+                   if limits.sql_timeout_s else None),
+        scope_label=scope.label, today=today, data_range=data_range, hits=hits, limits=limits,
     )
     answer = _from_outcome(question, scope, outcome, plan)
     if person_note:
@@ -184,7 +216,8 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
 
 def _ask_fast(question: str, model_question: str, scope: Scope, role: str, binding: str | None,
               actor: str | None, model: str | None, on_stage: Callable[[dict], None] | None,
-              plan_ms: int = 0, context: str = "", person_note: str = "") -> Answer:
+              plan_ms: int = 0, context: str = "", person_note: str = "",
+              limits: ai_limits.Limits = ai_limits.STANDARD) -> Answer:
     answer = Answer(ok=False, question=question, scope_label=scope.label, plan_ms=plan_ms)
 
     feedback: str | None = None
@@ -195,7 +228,8 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
         _notify(on_stage, "draft", "active",
                 note="Составляю запрос заново по замечанию проверки" if attempt > 1 else None)
         try:
-            produced = generator.generate(model_question, feedback, model, context=context)
+            produced = generator.generate(model_question, feedback, model, context=context,
+                                          **_timeout(limits))
         except generator.ModelUnavailable as err:
             answer.error = str(err)
             answer.rule = "model_unavailable"
@@ -210,7 +244,8 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
 
         _notify(on_stage, "check", "active")
         try:
-            checked = validate(produced.sql, scope)
+            checked = (validate(produced.sql, scope, row_limit=limits.fast_rows) if limits.fast_rows
+                       else validate(produced.sql, scope))
         except Rejected as rejection:
             last_rejection = rejection
             feedback = rejection.message
@@ -223,7 +258,8 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
 
         _notify(on_stage, "read", "active")
         try:
-            result = executor.run(checked.sql, checked.row_limit)
+            result = (executor.run(checked.sql, checked.row_limit, timeout_s=limits.sql_timeout_s)
+                      if limits.sql_timeout_s else executor.run(checked.sql, checked.row_limit))
         except executor.ExecutionError as err:
             last_rejection = None
             answer.error = str(err)
@@ -236,7 +272,8 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
         answer.ok = True
         answer.sql = checked.sql
         answer.notes = ([person_note] if person_note else []) + list(checked.notes)
-        answer.columns = result.columns
+        # Заголовки по-русски, даже если модель не дала колонкам псевдонимы.
+        answer.columns = textstyle.rename_columns(list(result.columns))
         answer.rows = [list(row) for row in result.rows]
         answer.truncated = result.truncated
         answer.sql_ms = result.elapsed_ms
@@ -254,9 +291,9 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
             answer.notes = list(answer.notes) + [no_data]
         else:
             summary, summary_ms = generator.narrate(
-                model_question, scope.label, answer.columns, answer.rows, model
+                model_question, scope.label, answer.columns, answer.rows, model, **_timeout(limits),
             )
-        answer.summary = summary
+        answer.summary = textstyle.clean(summary)
         answer.narrate_ms = summary_ms
         _notify(on_stage, "write", "done", ms=summary_ms)
         answer.frame = {"question": question, "standalone": model_question,
@@ -270,6 +307,11 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
         answer.rule = last_rejection.rule
     _log(answer, scope, role, binding, actor, "rejected")
     return answer
+
+
+def _timeout(limits: ai_limits.Limits) -> dict:
+    """Своё время ожидания модели — только если у роли оно особое (администратор)."""
+    return {"timeout": limits.model_timeout_s} if limits.model_timeout_s else {}
 
 
 def _no_data_note(answer: Answer, scope: Scope) -> str:

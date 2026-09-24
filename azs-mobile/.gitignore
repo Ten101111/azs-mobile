@@ -26,6 +26,9 @@ data/fuel_outages_latest.json
 data/fuel_outages_latest.xlsx
 data/fuel_outages_latest.server.xlsx
 data/mail/
+# Выпуски справок (СП-01): цифры сети — конфиденциально, в репозиторий не попадают
+data/reports/
+data/reports.sqlite3*
 
 # === Build artifacts ===
 dist/

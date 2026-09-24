@@ -49,7 +49,8 @@ def _connect() -> sqlite3.Connection:
 
 # Колонки, появившиеся после первых запусков. У уже созданной базы их нет,
 # а ронять журнал из-за этого нельзя: он пишется по каждому обращению.
-LATE_COLUMNS = (("prompt_version", "TEXT"), ("depth", "TEXT"), ("task_type", "TEXT"), ("trace_json", "TEXT"))
+LATE_COLUMNS = (("prompt_version", "TEXT"), ("depth", "TEXT"), ("task_type", "TEXT"), ("trace_json", "TEXT"),
+                ("total_ms", "INTEGER"))
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -78,6 +79,50 @@ def write(entry: dict) -> int:
         return int(cursor.lastrowid)
     finally:
         conn.close()
+
+
+def set_total_ms(entry_id: int | None, total_ms: int) -> None:
+    """Полное время ответа — от вопроса до готового ответа, как его ждал человек.
+
+    Пишется отдельно, после записи строки: сама запись делается изнутри
+    конвейера, а общее время известно только снаружи.
+    """
+    if not entry_id:
+        return
+    conn = _connect()
+    try:
+        conn.execute("UPDATE ai_queries SET total_ms = ? WHERE id = ?", (int(total_ms), int(entry_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def depth_timings(days: int = 7) -> dict[str, dict]:
+    """Медиана полного времени ответа по уровням глубины за последние дни.
+
+    Берутся только успешные ответы: отказ валидатора приходит за секунды и
+    занизил бы ориентир. Уровень — фактический (после выбора «Авто»).
+    """
+    since = int(time.time()) - days * 86400
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT depth, total_ms FROM ai_queries "
+            "WHERE created_at >= ? AND verdict = 'ok' AND total_ms IS NOT NULL AND depth IS NOT NULL",
+            (since,),
+        ).fetchall()
+    finally:
+        conn.close()
+    by_depth: dict[str, list[int]] = {}
+    for depth, total in rows:
+        by_depth.setdefault(str(depth), []).append(int(total))
+    out = {}
+    for depth, values in by_depth.items():
+        values.sort()
+        middle = len(values) // 2
+        median = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) // 2
+        out[depth] = {"median_ms": median, "count": len(values)}
+    return out
 
 
 def recent(limit: int = 50) -> list[dict]:

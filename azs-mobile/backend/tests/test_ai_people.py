@@ -137,7 +137,7 @@ class PipelineTests(StandCase):
         people.clear_cache()
         seen = {}
 
-        def fake_generate(question, feedback=None, model=None, context=""):
+        def fake_generate(question, feedback=None, model=None, context="", **_):
             seen["context"] = context
             sql = ("SELECT s.regional_manager AS \"РУ\", SUM(d.checks) AS \"Чеки\" FROM station_kpi_daily d "
                    "JOIN stations s ON s.ksss = d.ksss WHERE s.regional_manager IN ('РУ Один') GROUP BY 1")

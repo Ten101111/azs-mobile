@@ -8,7 +8,11 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 // остаются на SVG-знаке AiMark, как требует спецификация облика.
 import AiOrb, { orbStateFromPipeline } from "./orb/AiOrb.jsx";
 import AiMiniOrb from "./orb/AiMiniOrb.jsx";
-import { AiAnalysis, aiAgentStages, aiAnalysisText, AI_DEPTH_FALLBACK } from "./aiAnalysis.jsx";
+import {
+  AiAnalysis, aiAgentStages, aiAnalysisText, AI_DEPTH_FALLBACK, DEPTH_TITLES as AI_DEPTH_TITLES,
+  TASK_TITLES as AI_TASK_TITLES, AiExpandButton, AiFullscreen,
+} from "./aiAnalysis.jsx";
+import { ReportsScreen } from "./reports.jsx";
 import {
   AlertTriangle,
   BarChart3,
@@ -22,11 +26,13 @@ import {
   Coffee,
   Copy,
   Download,
+  FileText,
   Filter,
   Fuel,
   Gauge,
   Heart,
   Home,
+  Layers,
   List,
   LocateFixed,
   Map as MapIcon,
@@ -97,6 +103,9 @@ const viewItems = [
   // mobileHidden — на нижней панели не показываем: обычному пользователю
   // контроль не нужен каждый день, вход остаётся плиткой на главной.
   { id: "quality", label: "Контроль", mobileLabel: "Контроль", Icon: ShieldCheck, mobileHidden: true },
+  // Справки (СП-04): пункт навигации компьютера, только администратору (Р-13).
+  // На телефоне вход — кнопка «Справки» на главной.
+  { id: "reports", label: "Справки", mobileLabel: "Справки", Icon: FileText, optional: true, mobileHidden: true },
 ];
 const viewIds = new Set(viewItems.map((item) => item.id));
 
@@ -1399,8 +1408,10 @@ function App() {
   const aiStatus = useAiStatus();
   // Необязательные разделы скрыты, пока бэкенд не подтвердил, что они есть.
   const navItems = useMemo(
-    () => viewItems.filter((item) => !item.optional || (item.id === "ai" && aiStatus?.enabled)),
-    [aiStatus],
+    () => viewItems.filter((item) => !item.optional
+      || (item.id === "ai" && aiStatus?.enabled)
+      || (item.id === "reports" && auth.user?.isAdmin)),
+    [aiStatus, auth.user],
   );
   const [selectedId, setSelectedId] = useState("");
   const [selectionMode, setSelectionMode] = useState("auto");
@@ -1660,6 +1671,10 @@ function App() {
     if (mode === "ai" && aiStatus && !aiStatus.enabled) setMode("home");
   }, [mode, aiStatus]);
 
+  useEffect(() => {
+    if (mode === "reports" && auth.user && !auth.user.isAdmin) setMode("home");
+  }, [mode, auth.user]);
+
   function changeMode(nextMode, { closeDetail = true } = {}) {
     setMode(nextMode);
     setRegistryCompact(false);
@@ -1702,11 +1717,12 @@ function App() {
 
   const canInstallApp = Boolean(installPrompt && !standaloneApp);
   const isAdminMode = mode === "admin";
+  const isReportsMode = mode === "reports";
   const isAiMode = mode === "ai";
   const [aiDrawer, setAiDrawer] = useState(false);
   // Поиск, метрики и фильтры реестра к этим разделам не применяются:
   // ИИ отвечает по витрине и области данных, а не по текущей выборке.
-  const isControlMode = mode === "quality" || isAdminMode || isAiMode;
+  const isControlMode = mode === "quality" || isAdminMode || isReportsMode || isAiMode;
 
   if (auth.status === "checking") {
     return <AuthLoading />;
@@ -1725,13 +1741,15 @@ function App() {
           <>
             <header className="topbar">
               <div>
-                <h1>{isAdminMode ? "Администрирование" : isAiMode ? "ИИ-аналитик" : isControlMode ? "Контроль АЗС" : "АЗС ЛУКОЙЛ"}</h1>
+                <h1>{isAdminMode ? "Администрирование" : isReportsMode ? "Справки" : isAiMode ? "ИИ-аналитик" : isControlMode ? "Контроль АЗС" : "АЗС ЛУКОЙЛ"}</h1>
                 {/* В разделе ИИ подписи нет: на телефоне эта строка съедала
                     высоту, а ничего нового не сообщала. */}
                 {!isAiMode && (
                 <p>
                   {isAdminMode
                     ? "Пользователи и статистика использования"
+                    : isReportsMode
+                    ? "Зафиксированные выпуски по неделям"
                     : isControlMode
                     ? `${asInt(stations.length)} объектов в контуре контроля`
                     : payload.meta
@@ -1824,6 +1842,7 @@ function App() {
                 onOpenControl={() => changeMode("quality")}
                 onOpenFavorites={openFavorites}
                 onOpenAdmin={() => changeMode("admin")}
+                onOpenReports={() => changeMode("reports")}
                 onLogout={handleLogout}
               />
             </motion.div>
@@ -1860,6 +1879,11 @@ function App() {
           ) : mode === "admin" ? (
             <motion.div className="view-stage" key="admin" {...viewMotion}>
               <AdminDashboard onBack={() => changeMode("home")} currentUserId={auth.user?.id} />
+            </motion.div>
+          ) : mode === "reports" && auth.user?.isAdmin ? (
+            // Справки (СП-04). Пока только администратор — решение Р-13.
+            <motion.div className="view-stage" key="reports" {...viewMotion}>
+              <ReportsScreen request={authJson} track={trackEvent} onBack={() => changeMode("home")} />
             </motion.div>
           ) : (
             <motion.div className="view-stage content-grid" key={mode} {...(mode === "map" ? mapSheetMotion : viewMotion)}>
@@ -3482,6 +3506,7 @@ function HomeDashboard({
   onOpenControl,
   onOpenFavorites,
   onOpenAdmin,
+  onOpenReports,
   onLogout,
 }) {
   const activeShare = total ? Math.round((metrics.active / total) * 100) : 0;
@@ -3493,6 +3518,10 @@ function HomeDashboard({
     { label: "Контроль", Icon: ShieldCheck, onClick: onOpenControl },
     { label: "Избранное", Icon: Heart, onClick: onOpenFavorites },
   ];
+  // Справки видит пока только администратор (решение Р-13); кнопка — рядом с «Админ».
+  if (user?.isAdmin && onOpenReports) {
+    homeLinks.push({ label: "Справки", Icon: FileText, onClick: onOpenReports });
+  }
   if (user?.isAdmin && onOpenAdmin) {
     homeLinks.push({ label: "Админ", Icon: Users, onClick: onOpenAdmin });
   }
@@ -4517,6 +4546,20 @@ function AiPending({ stages: live }) {
   );
 }
 
+// Какой уровень отработал и почему (ИИ-20): при «Авто» — с причиной выбора.
+function aiDepthNote(answer) {
+  const title = AI_DEPTH_TITLES[answer?.depth];
+  if (!title) return "";
+  if (answer.depthRequested === "auto") {
+    const task = AI_TASK_TITLES[answer.taskType];
+    return task ? `уровень «${title}» выбран автоматически: ${task}` : `уровень «${title}» выбран автоматически`;
+  }
+  return `уровень «${title}»`;
+}
+
+// Следующий уровень для кнопки «Углубить».
+const AI_DEEPER = { fast: "analyze", analyze: "deep" };
+
 function AiThinking({ answer, pending, stages: live_stages = [] }) {
   const [open, setOpen] = useState(false);
   const reduced = useReducedMotion();
@@ -4531,7 +4574,8 @@ function AiThinking({ answer, pending, stages: live_stages = [] }) {
         {/* Тот же графитовый знак, что на боковой панели (решение владельца от 22.09.2026). */}
         <AiMark state={aiMarkState({ outcome })} />
         <strong>{answer.ok ? "Рассуждал" : "Разбирал вопрос"}</strong>
-        <span className="ai-think-ms">{aiMs(total) || "меньше секунды"}</span>
+        <span className="ai-think-ms">{aiMs(answer.totalMs || total) || "меньше секунды"}</span>
+        {aiDepthNote(answer) && <span className="ai-think-depth">{aiDepthNote(answer)}</span>}
         <ChevronDown size={15} className={open ? "ai-caret open" : "ai-caret"} />
       </button>
       <AiReveal open={open}>
@@ -4879,6 +4923,90 @@ function AiSideRail({ onExpand, onNew, onSearch, whoName }) {
   );
 }
 
+// Уровень глубины у поля ввода (ИИ-20). Раньше выбор жил в «Настройках» —
+// теперь он там, где задают вопрос. Коды прежние: auto, fast, analyze, deep.
+const AI_DEPTH_KEY = "azs:ai-depth";
+const AI_DEPTH_CODES = ["auto", "fast", "analyze", "deep"];
+
+function aiReadDepth() {
+  try {
+    const saved = window.localStorage.getItem(AI_DEPTH_KEY);
+    return AI_DEPTH_CODES.includes(saved) ? saved : "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+function aiWriteDepth(value) {
+  try {
+    window.localStorage.setItem(AI_DEPTH_KEY, value);
+  } catch {
+    // хранилище недоступно — выбор живёт до перезагрузки
+  }
+}
+
+function AiDepthPicker({ value, options, onChange, disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const menu = useRef(null);
+  const current = options.find((item) => item.code === value) || options[0] || { title: "Авто" };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    menu.current?.querySelector("[aria-checked='true']")?.focus();
+    function onKey(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div className="ai-depth">
+      <button
+        type="button"
+        className="ai-depth-button"
+        onClick={() => setOpen((state) => !state)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        title="Уровень глубины ответа"
+      >
+        <Layers size={15} aria-hidden="true" />
+        <span>{current.title}</span>
+        <ChevronDown size={14} className={open ? "ai-caret open" : "ai-caret"} aria-hidden="true" />
+      </button>
+      {open && (
+        <>
+          <button type="button" className="ai-menu-scrim" aria-label="Закрыть выбор уровня" onClick={() => setOpen(false)} />
+          <div className="ai-depth-menu" role="menu" aria-label="Уровень глубины ответа" ref={menu}>
+            {options.map((item) => (
+              <button
+                key={item.code}
+                type="button"
+                role="menuitemradio"
+                aria-checked={item.code === value}
+                className={item.code === value ? "on" : ""}
+                onClick={() => { onChange(item.code); setOpen(false); }}
+              >
+                <span className="ai-depth-row">
+                  <strong>{item.title}</strong>
+                  <span className="ai-depth-hint">{item.hint}</span>
+                  {item.code === value && <Check size={15} className="ai-depth-check" aria-hidden="true" />}
+                </span>
+                {item.about ? <span className="ai-depth-about">{item.about}</span> : null}
+                {item.typical ? <span className="ai-depth-time">{item.typical}</span> : null}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Состояние панели хранится в браузере: это удобство одного человека, а не
 // данные. Хранилище может быть недоступно (приватный режим) — тогда панель
 // просто раскрыта.
@@ -4900,6 +5028,26 @@ function aiWriteSideCollapsed(value) {
   }
 }
 
+// «Широкий режим» (ИИ-06): колонка ответа почти на всю область вместо 80 % —
+// удобство человека, хранится в браузере.
+const AI_WIDE_KEY = "azs:ai-wide-text";
+
+function aiReadWideText() {
+  try {
+    return window.localStorage.getItem(AI_WIDE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function aiWriteWideText(value) {
+  try {
+    window.localStorage.setItem(AI_WIDE_KEY, value ? "1" : "0");
+  } catch {
+    // хранилище недоступно — режим живёт до перезагрузки
+  }
+}
+
 function aiInitials(name) {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "—";
@@ -4909,8 +5057,8 @@ function aiInitials(name) {
 
 // --- один ответ ------------------------------------------------------------
 
-function AiFold({ title, meta, children, tone }) {
-  const [open, setOpen] = useState(false);
+function AiFold({ title, meta, children, tone, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div className={tone ? `ai-fold ${tone}` : "ai-fold"}>
       <button type="button" className="ai-fold-head" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
@@ -4921,6 +5069,43 @@ function AiFold({ title, meta, children, tone }) {
       <AiReveal open={open}>
         <div className="ai-fold-body">{children}</div>
       </AiReveal>
+    </div>
+  );
+}
+
+// Таблица результата быстрого ответа: в колонке ответа, с полноэкранным
+// просмотром (ИИ-06).
+function AiRowsTable({ columns, rows, decimals, truncated }) {
+  const [full, setFull] = useState(false);
+  const table = (
+    <div className="ai-table-wrap">
+      <table className="ai-table">
+        <thead>
+          <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={index}>
+              {row.map((cell, cellIndex) => (
+                <td key={cellIndex} className={typeof cell === "number" ? "num" : ""}>
+                  {aiFormatCell(cell, decimals[cellIndex])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+  return (
+    <div className="ai-table-card">
+      <div className="ai-table-head">
+        <span className="ai-table-title">Разбивка по строкам</span>
+        <span className="ai-table-count">{truncated ? `первые ${asInt(rows.length)}` : `${asInt(rows.length)} строк`}</span>
+        <AiExpandButton onClick={() => setFull(true)} />
+      </div>
+      {table}
+      {full && <AiFullscreen title="Разбивка по строкам" onClose={() => setFull(false)}>{table}</AiFullscreen>}
     </div>
   );
 }
@@ -4990,32 +5175,7 @@ function AiAnswerBody({ answer, maySeeSql }) {
       {rows.length === 0 && <div className="ai-empty">Запрос выполнен, данных по условию нет.</div>}
 
       {rows.length > 0 && !single && !facts && (
-        <div className="ai-table-card">
-          <div className="ai-table-head">
-            <span className="ai-table-title">Разбивка по строкам</span>
-            <span className="ai-table-count">
-              {answer.truncated ? `первые ${asInt(rows.length)}` : `${asInt(rows.length)} строк`}
-            </span>
-          </div>
-          <div className="ai-table-wrap">
-            <table className="ai-table">
-              <thead>
-                <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
-              </thead>
-              <tbody>
-                {rows.map((row, index) => (
-                  <tr key={index}>
-                    {row.map((cell, cellIndex) => (
-                      <td key={cellIndex} className={typeof cell === "number" ? "num" : ""}>
-                        {aiFormatCell(cell, decimals[cellIndex])}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <AiRowsTable columns={columns} rows={rows} decimals={decimals} truncated={answer.truncated} />
       )}
 
       {(answer.notes || []).length > 0 && (
@@ -5087,8 +5247,9 @@ function AiSettleOrb({ outcome, onSettled }) {
   );
 }
 
-function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onCopy, onSettled }) {
+function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen, onCopy, onSettled, depthTitles = AI_DEPTH_TITLES }) {
   const answer = item.answer || {};
+  const deeper = answer.ok ? AI_DEEPER[answer.depth] : null;
   const reduced = useReducedMotion();
   return (
     <motion.article
@@ -5117,6 +5278,16 @@ function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onCopy, o
           <button type="button" className="ai-action" onClick={() => onCopy(item)}>
             {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Скопировано" : "Копировать"}
           </button>
+          {deeper && onDeepen && (
+            <button
+              type="button"
+              className="ai-action"
+              onClick={() => onDeepen(item.question, deeper)}
+              title={`Задать тот же вопрос на уровне «${depthTitles[deeper]}»`}
+            >
+              <Layers size={15} /> Углубить
+            </button>
+          )}
           <button type="button" className="ai-action" onClick={() => onRepeat(item.question)}>
             <RotateCcw size={15} /> Повторить
           </button>
@@ -5306,8 +5477,13 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   const identities = status?.identities || [];
   const [identityKey, setIdentityKey] = useState("");
   const [model, setModel] = useState(status?.model || "");
-  // Глубина анализа: auto — выбирает разбор задачи; остальное — принудительно.
-  const [depth, setDepth] = useState("auto");
+  // Уровень глубины (ИИ-20): auto — выбирает разбор задачи; остальное —
+  // принудительно. Выбор запоминается в браузере, как удобство человека.
+  const [depth, setDepthState] = useState(aiReadDepth);
+  function setDepth(value) {
+    setDepthState(value);
+    aiWriteDepth(value);
+  }
   const depthOptions = (status?.depths || []).length ? status.depths : AI_DEPTH_FALLBACK;
   const [showSettings, setShowSettings] = useState(false);
 
@@ -5330,6 +5506,11 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   const composer = useRef(null);
   const sideSearch = useRef(null);
   const [sideCollapsed, setSideCollapsed] = useState(aiReadSideCollapsed);
+  const [wideText, setWideTextState] = useState(aiReadWideText);
+  function setWideText(value) {
+    setWideTextState(value);
+    aiWriteWideText(value);
+  }
   // Идентификаторы ответов, пришедших в этом сеансе: только они въезжают
   // при появлении, загруженная история показывается сразу на своих местах.
   // Сбрасывать при смене диалога не нужно — номера сообщений сквозные.
@@ -5418,7 +5599,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     });
   }
 
-  async function ask(text) {
+  async function ask(text, overrides = {}) {
     const value = (text ?? question).trim();
     if (!value || pending) return;
     setPending(value);
@@ -5430,7 +5611,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       role: identity?.role || undefined,
       binding: identity?.binding || undefined,
       model: model || undefined,
-      depth,
+      depth: overrides.depth || depth,
       dialogId: activeId ?? undefined,
     };
     try {
@@ -5556,7 +5737,10 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   }
 
   return (
-    <div className={sideCollapsed ? "ai-shell side-collapsed" : "ai-shell"} style={{ "--ai-extra": `${Math.round(shellExtra)}px` }}>
+    <div
+      className={["ai-shell", sideCollapsed && "side-collapsed", wideText && "wide-text"].filter(Boolean).join(" ")}
+      style={{ "--ai-extra": `${Math.round(shellExtra)}px` }}
+    >
       <div className="ai-shell-side">
         {sideCollapsed ? (
           <AiSideRail
@@ -5615,13 +5799,13 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                 </div>
               </div>
             )}
-            <label className="ui-field ai-field-depth">
-              <span>Глубина анализа</span>
-              <select className="ui-select" value={depth} onChange={(event) => setDepth(event.target.value)}>
-                {depthOptions.map((item) => <option key={item.code} value={item.code}>{item.title}</option>)}
-              </select>
-              <span className="ai-depth-hint">{(depthOptions.find((item) => item.code === depth) || {}).hint || ""}</span>
-            </label>
+            <div className="ui-field ai-field-wide">
+              <span>Ширина ответа</span>
+              <label className="ai-wide-toggle">
+                <input type="checkbox" checked={wideText} onChange={(event) => setWideText(event.target.checked)} />
+                Широкий режим — ответ на всю ширину области
+              </label>
+            </div>
             <label className="ui-field ai-field-model">
               <span>Модель</span>
               {(status?.installedModels || []).length > 0 ? (
@@ -5686,6 +5870,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                   onSettled={() => freshIds.current.delete(item.id)}
                   onRate={setRatingFor}
                   onRepeat={(text) => ask(text)}
+                  onDeepen={(text, next) => ask(text, { depth: next })}
                   onCopy={copyAnswer}
                 />
               ))}
@@ -5750,6 +5935,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                 }}
               />
             </label>
+            <AiDepthPicker value={depth} options={depthOptions} onChange={setDepth} disabled={Boolean(pending)} />
             <button
               type="button"
               className="ai-send"
