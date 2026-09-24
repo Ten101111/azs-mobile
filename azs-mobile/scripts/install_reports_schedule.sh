@@ -78,7 +78,8 @@ allowed = ("DWH_DB_HOST", "DWH_DB_PORT", "DWH_DB_NAME", "DWH_DB_USER", "DWH_DB_P
            "DWH_CONNECT_TIMEOUT_SECONDS", "AI_MODEL", "AI_OLLAMA_HOST", "AI_NUM_CTX", "AI_AGENT_NUM_CTX",
            "AI_MODEL_TIMEOUT", "REPORTS_IMPORT_TOKEN", "REPORTS_IMPORT_URL", "KPI_IMPORT_URL", "REPORTS_SQL_TIMEOUT",
            "REPORT_FUEL_DROP_PCT", "REPORT_NO_SALES_DAYS", "REPORT_TOP_DROPS", "REPORT_TOP_LEADERS",
-           "REPORT_COMPLETE_SHARE_PCT", "REPORT_MIN_BASE_SHARE", "REPORTS_LOCAL_DIR", "REPORTS_NOTIFY")
+           "REPORT_COMPLETE_SHARE_PCT", "REPORT_MIN_BASE_SHARE", "REPORT_NEGATIVE_MIN", "REPORT_TOP_NEGATIVE",
+           "REPORTS_LOCAL_DIR", "REPORTS_NOTIFY")
 values = {}
 for line in (source / ".env.local").read_text(encoding="utf-8").splitlines():
     if not line or line.lstrip().startswith("#") or "=" not in line:

@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 def _int(name: str, default: int) -> int:
@@ -76,3 +76,24 @@ ADMIN = Limits(
 
 def for_role(role: str | None) -> Limits:
     return ADMIN if (role or "").strip() in UNLIMITED_ROLES else STANDARD
+
+
+def for_run(role: str | None, depth: str) -> Limits:
+    """Пределы одного ответа на уровне `depth` (ИИ-03, таблица Р-2 в quotas.py).
+
+    Администратор — без пределов (ADMIN). Остальным роли задают предел времени
+    уровня (Лёгкий / Средний / Высокий — 60 / 120 / 240 с) и строк в результате
+    (200 / 1000 / 2000, у РУ на «Высоком» — 1000).
+    """
+    base = for_role(role)
+    if base.unlimited:
+        return base
+    from . import quotas
+
+    level = depth if depth in ("fast", "analyze", "deep") else "analyze"
+    return replace(
+        base,
+        max_seconds=float(quotas.value(role, f"seconds_{level}")),
+        fast_rows=int(quotas.value(role, "rows_fast")),
+        agent_rows=None if level == "fast" else int(quotas.value(role, f"rows_{level}")),
+    )

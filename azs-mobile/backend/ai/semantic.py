@@ -104,27 +104,38 @@ class Semantic:
         """
         text = _norm(query)
         tokens = _tokens(text)
+        # Редкое слово вопроса весит больше частого: «выполнение» есть у одного
+        # показателя, «НТУ» — у двух десятков. Поэтому к похожести добавляется
+        # 0,1 × сумма 1/n по словам вопроса, которые покрыл показатель (n — у скольких
+        # показателей это слово есть), — не больше 0,15.
+        names_of = {key: (m.title, *m.aliases) for key, m in self.metrics.items()}
+        stems = {_stem(t) for t in tokens}
+        spread: dict[str, int] = {}
+        for names in names_of.values():
+            for stem in {_stem(t) for n in names for t in _tokens(_norm(n))} & stems:
+                spread[stem] = spread.get(stem, 0) + 1
         scored_metrics = []
-        for metric in self.metrics.values():
-            score = _score(tokens, text, (metric.title, *metric.aliases))
+        for key, metric in self.metrics.items():
+            score, covered = _score_cover(tokens, text, names_of[key])
             if score > 0:
-                scored_metrics.append((score, metric))
+                rare = min(0.15, 0.1 * sum(1 / spread[w] for w in covered if spread.get(w)))
+                scored_metrics.append((score + rare, score, metric))
         scored_dims = []
         for dim in self.dimensions.values():
             score = _score(tokens, text, (dim.title, *dim.aliases, dim.column))
             if score > 0:
-                scored_dims.append((score, dim))
+                scored_dims.append((score, score, dim))
         scored_metrics.sort(key=lambda item: -item[0])
         scored_dims.sort(key=lambda item: -item[0])
         absent_hits = [item for item in self.absent if _absent_mentioned(text, tokens, item)]
         return {
             "metrics": [
-                {**metric.describe(), "score": round(score, 2)}
-                for score, metric in scored_metrics[:limit]
+                {**metric.describe(), "score": round(min(rank, 1.0), 2)}
+                for rank, _score_, metric in scored_metrics[:limit]
             ],
             "dimensions": [
                 {**dim.describe(), "score": round(score, 2)}
-                for score, dim in scored_dims[:limit]
+                for score, _rank, dim in scored_dims[:limit]
             ],
             "absent": absent_hits,
         }
@@ -167,14 +178,22 @@ def _norm(text: str) -> str:
     return " ".join(_WORD_RE.findall((text or "").lower().replace("ё", "е")))
 
 
+# Служебные слова из двух букв: предлоги, частицы, местоимения. Остальные
+# двухбуквенные слова — сокращения («ВД», «КС», «УС», «РУ», «ТМ», «КЛ», «ДТ», «АБ»),
+# их сравниваем только целым словом: иначе «ус» находилось в «успеваю», «мп» —
+# в «компании», «ру» — в «выручке», «аб» — в «работе».
+_SHORT_STOP = frozenset({"по", "за", "на", "до", "от", "из", "во", "ко", "со", "об", "не", "ни", "ли", "же", "бы",
+                         "мы", "вы", "он", "то", "их", "да", "ну", "ей", "уж", "им", "ею", "ее", "её"})
+
+
 def _tokens(text: str) -> list[str]:
-    return [t for t in text.split() if len(t) > 2]
+    return [t for t in text.split() if len(t) > 2 or (len(t) == 2 and t not in _SHORT_STOP)]
 
 
 _ENDINGS = (
     "иями", "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими", "ешь", "ишь",
     "ов", "ев", "ах", "ях", "ам", "ям", "ой", "ей", "ый", "ий", "ая", "яя", "ое", "ее",
-    "ые", "ие", "ом", "ем", "ую", "юю", "ть",
+    "ые", "ие", "ом", "ем", "ую", "юю", "ых", "их", "ым", "им", "ть",
     "и", "ы", "а", "я", "у", "ю", "е", "о", "ь",
 )
 
@@ -190,6 +209,38 @@ def _stem(token: str) -> str:
     return token
 
 
+# Общие слова вопроса («сколько», «количество», «АЗС», «объект») сами по себе
+# показатель не указывают: «Сколько чеков на АЗС» — это чеки, а не число АЗС.
+# Название только из таких слов («сколько АЗС») совпадает лишь целой фразой.
+_GENERIC = frozenset(_stem(w) for w in (
+    "азс", "сколько", "количество", "число", "всего", "объект", "объекты", "показатель", "общая", "общее",
+))
+
+
+def _phrase_in(name: str, text: str) -> bool:
+    """Название целиком и целыми словами: « нту » в «выручка нту», но не «ус» в «успеваю»."""
+    return f" {name} " in f" {text} "
+
+
+def _name_score(name: str, text: str, stems: set[str]) -> tuple[float, set[str]]:
+    """Похожесть одного названия и какие слова вопроса (основы) оно покрыло.
+
+    Совпали все слова названия — 0,85; каждое следующее слово (до трёх) — ещё 0,03:
+    «конверсия НТУ» точнее, чем «НТУ». Совпало целой фразой, без склонения, — ещё 0,05.
+    Совпала часть слов — 0,5 × доля совпавших: этого мало, чтобы считать показатель найденным.
+    """
+    name_tokens = [t for t in _tokens(name) if _stem(t) not in _GENERIC]
+    if not name_tokens:
+        # «сколько АЗС», «количество АЗС» — только целой фразой.
+        return (0.9, set()) if _tokens(name) and _phrase_in(name, text) else (0.0, set())
+    covered = {_stem(t) for t in name_tokens} & stems
+    hit = sum(1 for t in name_tokens if _stem(t) in stems)
+    if hit == len(name_tokens):
+        score = 0.85 + 0.03 * min(len(name_tokens) - 1, 2) + (0.05 if _phrase_in(name, text) else 0.0)
+        return score, covered
+    return 0.5 * hit / len(name_tokens), covered
+
+
 def _match(text: str, names: Iterable[str]) -> float:
     for name in names:
         if _norm(name) == text:
@@ -198,42 +249,35 @@ def _match(text: str, names: Iterable[str]) -> float:
 
 
 def _score(tokens: list[str], text: str, names: Iterable[str]) -> float:
-    best = 0.0
+    return _score_cover(tokens, text, names)[0]
+
+
+def _score_cover(tokens: list[str], text: str, names: Iterable[str]) -> tuple[float, set[str]]:
+    """Лучшее из названий и все слова вопроса, которые покрыли названия вместе."""
     stems = {_stem(t) for t in tokens}
+    best, covered = 0.0, set()
     for raw in names:
         name = _norm(raw)
         if not name:
             continue
-        if name in text:
-            best = max(best, 0.9 + min(0.1, len(name) / 100))
-            continue
-        name_tokens = _tokens(name)
-        if not name_tokens:
-            continue
-        hit = sum(1 for t in name_tokens if _stem(t) in stems)
-        if hit:
-            best = max(best, 0.5 * hit / len(name_tokens) + (0.2 if hit == len(name_tokens) else 0))
-    return best
+        score, cover = _name_score(name, text, stems)
+        best = max(best, score)
+        covered |= cover
+    return min(best, 1.0), covered
 
 
 def _absent_mentioned(text: str, tokens: list[str], item: str) -> bool:
     # Пункт «нет в витрине» записан как «цена / средняя цена: …»; в вопросе
-    # ищем любой из вариантов до двоеточия.
+    # ищем любой из вариантов до двоеточия — целыми словами или по основам.
     head = item.split(":")[0]
     variants = [v.strip() for v in head.split("/") if v.strip()]
     stems = {_stem(t) for t in tokens}
-    words = set(text.split())
     for variant in variants:
         v = _norm(variant)
         if not v:
             continue
         v_tokens = _tokens(v)
-        if not v_tokens:
-            # Короткое сокращение («ВД», «КС») — только целым словом.
-            if v in words:
-                return True
-            continue
-        if v in text or all(_stem(t) in stems for t in v_tokens):
+        if _phrase_in(v, text) or (v_tokens and all(_stem(t) in stems for t in v_tokens)):
             return True
     return False
 
@@ -373,7 +417,8 @@ DWH = Semantic(
            ("комплексные чеки", "топливо и нту вместе"), kind="count"),
         _m("loyalty_checks", "Чеки с картой лояльности", "SUM(cnt_cheq_kl)", "шт", ("карта лояльности", "кл", "лояльность"), kind="count"),
         _m("loyalty_share", "Доля чеков с картой лояльности", "100.0 * SUM(cnt_cheq_kl) / NULLIF(SUM(cnt_cheq), 0)", "%",
-           ("доля лояльности", "проникновение кл"), kind="ratio", drivers=("loyalty_checks", "traffic")),
+           ("доля лояльности", "проникновение кл", "доля чеков с кл", "доля чеков с картой"), kind="ratio",
+           drivers=("loyalty_checks", "traffic")),
         _m("points_out", "Списано баллов", "SUM(sum_ball_out)", "балл", ("баллы", "списание баллов")),
         _m("fuel_volume", "Реализация топлива", "SUM(sum_volume)", "л",
            ("топливо", "объем топлива", "литры", "реализация топлива", "продажи топлива"), drivers=("checks_fuel", "avg_fill")),
@@ -418,7 +463,8 @@ DWH = Semantic(
         _m("conversion_ntu", "Конверсия НТУ", "100.0 * SUM(cnt_cheq_ntu) / NULLIF(SUM(cnt_cheq_tu), 0)", "%",
            ("конверсия", "конверсия нту", "доля чеков с нту"), kind="ratio", drivers=("checks_ntu", "checks_fuel")),
         _m("avg_check_ntu", "Средний чек НТУ", "SUM(sum_receipt_netto_ntu) / NULLIF(SUM(cnt_cheq_ntu), 0)", "руб",
-           ("средний чек нту", "средний чек магазина"), kind="ratio", drivers=("revenue_ntu", "checks_ntu")),
+           ("средний чек нту", "средний чек магазина", "средний чек"), kind="ratio",
+           drivers=("revenue_ntu", "checks_ntu")),
         _m("avg_price_ntu", "Средняя выручка на товар НТУ", "SUM(sum_receipt_netto_ntu) / NULLIF(SUM(sum_quant_ntu_retail), 0)", "руб/шт",
            ("средняя цена", "цена товара", "цена нту"), kind="ratio", drivers=("revenue_ntu", "items_ntu"),
            notes="прокси цены: выручка на единицу товара; прайс-листа и цен по SKU в витрине нет"),
@@ -440,7 +486,8 @@ DWH = Semantic(
            table="data_for_ai_analytic_part_2", direction="neutral"),
         _m("plan_fuel_b2b", "План топлива B2B", "SUM(plan_weights_b2b)", "т", ("план b2b",), table="data_for_ai_analytic_part_2", direction="neutral"),
         _m("plan_completion_ntu", "Выполнение плана НТУ по выручке", "100.0 * SUM(f.sum_receipt_netto_ntu) / NULLIF(SUM(p.plan_ntu_revenue), 0)", "%",
-           ("выполнение плана", "план факт", "темп к плану", "процент плана"), kind="ratio",
+           ("выполнение плана", "план факт", "темп к плану", "процент плана", "график плана",
+            "успеваю по плану", "закрыть план", "выполню план", "выполним план", "отставание от плана"), kind="ratio",
            table="data_for_ai_analytic_part_1 f JOIN data_for_ai_analytic_part_2 p ON p.ksss_azs_code = f.ksss_azs_code AND p.account_date = f.account_date",
            drivers=("revenue_ntu", "plan_ntu_revenue"),
            notes="соединять витрины по обоим полям ключа; иначе план задвоится"),

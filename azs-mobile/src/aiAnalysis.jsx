@@ -8,7 +8,7 @@
 // в интерфейсе был бы вторым источником правды.
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, X, AlertTriangle, Maximize2 } from "lucide-react";
+import { Check, X, AlertTriangle, Maximize2, Download } from "lucide-react";
 
 // Уровни глубины (ИИ-20, 23.09.2026). Запасной список — если сервер не
 // прислал свой; настоящие подписи и ориентир времени приходят в /api/ai/status.
@@ -391,6 +391,21 @@ function KpiCards({ chart, fmt }) {
 // Таблицы и графики стоят в одной колонке с текстом ответа (решение владельца
 // от 23.09.2026). Широкую таблицу или мелкий график открывают на весь экран.
 
+// ИИ-12: таблицу или данные графика можно забрать в Excel или CSV. Файл собирает
+// сервер из сохранённого ответа, с паспортом: откуда цифры, за какой период, по чьей области.
+export function AiDownload({ download }) {
+  if (!download?.messageId) return null;
+  const href = (format) =>
+    `/api/ai/messages/${download.messageId}/export?part=${encodeURIComponent(download.part || "main")}&format=${format}`;
+  return (
+    <span className="ai-download">
+      <Download size={13} aria-hidden="true" />
+      <a href={href("xlsx")} download title="Скачать в Excel: данные и паспорт выгрузки">Excel</a>
+      <a href={href("csv")} download title="Скачать CSV для Excel: разделитель «;», паспорт под таблицей">CSV</a>
+    </span>
+  );
+}
+
 export function AiExpandButton({ onClick, label = "На весь экран" }) {
   return (
     <button type="button" className="ai-expand" onClick={onClick} aria-label={label} title={label}>
@@ -438,7 +453,7 @@ export function AiFullscreen({ title, onClose, children }) {
   );
 }
 
-export function AiTable({ columns, rows, fmt, title, meta, expandable = true }) {
+export function AiTable({ columns, rows, fmt, title, meta, expandable = true, download = null }) {
   const decimals = columns.map((_, index) => fmt.decimals(rows, index));
   const [full, setFull] = useState(false);
   const table = (
@@ -459,10 +474,11 @@ export function AiTable({ columns, rows, fmt, title, meta, expandable = true }) 
   );
   return (
     <div className="ai-table-card">
-      {(title || meta || expandable) && (
+      {(title || meta || expandable || download) && (
         <div className="ai-table-head">
           {title && <span className="ai-table-title">{title}</span>}
           {meta && <span className="ai-table-count">{meta}</span>}
+          <AiDownload download={download} />
           {expandable && <AiExpandButton onClick={() => setFull(true)} />}
         </div>
       )}
@@ -499,7 +515,7 @@ function FullscreenChart({ chart, fmt }) {
   );
 }
 
-export function AiChart({ chart, fmt }) {
+export function AiChart({ chart, fmt, download = null }) {
   const [ref, width] = useWidth();
   const [full, setFull] = useState(false);
   const expandable = EXPANDABLE_CHARTS.has(chart.type);
@@ -507,6 +523,7 @@ export function AiChart({ chart, fmt }) {
     <figure className="ai-chart-card">
       <div className="ai-chart-head">
         {chart.title && <figcaption className="ai-chart-title">{chart.title}</figcaption>}
+        <AiDownload download={download} />
         {expandable && <AiExpandButton onClick={() => setFull(true)} />}
       </div>
       <div ref={ref} className="ai-chart-body"><ChartBody chart={chart} fmt={fmt} width={width} /></div>
@@ -706,7 +723,8 @@ function AiSteps({ steps, maySeeSql, fmt }) {
   );
 }
 
-export function AiAnalysis({ answer, maySeeSql, Fold, fmt }) {
+export function AiAnalysis({ answer, maySeeSql, Fold, fmt, messageId = null }) {
+  const download = (part) => (messageId ? { messageId, part } : null);
   const analysis = answer.analysis || {};
   const rows = answer.rows || [];
   const columns = answer.columns || [];
@@ -724,7 +742,9 @@ export function AiAnalysis({ answer, maySeeSql, Fold, fmt }) {
     <>
       {analysis.headline && <p className="ai-headline">{analysis.headline}</p>}
       <Section title="Что произошло" items={analysis.happened} />
-      {(answer.charts || []).map((chart) => <AiChart key={chart.id} chart={chart} fmt={fmt} />)}
+      {(answer.charts || []).map((chart) => (
+        <AiChart key={chart.id} chart={chart} fmt={fmt} download={download(`chart-${chart.id}`)} />
+      ))}
       <Section title="Почему" items={analysis.why} />
       <Section title="Где именно" items={analysis.where} />
       {showMain && (
@@ -734,6 +754,7 @@ export function AiAnalysis({ answer, maySeeSql, Fold, fmt }) {
           fmt={fmt}
           title={mainTitle}
           meta={answer.truncated ? `первые ${fmt.int(rows.length)}` : `${fmt.int(rows.length)} строк`}
+          download={download("main")}
         />
       )}
       <RecommendationSection analysis={analysis} />
@@ -748,7 +769,7 @@ export function AiAnalysis({ answer, maySeeSql, Fold, fmt }) {
         )}
         {(answer.tables || []).map((table) => (
           <Fold key={table.id} title={`Таблица: ${table.title}`} meta={`${fmt.int(table.rows.length)} строк`}>
-            <AiTable columns={table.columns} rows={table.rows} fmt={fmt} />
+            <AiTable columns={table.columns} rows={table.rows} fmt={fmt} download={download(`table-${table.id}`)} />
           </Fold>
         ))}
         <Fold title="Откуда число" meta={`DWH ЛИКАРД · ${answer.scopeLabel}`}>

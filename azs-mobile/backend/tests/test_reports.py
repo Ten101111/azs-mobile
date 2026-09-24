@@ -82,7 +82,7 @@ class BuildTests(StandMixin, unittest.TestCase):
         self.assertEqual(len(model["dynamics"]["charts"]), 2)
         self.assertTrue(all(len(s["values"]) == 8 for c in model["dynamics"]["charts"] for s in c["series"]))
         self.assertTrue(model["headline"][0].startswith("Реализация топлива за неделю"))
-        self.assertEqual(model["pending"], ["Уровень и качество сервиса"])
+        self.assertEqual(model["pending"], [])  # план и сервис в выпуске — ничего не ждём
 
     def test_comparable_base_and_attention(self):
         model = self.build()
@@ -171,6 +171,70 @@ class PartialPlanTests(StandMixin, unittest.TestCase):
         self.assertIsNone(ntu["needPerDay"])
         self.assertIsNotNone(ntu["pctToDate"])
         self.assertIn("не на все дни", model["plan"]["note"])
+
+
+class ServiceTests(StandMixin, unittest.TestCase):
+    """Сервис (СП-07): оценки в приложении, негатив, жалобы ЕГЛ — неделя, месяц, ОНПО, зона внимания."""
+
+    def setUp(self):
+        super().setUp()
+        self.model = self.build()
+        self.service = self.model["service"]
+        self.rows = {r["code"]: r for r in self.service["metrics"]}
+
+    def test_week_values_and_changes_on_the_comparable_base(self):
+        ratings = sum(7 * (10 + i % 5) for i in range(1, 37))
+        points = sum(7 * (5 * (10 + i % 5) - 4) for i in range(1, 37)) - 4 * 4 - 3 * 3  # «1» ×4, «2» ×3
+        self.assertEqual(self.rows["ratings"]["value"], ratings)
+        self.assertEqual(self.rows["avg"]["value"], round(points / ratings, 3))
+        self.assertEqual((self.rows["negative"]["value"], self.rows["negative"]["prev"],
+                          self.rows["negative"]["lastYear"]), (7, 1, 1))
+        self.assertEqual(self.rows["negative"]["deltaPrev"], 6)   # разность штук, а не +600 %
+        self.assertEqual(self.rows["negative"]["deltaKind"], "abs")
+        self.assertEqual(self.rows["complaints"]["value"], 1)
+        self.assertEqual(self.rows["negativeShare"]["value"], round(100 * 7 / ratings, 2))
+        checks = next(m["value"] for m in self.model["metrics"] if m["code"] == "checks_total")
+        self.assertAlmostEqual(self.rows["quality"]["value"], round(100000 * 8 / checks, 2), places=2)
+        self.assertLess(self.rows["avg"]["deltaPrev"], 0)
+
+    def test_month_to_date_categories_and_onpo(self):
+        month = self.service["months"][0]
+        self.assertEqual((month["label"], month["from"], month["to"], month["closed"]),
+                         ("сентябрь 2026", "2026-09-01", "2026-09-20", False))
+        self.assertEqual(month["negative"], 8)  # 7 за отчётную неделю и 1 за прошлую
+        self.assertEqual([(c["title"], c["week"], c["prev"]) for c in self.service["categories"]][:2],
+                         [("Обслуживание на кассе", 3, 1), ("Техническое состояние", 2, 0)])
+        avgs = [o["avg"] for o in self.service["onpo"]]
+        self.assertEqual(avgs, sorted(avgs))  # слабые — сверху
+        self.assertEqual(sum(o["negative"] for o in self.service["onpo"]), 7)
+
+    def test_negative_joins_the_attention_zone_and_headline(self):
+        att = self.model["attention"]
+        self.assertEqual([(r["label"], r["negative"], r["category"]) for r in att["negative"]],
+                         [("АЗС № 10005", 4, "Обслуживание на кассе"), ("АЗС № 10020", 2, "Техническое состояние")])
+        self.assertEqual(att["negativeTotal"], 2)  # у 7030 одна «1» — ниже порога
+        text = " ".join(self.model["headline"])
+        self.assertIn("В зоне внимания 3 объекта", text)  # 7005 — и падение, и негатив: считается один раз
+        self.assertIn("2 и больше негативных оценок в приложении — 2", text)
+        self.assertIn("Средняя оценка в приложении за неделю — ", text)
+        self.assertIn("негативных оценок — 7, жалоб ЕГЛ — 1", text)
+        self.assertNotIn("Сервис: оценки в приложении и жалобы", self.model["pending"])
+        self.assertIn("не официальный уровень сервиса", " ".join(self.model["passport"]["rules"]))
+
+    def test_source_names_the_service_mart(self):
+        self.assertTrue(self.model["passport"]["source"].endswith("(планы и оценки сервиса)"))
+
+
+class NoServiceTests(StandMixin, unittest.TestCase):
+    stand_kwargs = {"ratings": False}
+
+    def test_no_ratings_no_block_and_the_reason_is_in_the_passport(self):
+        model = self.build()
+        self.assertIsNone(model["service"])
+        self.assertIn("Сервис: оценки в приложении и жалобы", model["pending"])
+        self.assertIn("нет оценок клиентов за неделю", model["passport"]["serviceNote"])
+        self.assertNotIn("negative", model["attention"])
+        self.assertIsNotNone(model["plan"])  # план по-прежнему есть
 
 
 class SparseTests(StandMixin, unittest.TestCase):
@@ -268,7 +332,13 @@ class ServerTests(ServerMixin, unittest.TestCase):
         self.assertTrue(pdf.read_bytes().startswith(b"%PDF"))
         self.assertLess(pdf.stat().st_size, 1_000_000)
         wb = load_workbook(xlsx)
-        self.assertEqual(wb.sheetnames, ["Цифры недели", "План месяца", "ОНПО", "Зоны внимания", "Динамика 8 недель", "Паспорт"])
+        self.assertEqual(wb.sheetnames, ["Цифры недели", "План месяца", "Сервис", "ОНПО", "Зоны внимания",
+                                         "Динамика 8 недель", "Паспорт"])
+        service_sheet = wb["Сервис"]
+        self.assertEqual(service_sheet.cell(2, 1).value, "Средняя оценка в приложении")
+        self.assertEqual(service_sheet.cell(2, 2).value, model["service"]["metrics"][0]["value"])
+        zones = [row[0].value for row in wb["Зоны внимания"].iter_rows(min_row=2)]
+        self.assertEqual(zones.count("Негатив в приложении"), 2)
         sheet = wb["Цифры недели"]
         for index, metric in enumerate(model["metrics"], start=2):
             self.assertEqual(sheet.cell(index, 1).value, metric["title"])

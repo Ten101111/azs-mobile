@@ -50,7 +50,12 @@ def _connect() -> sqlite3.Connection:
 # Колонки, появившиеся после первых запусков. У уже созданной базы их нет,
 # а ронять журнал из-за этого нельзя: он пишется по каждому обращению.
 LATE_COLUMNS = (("prompt_version", "TEXT"), ("depth", "TEXT"), ("task_type", "TEXT"), ("trace_json", "TEXT"),
-                ("total_ms", "INTEGER"))
+                ("total_ms", "INTEGER"),
+                # ИИ-03: токены, вызовы модели и инструментов, причина остановки, запрошенный уровень.
+                ("tokens_in", "INTEGER"), ("tokens_out", "INTEGER"), ("model_calls", "INTEGER"),
+                ("tool_calls", "INTEGER"), ("stop_reason", "TEXT"), ("depth_requested", "TEXT"),
+                # ИИ-26: результат обрезан лимитом строк — «упирались в лимит» во вкладке «Лимиты ИИ».
+                ("truncated", "INTEGER"))
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -77,6 +82,24 @@ def write(entry: dict) -> int:
         )
         conn.commit()
         return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+RUN_STATS = ("total_ms", "tokens_in", "tokens_out", "model_calls", "tool_calls", "stop_reason", "depth_requested",
+             "truncated")
+
+
+def set_run_stats(entry_id: int | None, **stats) -> None:
+    """Итоги ответа, известные только снаружи конвейера: время, токены, вызовы, причина остановки."""
+    fields = [name for name in RUN_STATS if name in stats]
+    if not entry_id or not fields:
+        return
+    conn = _connect()
+    try:
+        conn.execute(f"UPDATE ai_queries SET {', '.join(f'{name} = ?' for name in fields)} WHERE id = ?",
+                     [stats[name] for name in fields] + [int(entry_id)])
+        conn.commit()
     finally:
         conn.close()
 

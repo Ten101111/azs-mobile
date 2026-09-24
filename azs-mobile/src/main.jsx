@@ -10,11 +10,14 @@ import AiOrb, { orbStateFromPipeline } from "./orb/AiOrb.jsx";
 import AiMiniOrb from "./orb/AiMiniOrb.jsx";
 import {
   AiAnalysis, aiAgentStages, aiAnalysisText, AI_DEPTH_FALLBACK, DEPTH_TITLES as AI_DEPTH_TITLES,
-  TASK_TITLES as AI_TASK_TITLES, AiExpandButton, AiFullscreen,
+  TASK_TITLES as AI_TASK_TITLES, AiDownload, AiExpandButton, AiFullscreen,
 } from "./aiAnalysis.jsx";
 import { ReportsScreen } from "./reports.jsx";
+import { Note, NoteAction } from "./note.jsx";
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   BarChart3,
   Check,
   CheckCircle2,
@@ -28,6 +31,10 @@ import {
   Download,
   FileText,
   Filter,
+  Folder,
+  FolderInput,
+  FolderMinus,
+  FolderPlus,
   Fuel,
   Gauge,
   Heart,
@@ -57,6 +64,7 @@ import {
   SlidersHorizontal,
   Smartphone,
   Sparkles,
+  Square,
   Star,
   Store,
   Toilet,
@@ -1406,6 +1414,7 @@ function App() {
   const [filters, setFilters] = useState(defaultFilters);
   const [mode, setMode] = useState(() => initialViewMode());
   const aiStatus = useAiStatus();
+  const dataMode = useDataMode();
   // Необязательные разделы скрыты, пока бэкенд не подтвердил, что они есть.
   const navItems = useMemo(
     () => viewItems.filter((item) => !item.optional
@@ -1737,6 +1746,13 @@ function App() {
       <a href="#main-content" className="skip-link">Перейти к содержимому</a>
       <main id="main-content" className={`app-shell ${mode}-mode ${detailVisible ? "" : "no-detail"} ${mode === "list" && registryCompact ? "registry-compact" : ""}`}>
       <section className="workspace">
+        {dataMode === "mock" && (
+          <div className="data-mode-banner">
+            <Note size="small" type="warning" fill label="Тестовые данные">
+              Показатели на экранах сгенерированы и не относятся к реальным АЗС (APP_DATA_MODE=mock). Для работы задайте APP_DATA_MODE=local.
+            </Note>
+          </div>
+        )}
         {mode !== "home" && (
           <>
             <header className="topbar">
@@ -2947,6 +2963,502 @@ function QualityEntry({ item, statuses, onReview }) {
   );
 }
 
+// «Обратная связь» в админке (№30): замечания из «Контроля» с разбором по статусам.
+const FEEDBACK_FILTERS = [
+  { code: "new", title: "Новые" },
+  { code: "in_progress", title: "В работе" },
+  { code: "done", title: "Исправлено" },
+  { code: "rejected", title: "Отклонено" },
+  { code: "", title: "Все" },
+];
+const FEEDBACK_ACTIONS = {
+  new: [["in_progress", "В работу"], ["done", "Исправлено"], ["rejected", "Отклонить"]],
+  in_progress: [["done", "Исправлено"], ["rejected", "Отклонить"], ["new", "Вернуть в новые"]],
+  done: [["in_progress", "Вернуть в работу"]],
+  rejected: [["new", "Вернуть в новые"]],
+};
+
+function FeedbackPanel() {
+  const [filter, setFilter] = useState("new");
+  const [state, setState] = useState({ status: "loading", data: null, error: "" });
+  const [notes, setNotes] = useState({});
+  const [busy, setBusy] = useState(0);
+
+  const load = useCallback(() => {
+    let alive = true;
+    fetchJson(`/api/admin/feedback${filter ? `?status=${filter}` : ""}`)
+      .then((data) => { if (alive) setState({ status: "ready", data, error: "" }); })
+      .catch((error) => {
+        if (!alive || error.message === "AUTH_REQUIRED") return;
+        setState({ status: "error", data: null, error: "Не удалось загрузить замечания." });
+      });
+    return () => { alive = false; };
+  }, [filter]);
+
+  useEffect(() => load(), [load]);
+
+  async function review(item, status) {
+    setBusy(item.id);
+    try {
+      await authJson(`/api/admin/feedback/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status, note: notes[item.id] ?? item.note ?? "" }),
+      });
+      setNotes((current) => { const next = { ...current }; delete next[item.id]; return next; });
+      load();
+    } catch (error) {
+      setState((current) => ({ ...current, error: error.message || "Не удалось сохранить разбор" }));
+    } finally {
+      setBusy(0);
+    }
+  }
+
+  const counts = state.data?.counts || {};
+  const items = state.data?.items || [];
+
+  return (
+    <div className="admin-card feedback-admin">
+      <div className="quality-head">
+        <h3>Замечания по данным</h3>
+        <span className="quality-head-gap" />
+        <div className="admin-days-toggle" role="group" aria-label="Статус замечаний">
+          {FEEDBACK_FILTERS.map((item) => (
+            <button key={item.code || "all"} type="button" className={filter === item.code ? "active" : ""} onClick={() => setFilter(item.code)}>
+              {item.title}{item.code && counts[item.code] ? ` · ${asInt(counts[item.code])}` : ""}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {state.status === "loading" && <p className="admin-bar-caption">Загружаю…</p>}
+      {state.error && <Note type="error" fill label="Ошибка">{state.error}</Note>}
+      {state.status === "ready" && !items.length && (
+        <Note size="small" type="secondary" label={true}>
+          {filter === "new" ? "Новых замечаний нет." : "В этом статусе замечаний нет."}
+        </Note>
+      )}
+
+      <ul className="feedback-admin-list">
+        {items.map((item) => (
+          <li key={item.id} className={`feedback-admin-item status-${item.status}`}>
+            <div className="feedback-admin-meta">
+              <time>{new Date(item.createdAt * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
+              <span>{item.userName || item.userEmail || "пользователь"}{item.userName && item.userEmail ? ` · ${item.userEmail}` : ""}</span>
+              <span className={`feedback-status status-${item.status}`}>{item.statusTitle}</span>
+              {item.source === "browser" && <span className="feedback-source">дослано из браузера</span>}
+            </div>
+            <div className="feedback-admin-what">
+              <strong>{item.station || "АЗС не указана"}</strong>
+              {item.field && <span>{item.field}</span>}
+            </div>
+            <p className="feedback-admin-message">{item.message}</p>
+            {item.handledBy && (
+              <p className="feedback-admin-handled">
+                {`Разбор: ${item.handledBy}, ${new Date(item.handledAt * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`}
+                {item.note ? ` — ${item.note}` : ""}
+              </p>
+            )}
+            <div className="feedback-admin-actions">
+              <input
+                className="ui-input"
+                value={notes[item.id] ?? item.note ?? ""}
+                placeholder="Комментарий к разбору"
+                maxLength={1000}
+                aria-label="Комментарий к разбору"
+                onChange={(event) => setNotes((current) => ({ ...current, [item.id]: event.target.value }))}
+              />
+              {(FEEDBACK_ACTIONS[item.status] || []).map(([status, title]) => (
+                <button key={status} type="button" className="ui-button ghost" disabled={busy === item.id} onClick={() => review(item, status)}>
+                  {title}
+                </button>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// «Лимиты ИИ» (ИИ-26): администратор меняет квоты и пределы по ролям сам.
+// Значения по умолчанию — таблица Р-2; правка действует со следующего вопроса,
+// не позже чем через минуту. Проверка диапазонов — и здесь, и на сервере.
+const AI_LIMIT_EMAIL = /^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/;
+
+function aiLimitText(param, value) {
+  if (param.kind === "choice" || param.kind === "email") return value ?? "";
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function aiLimitParse(param, text) {
+  if (param.kind === "choice") return text;
+  if (param.kind === "email") return String(text || "").trim().toLowerCase();
+  const clean = String(text ?? "").replace(/\s/g, "").replace(",", ".");
+  if (!clean) return null;
+  const number = Number(clean);
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function aiLimitError(param, value) {
+  if (param.kind === "choice") return param.choices.some((item) => item.code === value) ? "" : "выберите значение";
+  if (param.kind === "email") return !value || AI_LIMIT_EMAIL.test(value) ? "" : "нужен адрес почты или пусто";
+  if (value === null) return param.nullable ? "" : `от ${asInt(param.min)} до ${asInt(param.max)}`;
+  if (!Number.isInteger(value)) return "нужно целое число";
+  if (value < param.min || value > param.max) return `допустимо от ${asInt(param.min)} до ${asInt(param.max)}`;
+  return "";
+}
+
+function aiLimitShow(param, value) {
+  if (param.kind === "choice") return param.choices.find((item) => item.code === value)?.title || String(value ?? "");
+  if (param.kind === "email") return value || "администраторы";
+  if (value === null || value === undefined) return "без лимита";
+  return asInt(value);
+}
+
+function aiLimitRange(param) {
+  if (param.kind !== "int") return "";
+  return `${asInt(param.min)}–${asInt(param.max)}${param.unit ? ` ${param.unit}` : ""}`;
+}
+
+function AiLimitField({ param, value, draftText, onChange, label }) {
+  const text = draftText ?? aiLimitText(param, value);
+  const parsed = aiLimitParse(param, text);
+  const edited = draftText !== undefined && parsed !== value;
+  const error = draftText !== undefined ? aiLimitError(param, parsed) : "";
+  const className = ["limits-input", edited ? "edited" : "", error ? "invalid" : ""].filter(Boolean).join(" ");
+  if (param.kind === "choice") {
+    return (
+      <select className={`ui-select ${className}`} value={text} aria-label={label} onChange={(event) => onChange(event.target.value)}>
+        {param.choices.map((item) => <option key={item.code} value={item.code}>{item.title}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input
+      className={`ui-input ${className}`}
+      type={param.kind === "email" ? "email" : "text"}
+      inputMode={param.kind === "int" ? "numeric" : undefined}
+      value={text}
+      placeholder={param.kind === "email" ? "администраторы" : param.nullable ? "без лимита" : ""}
+      aria-label={label}
+      aria-invalid={error ? "true" : undefined}
+      title={error || undefined}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
+function AiLimitsPanel() {
+  const [state, setState] = useState({ status: "loading", data: null, error: "" });
+  const [draft, setDraft] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  const load = useCallback(() => {
+    let alive = true;
+    fetchJson("/api/ai/admin/limits")
+      .then((data) => { if (alive) setState({ status: "ready", data, error: "" }); })
+      .catch((error) => {
+        if (!alive || error.message === "AUTH_REQUIRED") return;
+        setState({
+          status: "error",
+          data: null,
+          error: error.message === "REQUEST_FAILED_403"
+            ? "Лимиты ИИ меняет только администратор."
+            : "Не удалось загрузить лимиты ИИ.",
+        });
+      });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => load(), [load]);
+
+  const data = state.data;
+  // Все ячейки: параметры по ролям и общие. Ключ — «группа:параметр».
+  const cells = useMemo(() => {
+    const out = {};
+    for (const param of data?.params || []) {
+      for (const group of data.groups) {
+        out[`${group.code}:${param.key}`] = { param, group: group.code, value: param.values[group.code], fallback: param.defaults[group.code] };
+      }
+    }
+    for (const param of data?.general || []) {
+      out[`general:${param.key}`] = { param, group: "general", value: param.value, fallback: param.default };
+    }
+    return out;
+  }, [data]);
+
+  const edits = Object.entries(draft)
+    .map(([key, text]) => ({ key, cell: cells[key], value: aiLimitParse(cells[key]?.param || {}, text) }))
+    .filter((item) => item.cell && item.value !== item.cell.value);
+  const errors = edits
+    .map((item) => {
+      const error = aiLimitError(item.cell.param, item.value);
+      const where = item.cell.group === "general"
+        ? item.cell.param.title
+        : `${item.cell.param.title} · ${data.groups.find((group) => group.code === item.cell.group)?.title}`;
+      return error ? `«${where}»: ${error}` : "";
+    })
+    .filter(Boolean);
+  const overridden = Object.values(cells).some((cell) => cell.value !== cell.fallback);
+
+  function edit(key, text) {
+    setNotice(null);
+    setDraft((current) => ({ ...current, [key]: text }));
+  }
+
+  async function save() {
+    if (!edits.length || errors.length || saving) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      const result = await aiSend("/api/ai/admin/limits", {
+        method: "PUT",
+        body: JSON.stringify({ changes: edits.map((item) => ({ group: item.cell.group, param: item.cell.param.key, value: item.value })) }),
+      });
+      setState({ status: "ready", data: result, error: "" });
+      setDraft({});
+      setNotice({ type: "success", label: "Сохранено", text: `Изменено параметров: ${asInt(result.changed)}. Новые значения действуют со следующего вопроса — не позже чем через минуту.` });
+    } catch (error) {
+      setNotice({ type: "error", label: "Не сохранено", text: (error.message || "Сервер не принял правки").replace(/^Не сохранено:\s*/, "") });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resetAll() {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const result = await aiSend("/api/ai/admin/limits/reset", { method: "POST" });
+      setState({ status: "ready", data: result, error: "" });
+      setDraft({});
+      setConfirmReset(false);
+      setNotice({ type: "success", label: "Готово", text: `Возвращены значения по умолчанию (таблица Р-2): ${asInt(result.reset)} правок сняты, запись — в истории.` });
+    } catch (error) {
+      setNotice({ type: "error", label: "Ошибка", text: error.message || "Не удалось вернуть значения по умолчанию" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (state.status === "loading") {
+    return <div className="admin-card"><h3>Лимиты ИИ</h3><p className="admin-bar-caption">Загружаю…</p></div>;
+  }
+  if (state.status === "error") {
+    return <div className="admin-card"><h3>Лимиты ИИ</h3><Note type="error" fill label="Ошибка">{state.error}</Note></div>;
+  }
+
+  const hitsText = (count) => (count ? `упирались: ${asInt(count)}` : "");
+
+  return (
+    <div className="admin-card limits-card">
+      <div className="quality-head">
+        <h3>Лимиты по ролям</h3>
+        <span className="quality-head-gap" />
+        <button type="button" className="ui-button ghost" onClick={() => setConfirmReset(true)} disabled={!overridden || saving}>
+          Вернуть по умолчанию
+        </button>
+      </div>
+
+      <Note size="small" type="secondary" label="Как действует">
+        {`Новое значение действует со следующего вопроса — не позже чем через ${data.cacheSeconds === 60 ? "минуту" : `${data.cacheSeconds} с`}, без перезапуска. «Упирались» — сколько раз за ${data.days} дней вопрос встретил этот лимит.`}
+      </Note>
+      <Note size="small" type="secondary" label="Администратор">{data.adminNote}</Note>
+
+      {confirmReset && (
+        <Note
+          type="warning"
+          fill
+          label="Откат"
+          action={(
+            <span className="limits-confirm">
+              <NoteAction onClick={resetAll}>Да, вернуть</NoteAction>
+              <NoteAction onClick={() => setConfirmReset(false)}>Отмена</NoteAction>
+            </span>
+          )}
+        >
+          Все правки заменятся значениями из таблицы Р-2. В истории останется запись, кто и когда откатил.
+        </Note>
+      )}
+
+      <div className="limits-table-wrap">
+        <table className="limits-table">
+          <thead>
+            <tr>
+              <th scope="col">Параметр</th>
+              {data.groups.map((group) => <th key={group.code} scope="col">{group.title}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {data.params.map((param) => (
+              <tr key={param.key}>
+                <th scope="row">
+                  <strong>{param.title}</strong>
+                  {aiLimitRange(param) && <span>{aiLimitRange(param)}</span>}
+                  {param.hint && <span>{param.hint}</span>}
+                </th>
+                {data.groups.map((group) => {
+                  const key = `${group.code}:${param.key}`;
+                  const cell = cells[key];
+                  const changedFromDefault = cell.value !== cell.fallback;
+                  return (
+                    <td key={group.code}>
+                      <AiLimitField
+                        param={param}
+                        value={cell.value}
+                        draftText={draft[key]}
+                        label={`${param.title} — ${group.title}`}
+                        onChange={(text) => edit(key, text)}
+                      />
+                      {changedFromDefault && <small>{`по умолчанию ${aiLimitShow(param, cell.fallback)}`}</small>}
+                      {param.hits[group.code] > 0 && <small className="hit">{hitsText(param.hits[group.code])}</small>}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <h4 className="limits-subhead">Общие</h4>
+      <div className="limits-general">
+        {data.general.map((param) => {
+          const key = `general:${param.key}`;
+          const cell = cells[key];
+          return (
+            <div key={param.key} className="ui-field limits-field">
+              <span>{param.title}</span>
+              <AiLimitField param={param} value={cell.value} draftText={draft[key]} label={param.title} onChange={(text) => edit(key, text)} />
+              <small>
+                {[aiLimitRange(param), param.hint, cell.value !== cell.fallback ? `по умолчанию ${aiLimitShow(param, cell.fallback)}` : ""]
+                  .filter(Boolean).join(" · ")}
+              </small>
+              {param.hits > 0 && <small className="hit">{hitsText(param.hits)}</small>}
+            </div>
+          );
+        })}
+      </div>
+
+      {errors.length > 0 && <Note type="error" fill label="Не сохранить">{errors.join("; ")}</Note>}
+      {notice && <Note type={notice.type} fill label={notice.label}>{notice.text}</Note>}
+
+      <div className="limits-actions">
+        <button type="button" className="ui-button" onClick={save} disabled={!edits.length || errors.length > 0 || saving}>
+          {saving ? "Сохраняю…" : `Сохранить${edits.length ? ` (${edits.length})` : ""}`}
+        </button>
+        <button type="button" className="ui-button ghost" onClick={() => { setDraft({}); setNotice(null); }} disabled={!Object.keys(draft).length || saving}>
+          Отменить правки
+        </button>
+      </div>
+
+      <AiStorageReport storage={data.storage} />
+
+      {data.planned && <Note size="small" type="secondary" label="Позже">{data.planned}</Note>}
+
+      <h4 className="limits-subhead">История изменений</h4>
+      {data.history.length ? (
+        <ul className="limits-history">
+          {data.history.map((item, index) => (
+            <li key={`${item.at}-${index}`}>
+              <time>{new Date(item.at * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</time>
+              <span className="limits-history-what">{`${item.param} · ${item.group}`}</span>
+              <span className="limits-history-change">{`${item.old} → ${item.new}`}{item.action === "reset" ? " (откат)" : ""}</span>
+              <span className="limits-history-who">{item.by || "—"}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="quality-load-line muted">Правок ещё не было — действуют значения по умолчанию.</p>
+      )}
+    </div>
+  );
+}
+
+// Хранение истории ИИ по группам ролей (ИИ-02): сколько диалогов и сообщений
+// лежит, сколько удалится по сроку в ближайшие 7 дней и когда была очистка.
+function AiStorageReport({ storage }) {
+  if (!storage) return null;
+  const date = (at) => (at ? new Date(at * 1000).toLocaleDateString("ru-RU") : "—");
+  const megabytes = (storage.dbBytes || 0) / (1024 * 1024);
+  const size = megabytes < 0.1 ? "меньше 0,1 МБ" : `${megabytes.toFixed(1).replace(".", ",")} МБ`;
+  const run = storage.lastRun;
+  const cleaned = run
+    ? `Последняя очистка — ${new Date(run.started_at * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}: удалено диалогов ${asInt(run.dialogs_deleted)}, сообщений ${asInt(run.messages_deleted)}, записей журнала аудита ${asInt(run.audit_deleted)}.`
+    : "Очистка ещё не запускалась — первая пройдёт в течение часа после запуска сервера.";
+  return (
+    <>
+      <h4 className="limits-subhead">Хранение истории</h4>
+      <div className="limits-table-wrap">
+        <table className="limits-table storage-table">
+          <thead>
+            <tr>
+              <th scope="col">Группа ролей</th>
+              <th scope="col">Пользователей</th>
+              <th scope="col">Диалогов</th>
+              <th scope="col">Из них в архиве</th>
+              <th scope="col">Сообщений</th>
+              <th scope="col">Удалятся за 7 дней</th>
+              <th scope="col">Самый давний диалог</th>
+            </tr>
+          </thead>
+          <tbody>
+            {storage.groups.map((group) => (
+              <tr key={group.code}>
+                <th scope="row"><strong>{group.title}</strong></th>
+                <td>{asInt(group.users)}</td>
+                <td>{asInt(group.dialogs)}</td>
+                <td>{asInt(group.archived)}</td>
+                <td>{asInt(group.messages)}</td>
+                <td className={group.expiringSoon ? "warn" : ""}>{asInt(group.expiringSoon)}</td>
+                <td>{date(group.oldest)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="quality-load-line muted">
+        {`Папок: ${asInt(storage.folders)} · база истории и журнала: ${size}. ${cleaned}`}
+      </p>
+    </>
+  );
+}
+
+// Нагрузка за неделю (ИИ-03, решение №12): кто задал больше порога вопросов
+// за день и сколько раз люди упирались в лимиты — основание для правки лимитов.
+function QualityLoad({ load }) {
+  const hits = (load.hits || []).filter((item) => item.count > 0);
+  const alerts = load.alerts || [];
+  return (
+    <div className="quality-load">
+      <h4>Нагрузка за {load.days} дней</h4>
+      <p className="quality-load-line">
+        {`Запусков уровня «Высокий» — ${asInt(load.heavyRuns)}`}
+        {load.maxWaitMs ? `, наибольшее ожидание в очереди — ${qualitySeconds(load.maxWaitMs)}` : ""}
+        {load.cancelled ? `; остановлено людьми — ${asInt(load.cancelled)}` : ""}.
+      </p>
+      <p className="quality-load-line">
+        {hits.length
+          ? `Упирались в лимиты: ${hits.map((item) => `${item.title} — ${asInt(item.count)}`).join("; ")}.`
+          : "В лимиты не упирались."}
+      </p>
+      {alerts.length > 0 ? (
+        <div className="quality-load-alerts">
+          {alerts.map((alert) => (
+            <Note key={`${alert.day}-${alert.actor}`} size="small" type="warning" fill label="Порог превышен">
+              {`${alert.day.split("-").reverse().join(".")} — ${alert.actor || "пользователь"}: ${asInt(alert.questions)} вопросов за день при пороге ${asInt(alert.threshold)}.`}
+            </Note>
+          ))}
+        </div>
+      ) : (
+        <Note size="small" type="success" label={true}>{`Никто не задавал больше ${asInt(load.threshold)} вопросов в день.`}</Note>
+      )}
+    </div>
+  );
+}
+
 function AiQualityPanel() {
   const [days, setDays] = useState(30);
   const [filters, setFilters] = useState({ rating: "", verdict: "", status: "", role: "", promptVersion: "" });
@@ -3041,6 +3553,8 @@ function AiQualityPanel() {
       </div>
 
       {summary.rated > 0 && <QualitySpread spread={summary.spread} rated={summary.rated} />}
+
+      {data.load?.hits && <QualityLoad load={data.load} />}
 
       <div className="quality-filters">
         <label className="ui-field">
@@ -3164,6 +3678,10 @@ const ADMIN_TABS = [
     note: "Учётные записи, роли и область данных. Здесь же удаление аккаунта." },
   { code: "quality", tab: "Качество ИИ", title: "Качество ответов ИИ",
     note: "Оценки, разбор низких оценок и срез по версиям инструкции." },
+  { code: "feedback", tab: "Обратная связь", title: "Обратная связь по данным",
+    note: "Замечания пользователей из «Контроля»: кто, по какой АЗС, что не так — и разбор по статусам." },
+  { code: "limits", tab: "Лимиты ИИ", title: "Лимиты ИИ",
+    note: "Квоты, пределы времени и строк по ролям — без разработчика и без перезапуска." },
 ];
 
 function AdminDashboard({ onBack, currentUserId }) {
@@ -3213,7 +3731,7 @@ function AdminDashboard({ onBack, currentUserId }) {
   useEffect(() => load(), [load]);
 
   useEffect(() => {
-    if (tab === "quality" && aiStatus && !aiStatus.enabled) setTab("usage");
+    if ((tab === "quality" || tab === "limits") && aiStatus && !aiStatus.enabled) setTab("usage");
   }, [tab, aiStatus]);
 
   async function handleDeleteUser(item) {
@@ -3239,8 +3757,10 @@ function AdminDashboard({ onBack, currentUserId }) {
     }
   }
 
-  // Вкладка качества появляется только при включённом контуре ИИ.
-  const tabs = ADMIN_TABS.filter((item) => item.code !== "quality" || aiStatus?.enabled);
+  // Вкладки ИИ появляются только при включённом контуре ИИ.
+  // Вкладки со своей загрузкой: статистика использования для них не нужна.
+  const aiTab = tab === "quality" || tab === "limits" || tab === "feedback";
+  const tabs = ADMIN_TABS.filter((item) => (item.code !== "quality" && item.code !== "limits") || aiStatus?.enabled);
   const current = tabs.find((item) => item.code === tab) || tabs[0];
 
   const users = usersState.data?.users || [];
@@ -3305,7 +3825,7 @@ function AdminDashboard({ onBack, currentUserId }) {
               ))}
             </div>
           )}
-          {tab !== "quality" && (
+          {!aiTab && (
             <button className="admin-refresh" type="button" onClick={load} aria-label="Обновить статистику">
               <RefreshCw size={15} />
               <span>Обновить</span>
@@ -3335,11 +3855,13 @@ function AdminDashboard({ onBack, currentUserId }) {
       </div>
 
       {tab === "quality" && <AiQualityPanel />}
+      {tab === "limits" && <AiLimitsPanel />}
+      {tab === "feedback" && <FeedbackPanel />}
 
-      {tab !== "quality" && errorText && <p className="admin-error" role="alert">{errorText}</p>}
-      {tab !== "quality" && loading && !errorText && <p className="admin-empty">Загружаем статистику…</p>}
+      {!aiTab && errorText && <p className="admin-error" role="alert">{errorText}</p>}
+      {!aiTab && loading && !errorText && <p className="admin-empty">Загружаем статистику…</p>}
 
-      {tab !== "quality" && !loading && !errorText && (
+      {!aiTab && !loading && !errorText && (
         <>
           {tab === "usage" && (
           <>
@@ -3941,14 +4463,20 @@ function AnalyticsDashboard({ stations, totalStations, selected, onFilter, onOpe
 // Подсказка и вопрос — разные вещи. На кнопке нужен короткий ярлык, который
 // читается с одного взгляда; модели уходит полная формулировка с периодом,
 // иначе она начнёт угадывать год.
+// Примеры вопросов под орбом приходят с сервера по роли (ИИ-08,
+// backend/ai/examples.py). Этот набор — запасной: старый сервер или сбой статуса.
+// Без месяцев и годов, чтобы не устаревал, и только о том, что есть в витрине.
 const AI_EXAMPLES = [
-  { hint: "Выручка НТУ за сентябрь", ask: "Выручка НТУ по моим АЗС за сентябрь 2026" },
-  { hint: "Выполнение плана НТУ", ask: "Выполнение плана НТУ в текущем месяце" },
-  { hint: "Топливо в прошлом году", ask: "Сравни объём топлива за сентябрь 2026 с сентябрём 2025" },
-  { hint: "Топ-5 по конверсии", ask: "Топ-5 АЗС по конверсии за сентябрь 2026" },
-  { hint: "Средний чек по ОНПО", ask: "Средний чек НТУ по ОНПО за сентябрь 2026" },
-  { hint: "АЗС с кафе на трассе", ask: "Сколько действующих АЗС с кафе на трассе" },
+  { hint: "Выручка НТУ за месяц", ask: "Выручка НТУ по моим АЗС в текущем месяце" },
+  { hint: "Выполнение плана НТУ", ask: "Выполнение плана выручки НТУ в текущем месяце" },
+  { hint: "Топливо к прошлому году", ask: "Реализация топлива в текущем месяце к тому же периоду прошлого года" },
 ];
+
+// Примеры своей роли; при вопросах «от имени» — примеры выбранной роли.
+function aiExamplesFor(status, identity) {
+  const list = identity ? status?.examplesByRole?.[identity.role] : status?.examples;
+  return (Array.isArray(list) && list.length ? list : AI_EXAMPLES).slice(0, 3);
+}
 
 function RoleCell({ item, catalog, onSaved }) {
   const [editing, setEditing] = useState(false);
@@ -4061,6 +4589,20 @@ function ScopeNotice({ meta }) {
       )}
     </div>
   );
+}
+
+// Режим данных сервера (№31): при тестовых данных (APP_DATA_MODE=mock) — плашка на всех экранах.
+function useDataMode() {
+  const [mode, setMode] = useState("");
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/health", { credentials: "include" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => { if (alive && data?.mode) setMode(String(data.mode)); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  return mode;
 }
 
 function useAiStatus() {
@@ -4398,8 +4940,9 @@ const AI_PUBLIC_STAGES = ["Понимаю вопрос", "Проверяю да�
 const AI_STAGE_MIN_MS = 300;
 const AI_SLOW_HINT_SECONDS = 60;
 // Поле вопроса (ИИ-05): одна строка, растёт до трёх, дальше прокрутка внутри.
-// Лимит совпадает с AskRequest.question на сервере.
-const AI_QUESTION_MAX = 500;
+// Длина вопроса — по роли (ИИ-03, Р-2): 2000 знаков, у администратора 4000;
+// приходит в /api/ai/status (limits.questionChars), здесь — запасное значение.
+const AI_QUESTION_MAX = 2000;
 const AI_COMPOSER_MAX_LINES = 3;
 
 // Сенсорный ввод без физической клавиатуры: телефон и планшет.
@@ -4456,7 +4999,7 @@ function aiClock(seconds) {
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function AiPending({ stages: live }) {
+function AiPending({ stages: live, onStop = null }) {
   const reduced = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState(0);
@@ -4478,7 +5021,10 @@ function AiPending({ stages: live }) {
   }, [shown, target]);
 
   const seconds = Math.max(0, Math.floor((now - startedAt.current) / 1000));
-  const label = AI_PUBLIC_STAGES[shown];
+  // Очередь сложных вопросов (ИИ-03): пока ждём — в строке позиция, а не этап.
+  const queued = [...live].reverse().find((stage) => stage.kind === "queue");
+  const waiting = queued?.state === "active";
+  const label = waiting ? queued.label : AI_PUBLIC_STAGES[shown];
   // Каждый законченный внутренний шаг — короткий импульс обоих орбов:
   // видно, что работа идёт шагами, а не висит.
   const finished = live.filter((stage) => stage.state === "done").length;
@@ -4507,7 +5053,16 @@ function AiPending({ stages: live }) {
           {`Этап ${shown + 1} из ${AI_PUBLIC_STAGES.length}: ${label}`}
         </span>
       </div>
-      {seconds >= AI_SLOW_HINT_SECONDS && (
+      {waiting ? (
+        <Note
+          size="small"
+          type="secondary"
+          label="Очередь"
+          action={onStop ? <NoteAction onClick={onStop}>Остановить</NoteAction> : null}
+        >
+          Одновременно идут не больше двух вопросов уровня «Высокий» — ваш начнётся, как только освободится место.
+        </Note>
+      ) : seconds >= AI_SLOW_HINT_SECONDS && (
         <p className="ai-think-hint">Сложный вопрос — ответ может занять несколько минут.</p>
       )}
       {live.length > 0 && (
@@ -4557,13 +5112,16 @@ function aiDepthNote(answer) {
   return `уровень «${title}»`;
 }
 
+// «Спросить на «Среднем»»: название уровня в предложном падеже.
+const AI_DEPTH_ON = { fast: "Лёгком", analyze: "Среднем", deep: "Высоком" };
+
 // Следующий уровень для кнопки «Углубить».
 const AI_DEEPER = { fast: "analyze", analyze: "deep" };
 
-function AiThinking({ answer, pending, stages: live_stages = [] }) {
+function AiThinking({ answer, pending, stages: live_stages = [], onStop = null }) {
   const [open, setOpen] = useState(false);
   const reduced = useReducedMotion();
-  if (pending) return <AiPending stages={live_stages} />;
+  if (pending) return <AiPending stages={live_stages} onStop={onStop} />;
   if (!answer) return null;
   const stages = aiStages(answer);
   const total = aiTotalMs(answer);
@@ -4746,12 +5304,92 @@ function aiGroupDialogs(dialogs) {
   return AI_GROUP_ORDER.filter((name) => buckets.has(name)).map((name) => ({ name, items: buckets.get(name) }));
 }
 
-function AiDialogRow({ dialog, active, onOpen, onRename, onPin, onDelete }) {
+// Папки и архив (ИИ-10): перенос через меню «Переместить в…» (телефон) и
+// перетаскиванием (компьютер). Тип данных перетаскивания — свой, чтобы
+// случайный текст не превратился в перенос.
+const AI_DRAG_TYPE = "application/x-azs-dialog";
+
+function aiDaysLeft(expiresAt) {
+  if (!expiresAt) return null;
+  return Math.max(0, Math.ceil((expiresAt - Date.now() / 1000) / AI_DAY));
+}
+
+// Меню «…» строки истории рисуется в body поверх всего (portal): список истории
+// прокручивается и обрезал бы меню у нижних строк. Меню открывается под кнопкой,
+// а если снизу не хватает места — над ней; по горизонтали не выходит за экран.
+function AiPopMenu({ anchorRef, onClose, label, children }) {
+  const menuRef = useRef(null);
+  const [pos, setPos] = useState(null);
+
+  const place = useCallback(() => {
+    const anchor = anchorRef.current;
+    const menu = menuRef.current;
+    if (!anchor || !menu) return;
+    const gap = 4;
+    const edge = 8;
+    const rect = anchor.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    const height = menu.offsetHeight;
+    const viewW = window.innerWidth;
+    const viewH = window.innerHeight;
+    let top = rect.bottom + gap;
+    if (top + height > viewH - edge) {
+      top = rect.top - gap - height >= edge ? rect.top - gap - height : Math.max(edge, viewH - edge - height);
+    }
+    const left = Math.min(Math.max(edge, rect.right - width), viewW - edge - width);
+    setPos((current) => (current && current.top === top && current.left === left ? current : { top, left }));
+  }, [anchorRef]);
+
+  // После каждой отрисовки: содержимое меняется («Переместить в…» длиннее основного меню).
+  useLayoutEffect(() => { place(); });
+
+  useEffect(() => {
+    function onKey(event) {
+      if (event.key !== "Escape") return;
+      onClose();
+      anchorRef.current?.focus();
+    }
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [place, onClose, anchorRef]);
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <>
+      <button type="button" className="ai-menu-scrim floating" aria-label="Закрыть меню" onClick={onClose} />
+      <div
+        ref={menuRef}
+        className="ai-dialog-menu floating"
+        role="menu"
+        aria-label={label}
+        style={pos ? { top: pos.top, left: pos.left } : { top: 0, left: 0, visibility: "hidden" }}
+      >
+        {children}
+      </div>
+    </>,
+    document.body,
+  );
+}
+
+function AiDialogRow({ dialog, active, folders = [], folderTitle = "", onOpen, onRename, onPin, onDelete, onMove, onArchive }) {
+  const moreRef = useRef(null);
   const [menu, setMenu] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(dialog.title);
 
   useEffect(() => { setDraft(dialog.title); }, [dialog.title]);
+
+  function close() {
+    setMenu(false);
+    setMoving(false);
+  }
 
   if (editing) {
     return (
@@ -4772,53 +5410,276 @@ function AiDialogRow({ dialog, active, onOpen, onRename, onPin, onDelete }) {
     );
   }
 
+  const daysLeft = dialog.expires_soon ? aiDaysLeft(dialog.expires_at) : null;
+  const where = dialog.archived ? "в архиве" : folderTitle ? `в папке «${folderTitle}»` : "";
+  const className = ["ai-dialog", active ? "active" : "", dialog.archived ? "archived" : "", menu ? "menu-open" : ""]
+    .filter(Boolean).join(" ");
+
   return (
-    <div className={active ? "ai-dialog active" : "ai-dialog"}>
+    <div
+      className={className}
+      draggable={!dialog.archived && !aiTouchInput()}
+      onDragStart={(event) => {
+        event.dataTransfer.setData(AI_DRAG_TYPE, String(dialog.id));
+        event.dataTransfer.effectAllowed = "move";
+      }}
+    >
       <button type="button" className="ai-dialog-open" onClick={onOpen}>
         <span className="ai-dialog-title">
           {dialog.pinned ? <Pin size={12} aria-label="Закреплён" /> : null}
+          {dialog.archived ? <Archive size={12} aria-label="В архиве" /> : null}
           <span className="ai-dialog-name">{dialog.title}</span>
         </span>
         {dialog.last_question && <span className="ai-dialog-last">{dialog.last_question}</span>}
+        {(where || daysLeft !== null) && (
+          <span className="ai-dialog-flags">
+            {where && <span>{where}</span>}
+            {daysLeft !== null && (
+              <span className="ai-dialog-expiry" title="Срок хранения истории по роли; закреплённые диалоги не удаляются">
+                {daysLeft === 0 ? "удалится сегодня" : `удалится через ${daysLeft} дн.`}
+              </span>
+            )}
+          </span>
+        )}
       </button>
       <button
+        ref={moreRef}
         type="button"
         className="ai-dialog-more"
         aria-label="Действия с диалогом"
+        aria-haspopup="menu"
         aria-expanded={menu}
-        onClick={() => setMenu((value) => !value)}
+        onClick={() => { setMenu((value) => !value); setMoving(false); }}
       >
         <MoreHorizontal size={15} />
       </button>
       {menu && (
-        <>
-          <button type="button" className="ai-menu-scrim" aria-label="Закрыть меню" onClick={() => setMenu(false)} />
-          <div className="ai-dialog-menu" role="menu">
-            <button type="button" role="menuitem" onClick={() => { setMenu(false); setEditing(true); }}>
-              <Pencil size={14} /> Переименовать
-            </button>
-            <button type="button" role="menuitem" onClick={() => { setMenu(false); onPin(!dialog.pinned); }}>
-              {dialog.pinned ? <PinOff size={14} /> : <Pin size={14} />}
-              {dialog.pinned ? "Открепить" : "Закрепить"}
-            </button>
-            <button type="button" role="menuitem" className="danger" onClick={() => { setMenu(false); onDelete(); }}>
-              <Trash2 size={14} /> Удалить
-            </button>
-          </div>
-        </>
+        <AiPopMenu anchorRef={moreRef} onClose={close} label={`Действия с диалогом «${dialog.title}»`}>
+            {moving ? (
+              <>
+                <p className="ai-menu-caption">Переместить в…</p>
+                {folders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    type="button"
+                    role="menuitem"
+                    disabled={folder.id === dialog.folder_id}
+                    onClick={() => { close(); onMove(folder.id); }}
+                  >
+                    <Folder size={14} /> <span className="ai-menu-text">{folder.title}</span>
+                  </button>
+                ))}
+                <button type="button" role="menuitem" disabled={!dialog.folder_id} onClick={() => { close(); onMove(null); }}>
+                  <FolderMinus size={14} /> Без папки
+                </button>
+                {!folders.length && <p className="ai-menu-caption">Папок пока нет — создайте их кнопкой «Новая папка».</p>}
+              </>
+            ) : (
+              <>
+                <button type="button" role="menuitem" onClick={() => { close(); setEditing(true); }}>
+                  <Pencil size={14} /> Переименовать
+                </button>
+                {!dialog.archived && (
+                  <button type="button" role="menuitem" onClick={() => { close(); onPin(!dialog.pinned); }}>
+                    {dialog.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                    {dialog.pinned ? "Открепить" : "Закрепить"}
+                  </button>
+                )}
+                {!dialog.archived && (
+                  <button type="button" role="menuitem" onClick={() => setMoving(true)}>
+                    <FolderInput size={14} /> Переместить в…
+                  </button>
+                )}
+                <button type="button" role="menuitem" onClick={() => { close(); onArchive(!dialog.archived); }}>
+                  {dialog.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+                  {dialog.archived ? "Вернуть из архива" : "В архив"}
+                </button>
+                <button type="button" role="menuitem" className="danger" onClick={() => { close(); onDelete(); }}>
+                  <Trash2 size={14} /> Удалить
+                </button>
+              </>
+            )}
+        </AiPopMenu>
       )}
     </div>
   );
 }
 
-function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin, onDelete, whoLabel, whoName, onClose, onCollapse, searchRef }) {
+// Цель для перетаскивания: папка или «Без папки».
+function aiDropProps(onDropDialog, setOver) {
+  return {
+    onDragOver: (event) => {
+      if (!event.dataTransfer.types.includes(AI_DRAG_TYPE)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      setOver(true);
+    },
+    onDragLeave: () => setOver(false),
+    onDrop: (event) => {
+      const id = Number(event.dataTransfer.getData(AI_DRAG_TYPE));
+      setOver(false);
+      if (id) {
+        event.preventDefault();
+        onDropDialog(id);
+      }
+    },
+  };
+}
+
+function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, onDelete, onDropDialog }) {
+  const moreRef = useRef(null);
+  const [menu, setMenu] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(folder.title);
+  const [confirm, setConfirm] = useState(false);
+  const [over, setOver] = useState(false);
+
+  useEffect(() => { setDraft(folder.title); }, [folder.title]);
+
+  return (
+    <div className={over ? "ai-folder drop" : "ai-folder"} {...aiDropProps(onDropDialog, setOver)}>
+      {editing ? (
+        <div className="ai-dialog editing">
+          <input
+            className="ui-input"
+            value={draft}
+            autoFocus
+            maxLength={60}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { onRename(draft); setEditing(false); }
+              if (event.key === "Escape") { setDraft(folder.title); setEditing(false); }
+            }}
+            onBlur={() => { onRename(draft); setEditing(false); }}
+            aria-label="Название папки"
+          />
+        </div>
+      ) : (
+        <div className={menu ? "ai-folder-head menu-open" : "ai-folder-head"}>
+          <button type="button" className="ai-folder-open" onClick={onToggle} aria-expanded={open}>
+            <ChevronRight size={14} className={open ? "ai-folder-caret open" : "ai-folder-caret"} aria-hidden="true" />
+            <Folder size={15} aria-hidden="true" />
+            <span className="ai-dialog-name">{folder.title}</span>
+            <span className="ai-folder-count">{dialogs.length}</span>
+          </button>
+          <button
+            ref={moreRef}
+            type="button"
+            className="ai-dialog-more"
+            aria-label={`Действия с папкой «${folder.title}»`}
+            aria-haspopup="menu"
+            aria-expanded={menu}
+            onClick={() => setMenu((value) => !value)}
+          >
+            <MoreHorizontal size={15} />
+          </button>
+          {menu && (
+            <AiPopMenu anchorRef={moreRef} onClose={() => setMenu(false)} label={`Действия с папкой «${folder.title}»`}>
+              <button type="button" role="menuitem" onClick={() => { setMenu(false); setEditing(true); }}>
+                <Pencil size={14} /> Переименовать
+              </button>
+              <button type="button" role="menuitem" className="danger" onClick={() => { setMenu(false); setConfirm(true); }}>
+                <Trash2 size={14} /> Удалить папку
+              </button>
+            </AiPopMenu>
+          )}
+        </div>
+      )}
+      {confirm && (
+        <div className="ai-folder-confirm">
+          <Note size="small" type="warning" fill label="Удалить папку">
+            {dialogs.length
+              ? `В папке ${dialogs.length} ${dialogs.length === 1 ? "диалог" : dialogs.length < 5 ? "диалога" : "диалогов"}. Что с ними сделать?`
+              : "Папка пустая."}
+          </Note>
+          <div className="ai-folder-confirm-actions">
+            {dialogs.length > 0 && (
+              <NoteAction onClick={() => { setConfirm(false); onDelete("move"); }}>Перенести в «Без папки»</NoteAction>
+            )}
+            <button type="button" className="note-action danger" onClick={() => { setConfirm(false); onDelete("delete"); }}>
+              {dialogs.length ? "Удалить вместе с диалогами" : "Удалить"}
+            </button>
+            <NoteAction onClick={() => setConfirm(false)}>Отмена</NoteAction>
+          </div>
+        </div>
+      )}
+      {open && (
+        <div className="ai-folder-items">
+          {dialogs.length ? dialogs.map((dialog) => <AiDialogRow key={dialog.id} dialog={dialog} {...rowProps(dialog)} />)
+            : <p className="ai-folder-empty">Перетащите сюда диалог или выберите «Переместить в…» в его меню.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AiSidebar({
+  dialogs, folders = [], limits = null, notice = null, onNotice = () => {}, activeId, loading,
+  onNew, onOpen, onRename, onPin, onDelete, onMove, onArchive, onArchiveOldest,
+  onCreateFolder, onRenameFolder, onDeleteFolder, whoLabel, whoName, onClose, onCollapse, searchRef,
+}) {
   const [query, setQuery] = useState("");
+  const [openFolders, setOpenFolders] = useState(() => new Set());
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [folderDraft, setFolderDraft] = useState(null);
+  const [looseOver, setLooseOver] = useState(false);
   const needle = query.trim().toLowerCase();
-  const visible = needle
-    ? dialogs.filter((dialog) =>
-        `${dialog.title} ${dialog.last_question || ""}`.toLowerCase().includes(needle))
-    : dialogs;
-  const groups = aiGroupDialogs(visible);
+  const folderTitles = useMemo(() => new Map(folders.map((folder) => [folder.id, folder.title])), [folders]);
+
+  // Папка с открытым диалогом раскрывается сама.
+  const activeFolder = dialogs.find((dialog) => dialog.id === activeId && !dialog.archived)?.folder_id;
+  useEffect(() => {
+    if (!activeFolder) return;
+    setOpenFolders((current) => (current.has(activeFolder) ? current : new Set([...current, activeFolder])));
+  }, [activeFolder]);
+
+  const live = dialogs.filter((dialog) => !dialog.archived);
+  const archived = dialogs.filter((dialog) => dialog.archived);
+  const pinned = live.filter((dialog) => dialog.pinned);
+  const loose = live.filter((dialog) => !dialog.pinned && !dialog.folder_id);
+  const byFolder = (folderId) => live.filter((dialog) => !dialog.pinned && dialog.folder_id === folderId);
+  const groups = aiGroupDialogs(loose);
+
+  // Поиск — по всем папкам и архиву: название, последний вопрос, имя папки.
+  // Закреплённые — сверху, архивные — в конце, внутри — как пришли (по дате).
+  const rank = (dialog) => (dialog.archived ? 2 : dialog.pinned ? 0 : 1);
+  const found = needle
+    ? dialogs
+        .filter((dialog) =>
+          `${dialog.title} ${dialog.last_question || ""} ${folderTitles.get(dialog.folder_id) || ""}`.toLowerCase().includes(needle))
+        .map((dialog, index) => ({ dialog, index }))
+        .sort((a, b) => rank(a.dialog) - rank(b.dialog) || a.index - b.index)
+        .map((item) => item.dialog)
+    : [];
+
+  const rowProps = (dialog, extra = {}) => ({
+    active: dialog.id === activeId,
+    folders,
+    onOpen: () => onOpen(dialog.id),
+    onRename: (title) => onRename(dialog.id, title),
+    onPin: (value) => onPin(dialog.id, value),
+    onDelete: () => onDelete(dialog.id),
+    onMove: (folderId) => onMove(dialog.id, folderId),
+    onArchive: (value) => onArchive(dialog.id, value),
+    ...extra,
+  });
+
+  function toggleFolder(id) {
+    setOpenFolders((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function submitFolder() {
+    const title = (folderDraft || "").trim();
+    setFolderDraft(null);
+    if (title) onCreateFolder(title);
+  }
+
+  const activeCount = live.length;
+  const activeLimit = limits?.activeDialogs;
 
   return (
     <aside className="ai-sidebar">
@@ -4843,9 +5704,20 @@ function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin,
             </button>
           )}
         </div>
-        <button type="button" className="ui-button ai-new" onClick={onNew}>
-          <Plus size={16} /> Новый диалог
-        </button>
+        <div className="ai-new-row">
+          <button type="button" className="ui-button ai-new" onClick={onNew}>
+            <Plus size={16} /> Новый диалог
+          </button>
+          <button
+            type="button"
+            className="ai-new-folder"
+            onClick={() => setFolderDraft("")}
+            aria-label="Новая папка"
+            title="Новая папка"
+          >
+            <FolderPlus size={17} />
+          </button>
+        </div>
         <label className="ai-search">
           <Search size={15} />
           <input
@@ -4853,36 +5725,122 @@ function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin,
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Поиск по диалогам"
-            aria-label="Поиск по диалогам"
+            placeholder="Поиск по диалогам и архиву"
+            aria-label="Поиск по диалогам и архиву"
           />
         </label>
+        {notice && (
+          <Note
+            size="small"
+            type={notice.type || "warning"}
+            fill
+            label={notice.label || "Лимит"}
+            action={notice.action === "archive_oldest"
+              ? <NoteAction onClick={() => onArchiveOldest(10)}>Архивировать 10 старых</NoteAction>
+              : <NoteAction onClick={() => onNotice(null)}>Понятно</NoteAction>}
+          >
+            {notice.text}
+          </Note>
+        )}
       </div>
 
       <div className="ai-sidebar-list">
+        {folderDraft !== null && (
+          <div className="ai-dialog editing">
+            <input
+              className="ui-input"
+              value={folderDraft}
+              autoFocus
+              maxLength={60}
+              placeholder="Название папки"
+              onChange={(event) => setFolderDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") submitFolder();
+                if (event.key === "Escape") setFolderDraft(null);
+              }}
+              onBlur={submitFolder}
+              aria-label="Название новой папки"
+            />
+          </div>
+        )}
+
         {loading ? (
           <p className="ai-sidebar-empty">Загружаю историю…</p>
-        ) : groups.length === 0 ? (
-          <p className="ai-sidebar-empty">
-            {needle ? "По этому запросу диалогов нет." : "Диалогов пока нет. Они появятся здесь и будут храниться за вами."}
-          </p>
-        ) : (
-          groups.map((group) => (
-            <div className="ai-dialog-group" key={group.name}>
-              <p className="ai-group-name">{group.name}</p>
-              {group.items.map((dialog) => (
-                <AiDialogRow
-                  key={dialog.id}
-                  dialog={dialog}
-                  active={dialog.id === activeId}
-                  onOpen={() => onOpen(dialog.id)}
-                  onRename={(title) => onRename(dialog.id, title)}
-                  onPin={(pinned) => onPin(dialog.id, pinned)}
-                  onDelete={() => onDelete(dialog.id)}
-                />
+        ) : needle ? (
+          found.length ? (
+            <div className="ai-dialog-group">
+              <p className="ai-group-name">Найдено · {found.length}</p>
+              {found.map((dialog) => (
+                <AiDialogRow key={dialog.id} dialog={dialog} {...rowProps(dialog, { folderTitle: folderTitles.get(dialog.folder_id) || "" })} />
               ))}
             </div>
-          ))
+          ) : (
+            <p className="ai-sidebar-empty">По этому запросу диалогов нет — ни в папках, ни в архиве.</p>
+          )
+        ) : !dialogs.length && !folders.length ? (
+          <p className="ai-sidebar-empty">Диалогов пока нет. Они появятся здесь и будут храниться за вами.</p>
+        ) : (
+          <>
+            {pinned.length > 0 && (
+              <div className="ai-dialog-group">
+                <p className="ai-group-name">Закреплённые</p>
+                {pinned.map((dialog) => <AiDialogRow key={dialog.id} dialog={dialog} {...rowProps(dialog)} />)}
+              </div>
+            )}
+
+            {folders.length > 0 && (
+              <div className="ai-dialog-group">
+                <p className="ai-group-name">Папки</p>
+                {folders.map((folder) => (
+                  <AiFolderBlock
+                    key={folder.id}
+                    folder={folder}
+                    dialogs={byFolder(folder.id)}
+                    open={openFolders.has(folder.id)}
+                    onToggle={() => toggleFolder(folder.id)}
+                    rowProps={(dialog) => rowProps(dialog)}
+                    onRename={(title) => onRenameFolder(folder.id, title)}
+                    onDelete={(mode) => onDeleteFolder(folder.id, mode)}
+                    onDropDialog={(id) => onMove(id, folder.id)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {folders.length > 0 ? (
+              <div
+                className={looseOver ? "ai-loose drop" : "ai-loose"}
+                {...aiDropProps((id) => onMove(id, null), setLooseOver)}
+              >
+                <p className="ai-group-name">Без папки</p>
+                {groups.length ? groups.map((group) => (
+                  <div className="ai-dialog-group" key={group.name}>
+                    <p className="ai-group-sub">{group.name}</p>
+                    {group.items.map((dialog) => <AiDialogRow key={dialog.id} dialog={dialog} {...rowProps(dialog)} />)}
+                  </div>
+                )) : <p className="ai-folder-empty">Все диалоги разложены по папкам.</p>}
+              </div>
+            ) : (
+              groups.map((group) => (
+                <div className="ai-dialog-group" key={group.name}>
+                  <p className="ai-group-name">{group.name}</p>
+                  {group.items.map((dialog) => <AiDialogRow key={dialog.id} dialog={dialog} {...rowProps(dialog)} />)}
+                </div>
+              ))
+            )}
+
+            {archived.length > 0 && (
+              <div className="ai-dialog-group ai-archive">
+                <button type="button" className="ai-archive-toggle" onClick={() => setArchiveOpen((value) => !value)} aria-expanded={archiveOpen}>
+                  <ChevronRight size={14} className={archiveOpen ? "ai-folder-caret open" : "ai-folder-caret"} aria-hidden="true" />
+                  <Archive size={14} aria-hidden="true" />
+                  <span>Архив</span>
+                  <span className="ai-folder-count">{archived.length}</span>
+                </button>
+                {archiveOpen && archived.map((dialog) => <AiDialogRow key={dialog.id} dialog={dialog} {...rowProps(dialog)} />)}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -4890,7 +5848,10 @@ function AiSidebar({ dialogs, activeId, loading, onNew, onOpen, onRename, onPin,
         <span className="ai-avatar" aria-hidden="true">{aiInitials(whoName)}</span>
         <span className="ai-who">
           <strong>{whoName || "Пользователь"}</strong>
-          <small>{whoLabel}</small>
+          <small>
+            {whoLabel}
+            {activeLimit ? ` · диалогов ${activeCount} из ${activeLimit}` : ""}
+          </small>
         </span>
       </div>
     </aside>
@@ -4988,8 +5949,14 @@ function AiDepthPicker({ value, options, onChange, disabled = false }) {
                 type="button"
                 role="menuitemradio"
                 aria-checked={item.code === value}
-                className={item.code === value ? "on" : ""}
-                onClick={() => { onChange(item.code); setOpen(false); }}
+                aria-disabled={item.disabled ? "true" : undefined}
+                className={[item.code === value ? "on" : "", item.disabled ? "off" : ""].filter(Boolean).join(" ")}
+                onClick={() => {
+                  // Серый уровень не выбирается: причина написана в самом пункте.
+                  if (item.disabled) return;
+                  onChange(item.code);
+                  setOpen(false);
+                }}
               >
                 <span className="ai-depth-row">
                   <strong>{item.title}</strong>
@@ -4997,7 +5964,15 @@ function AiDepthPicker({ value, options, onChange, disabled = false }) {
                   {item.code === value && <Check size={15} className="ai-depth-check" aria-hidden="true" />}
                 </span>
                 {item.about ? <span className="ai-depth-about">{item.about}</span> : null}
-                {item.typical ? <span className="ai-depth-time">{item.typical}</span> : null}
+                {item.disabled && item.reason ? (
+                  <Note as="span" size="small" type="warning" fill label="Лимит">{item.reason}</Note>
+                ) : (
+                  (item.typical || item.quotaNote) && (
+                    <span className="ai-depth-time">
+                      {[item.typical, item.quotaNote].filter(Boolean).join(" · ")}
+                    </span>
+                  )
+                )}
               </button>
             ))}
           </div>
@@ -5055,6 +6030,62 @@ function aiInitials(name) {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+// --- приветствие под орбом (ИИ-08) -------------------------------------------
+// Шаблон без обращения к модели: мгновенно и без риска выдумки. Время суток —
+// по часам устройства, имя — из учётной записи, число объектов — из области
+// данных, по которой считаются ответы. Других личных данных здесь нет.
+
+function aiDayGreeting(date = new Date()) {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 12) return "Доброе утро";
+  if (hour >= 12 && hour < 17) return "Добрый день";
+  if (hour >= 17 && hour < 23) return "Добрый вечер";
+  return "Доброй ночи";
+}
+
+const AI_PATRONYMIC = /(вич|вна|ична|оглы|кызы)$/i;
+const AI_SURNAME_STRONG = /(ов|ова|ев|ева|ёв|ёва|ский|ская|цкий|цкая|енко|ук|юк)$/i;
+const AI_SURNAME_WEAK = /(ин|ын|ина|ына)$/i;
+
+// Имя для обращения из «Фамилия Имя Отчество», «Имя Фамилия» или «Фамилия Имя».
+// Не уверены (почта, инициалы, длинная подпись) — без обращения.
+function aiFirstName(full) {
+  const parts = String(full || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length || parts.length > 3) return "";
+  if (!parts.every((word) => /^[А-ЯЁA-Z][а-яёa-z]+(-[А-ЯЁA-Z]?[а-яёa-z]+)?$/.test(word))) return "";
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 3) {
+    if (AI_PATRONYMIC.test(parts[2])) return parts[1];
+    if (AI_PATRONYMIC.test(parts[1])) return parts[0];
+    return "";
+  }
+  const [a, b] = parts;
+  const strongA = AI_SURNAME_STRONG.test(a);
+  const strongB = AI_SURNAME_STRONG.test(b);
+  if (strongA !== strongB) return strongA ? b : a;
+  const weakA = AI_SURNAME_WEAK.test(a);
+  const weakB = AI_SURNAME_WEAK.test(b);
+  if (weakA !== weakB) return weakA ? b : a;
+  return a;
+}
+
+function aiWelcomeTitle(fullName, date = new Date()) {
+  const name = aiFirstName(fullName);
+  return name ? `${aiDayGreeting(date)}, ${name}` : `${aiDayGreeting(date)}!`;
+}
+
+// «Спросите о 42 объектах…»: при выборе роли «от имени» — её область.
+function aiWelcomeScope(status, identity) {
+  const everything = identity ? !identity.binding : Boolean(status?.ownUnrestricted);
+  const count = Number(identity ? identity.stations : status?.ownStations) || 0;
+  if (everything) return "Спросите о любых объектах сети";
+  if (!count) return "Спросите о ваших объектах";
+  const prep = count === 1 || count === 11 ? "об" : "о";
+  const noun = count % 10 === 1 && count % 100 !== 11 ? "объекте" : "объектах";
+  const whose = identity ? "выбранной роли" : "вашей области данных";
+  return `Спросите ${prep} ${count.toLocaleString("ru-RU")} ${noun} ${whose}`;
+}
+
 // --- один ответ ------------------------------------------------------------
 
 function AiFold({ title, meta, children, tone, defaultOpen = false }) {
@@ -5075,7 +6106,7 @@ function AiFold({ title, meta, children, tone, defaultOpen = false }) {
 
 // Таблица результата быстрого ответа: в колонке ответа, с полноэкранным
 // просмотром (ИИ-06).
-function AiRowsTable({ columns, rows, decimals, truncated }) {
+function AiRowsTable({ columns, rows, decimals, truncated, download = null }) {
   const [full, setFull] = useState(false);
   const table = (
     <div className="ai-table-wrap">
@@ -5102,6 +6133,7 @@ function AiRowsTable({ columns, rows, decimals, truncated }) {
       <div className="ai-table-head">
         <span className="ai-table-title">Разбивка по строкам</span>
         <span className="ai-table-count">{truncated ? `первые ${asInt(rows.length)}` : `${asInt(rows.length)} строк`}</span>
+        <AiDownload download={download} />
         <AiExpandButton onClick={() => setFull(true)} />
       </div>
       {table}
@@ -5110,7 +6142,7 @@ function AiRowsTable({ columns, rows, decimals, truncated }) {
   );
 }
 
-function AiAnswerBody({ answer, maySeeSql }) {
+function AiAnswerBody({ answer, maySeeSql, messageId = null }) {
   const outcome = aiOutcome(answer);
 
   if (outcome !== "ready") {
@@ -5139,6 +6171,7 @@ function AiAnswerBody({ answer, maySeeSql }) {
         maySeeSql={maySeeSql}
         Fold={AiFold}
         fmt={{ cell: aiFormatCell, decimals: aiColumnDecimals, int: asInt }}
+        messageId={messageId}
       />
     );
   }
@@ -5175,7 +6208,8 @@ function AiAnswerBody({ answer, maySeeSql }) {
       {rows.length === 0 && <div className="ai-empty">Запрос выполнен, данных по условию нет.</div>}
 
       {rows.length > 0 && !single && !facts && (
-        <AiRowsTable columns={columns} rows={rows} decimals={decimals} truncated={answer.truncated} />
+        <AiRowsTable columns={columns} rows={rows} decimals={decimals} truncated={answer.truncated}
+          download={messageId ? { messageId, part: "main" } : null} />
       )}
 
       {(answer.notes || []).length > 0 && (
@@ -5247,9 +6281,11 @@ function AiSettleOrb({ outcome, onSettled }) {
   );
 }
 
-function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen, onCopy, onSettled, depthTitles = AI_DEPTH_TITLES }) {
+function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen, onCopy, onSettled, depthTitles = AI_DEPTH_TITLES, deepBlocked = false }) {
   const answer = item.answer || {};
-  const deeper = answer.ok ? AI_DEEPER[answer.depth] : null;
+  // «Углубить» до «Высокого» не предлагаем, когда его квота на сегодня исчерпана (ИИ-03).
+  const next = answer.ok ? AI_DEEPER[answer.depth] : null;
+  const deeper = next === "deep" && deepBlocked ? null : next;
   const reduced = useReducedMotion();
   return (
     <motion.article
@@ -5266,7 +6302,7 @@ function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen,
       <div className="ai-reply">
         {fresh && <AiSettleOrb outcome={aiOutcome(answer)} onSettled={onSettled} />}
         <AiThinking answer={answer} />
-        <AiAnswerBody answer={answer} maySeeSql={maySeeSql} />
+        <AiAnswerBody answer={answer} maySeeSql={maySeeSql} messageId={item.id} />
         <div className="ai-actions">
           <button type="button" className="ai-action rate" onClick={() => onRate(item)}>
             <Star size={15} /> {item.rating ? "Изменить оценку" : "Оценить ответ"}
@@ -5315,7 +6351,7 @@ function aiAnswerText(item) {
 // Поток приходит кадрами «event: …\ndata: …\n\n». Читаем как текст и режем
 // по пустой строке: EventSource здесь не годится, он умеет только GET, а
 // вопрос в адресной строке — это вопрос в логах прокси.
-async function aiStream(body, { onStage, signal }) {
+async function aiStream(body, { onStage, onRun, signal }) {
   const response = await fetch("/api/ai/ask/stream", {
     method: "POST",
     credentials: "include",
@@ -5331,6 +6367,10 @@ async function aiStream(body, { onStage, signal }) {
     const detail = await response.json().catch(() => ({}));
     const error = new Error(detail.detail || `Ошибка ${response.status}`);
     error.status = response.status;
+    // Лимит (ИИ-03): какой и на каком уровне можно спросить сейчас.
+    error.limit = response.headers.get("X-AI-Limit") || "";
+    error.suggest = response.headers.get("X-AI-Suggest-Depth") || "";
+    error.action = response.headers.get("X-AI-Action") || "";
     throw error;
   }
   if (!response.body?.getReader) {
@@ -5368,12 +6408,17 @@ async function aiStream(body, { onStage, signal }) {
         continue;
       }
       if (name === "stage") onStage?.(data);
+      else if (name === "run") onRun?.(data.runId);
       else if (name === "answer") answer = data;
       else if (name === "failed") failure = data;
     }
   }
 
-  if (failure) throw new Error(failure.detail || "Не удалось получить ответ");
+  if (failure) {
+    const error = new Error(failure.detail || "Не удалось получить ответ");
+    error.cancelled = Boolean(failure.cancelled);
+    throw error;
+  }
   if (!answer) {
     const error = new Error("Поток оборвался до ответа");
     error.noStream = true;
@@ -5467,14 +6512,30 @@ async function aiSend(path, options = {}) {
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
-    throw new Error(detail.detail || `Ошибка ${response.status}`);
+    const error = new Error(detail.detail || `Ошибка ${response.status}`);
+    error.status = response.status;
+    // Лимит роли (ИИ-02/03): какой и что можно сделать.
+    error.limit = response.headers.get("X-AI-Limit") || "";
+    error.action = response.headers.get("X-AI-Action") || "";
+    throw error;
   }
   if (response.status === 204) return null;
   return response.json();
 }
 
 function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
-  const identities = status?.identities || [];
+  // Роли «от имени» по ОХД статус не ждёт (витрина может быть недоступна без VPN) —
+  // подгружаем их отдельно, раздел при этом уже работает.
+  const [lateIdentities, setLateIdentities] = useState(null);
+  useEffect(() => {
+    if (!status?.mayImpersonate || !status?.identitiesPending) return undefined;
+    let alive = true;
+    fetchJson("/api/ai/identities")
+      .then((data) => { if (alive && data?.identities) setLateIdentities(data.identities); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [status?.mayImpersonate, status?.identitiesPending]);
+  const identities = lateIdentities || status?.identities || [];
   const [identityKey, setIdentityKey] = useState("");
   const [model, setModel] = useState(status?.model || "");
   // Уровень глубины (ИИ-20): auto — выбирает разбор задачи; остальное —
@@ -5484,7 +6545,13 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     setDepthState(value);
     aiWriteDepth(value);
   }
-  const depthOptions = (status?.depths || []).length ? status.depths : AI_DEPTH_FALLBACK;
+  // Лимиты человека (ИИ-03): остаток «Высокого», длина вопроса. Приходят со
+  // статусом и обновляются после каждого ответа — счётчик должен быть честным.
+  const [limitState, setLimitState] = useState(null);
+  const limits = limitState?.limits || status?.limits || {};
+  const liveDepths = limitState?.depths || status?.depths || [];
+  const depthOptions = liveDepths.length ? liveDepths : AI_DEPTH_FALLBACK;
+  const questionMax = limits.questionChars || AI_QUESTION_MAX;
   const [showSettings, setShowSettings] = useState(false);
 
   const [dialogs, setDialogs] = useState([]);
@@ -5497,9 +6564,18 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   // Орб пустого экрана слушает, пока курсор в поле или набран текст.
   const [composing, setComposing] = useState(false);
   const [shellExtra, setShellExtra] = useState(aiReadExtra);
+  // Папки и лимиты хранения (ИИ-10, ИИ-02); сообщение о лимите — плашкой в истории.
+  const [folders, setFolders] = useState([]);
+  const [dialogLimits, setDialogLimits] = useState(null);
+  const [sideNotice, setSideNotice] = useState(null);
   const [error, setError] = useState("");
+  // Отказ по лимиту (ИИ-03): какой лимит и на каком уровне можно спросить тот же вопрос.
+  const [errorInfo, setErrorInfo] = useState(null);
+  const [notice, setNotice] = useState("");
   const [ratingFor, setRatingFor] = useState(null);
   const [copied, setCopied] = useState(0);
+  // Идущий вопрос: номер запуска на сервере и обрыв потока — для «Остановить».
+  const running = useRef({ runId: null, controller: null, stopped: false });
 
   const reducedMotion = useReducedMotion();
   const feedEnd = useRef(null);
@@ -5518,6 +6594,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   const maySeeSql = Boolean(status?.maySeeSql);
   const requiredUpTo = status?.commentRequiredUpTo ?? 3;
   const identity = identities.find((item) => aiIdentityKey(item) === identityKey) || null;
+  const examples = aiExamplesFor(status, identity);
   const activeDialog = dialogs.find((dialog) => dialog.id === activeId) || null;
 
   useEffect(() => {
@@ -5531,6 +6608,8 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     try {
       const data = await aiSend("/api/ai/dialogs");
       setDialogs(data?.dialogs || []);
+      setFolders(data?.folders || []);
+      setDialogLimits(data?.limits || null);
     } catch (err) {
       setError(err.message || "Не удалось загрузить историю");
     } finally {
@@ -5599,6 +6678,29 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     });
   }
 
+  const refreshLimits = useCallback(async () => {
+    try {
+      const data = await aiSend("/api/ai/limits");
+      if (data) setLimitState(data);
+    } catch {
+      // счётчик обновится со следующим ответом
+    }
+  }, []);
+
+  async function stopAsking() {
+    const current = running.current;
+    if (!pending || current.stopped) return;
+    current.stopped = true;
+    if (current.runId) {
+      try {
+        await aiSend(`/api/ai/runs/${current.runId}/cancel`, { method: "POST" });
+      } catch {
+        // вопрос мог уже закончиться — обрываем поток в любом случае
+      }
+    }
+    current.controller?.abort();
+  }
+
   async function ask(text, overrides = {}) {
     const value = (text ?? question).trim();
     if (!value || pending) return;
@@ -5606,6 +6708,10 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     setLiveStages([]);
     setQuestion("");
     setError("");
+    setErrorInfo(null);
+    setNotice("");
+    const controller = new AbortController();
+    running.current = { runId: null, controller, stopped: false };
     const body = {
       question: value,
       role: identity?.role || undefined,
@@ -5617,7 +6723,11 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     try {
       let data;
       try {
-        data = await aiStream(body, { onStage: pushStage });
+        data = await aiStream(body, {
+          onStage: pushStage,
+          onRun: (runId) => { running.current.runId = runId; },
+          signal: controller.signal,
+        });
       } catch (streamError) {
         // Поток мог не подняться: старый браузер, прокси без потоковой
         // передачи, обрыв до ответа. Обычный запрос всё ещё работает —
@@ -5637,10 +6747,19 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       }]);
       if (data.dialogId && data.dialogId !== activeId) setActiveId(data.dialogId);
       loadDialogs();
+      refreshLimits();
     } catch (err) {
-      setError(err.message || "Не удалось получить ответ");
       setQuestion(value);
+      if (running.current.stopped || err.cancelled || err.name === "AbortError") {
+        // Остановленный вопрос возвращается в поле — его можно поправить и задать снова.
+        setNotice("Вопрос вернулся в поле — его можно поправить и отправить снова.");
+      } else {
+        setError(err.message || "Не удалось получить ответ");
+        if (err.limit) setErrorInfo({ limit: err.limit, suggest: err.suggest || "", action: err.action || "", question: value });
+      }
+      if (err.limit) refreshLimits();
     } finally {
+      running.current = { runId: null, controller: null, stopped: false };
       setPending("");
       setLiveStages([]);
     }
@@ -5664,12 +6783,87 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     }
   }
 
+  // Отказ операции с историей: лимит — плашкой «Лимит» в истории, прочее — ошибкой.
+  function sideFailure(err, fallback) {
+    if (err.status === 409 || err.status === 400) {
+      setSideNotice({ type: err.status === 409 ? "warning" : "error", label: err.status === 409 ? "Лимит" : "Не получилось",
+                      text: err.message || fallback, action: err.action || "" });
+    } else {
+      setError(err.message || fallback);
+    }
+  }
+
   async function pinDialog(id, pinned) {
+    setSideNotice(null);
     try {
       await aiSend(`/api/ai/dialogs/${id}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
       setDialogs((list) => list.map((d) => (d.id === id ? { ...d, pinned: pinned ? 1 : 0 } : d)));
     } catch (err) {
-      setError(err.message || "Не удалось закрепить диалог");
+      sideFailure(err, "Не удалось закрепить диалог");
+    }
+  }
+
+  async function moveDialog(id, folderId) {
+    setSideNotice(null);
+    try {
+      await aiSend(`/api/ai/dialogs/${id}/move`, { method: "POST", body: JSON.stringify({ folderId }) });
+      await loadDialogs();
+    } catch (err) {
+      sideFailure(err, "Не удалось перенести диалог");
+    }
+  }
+
+  async function archiveDialog(id, archived) {
+    setSideNotice(null);
+    try {
+      await aiSend(`/api/ai/dialogs/${id}/archive`, { method: "POST", body: JSON.stringify({ archived }) });
+      await loadDialogs();
+    } catch (err) {
+      sideFailure(err, archived ? "Не удалось перенести в архив" : "Не удалось вернуть из архива");
+    }
+  }
+
+  async function archiveOldest(count = 10) {
+    try {
+      const result = await aiSend("/api/ai/dialogs/archive-oldest", { method: "POST", body: JSON.stringify({ count }) });
+      await loadDialogs();
+      setSideNotice({ type: "success", label: "Готово", text: `В архив перенесено диалогов: ${result?.archived ?? 0}. Они находятся поиском.` });
+      return result?.archived ?? 0;
+    } catch (err) {
+      sideFailure(err, "Не удалось перенести диалоги в архив");
+      return 0;
+    }
+  }
+
+  async function createFolder(title) {
+    setSideNotice(null);
+    try {
+      await aiSend("/api/ai/folders", { method: "POST", body: JSON.stringify({ title }) });
+      await loadDialogs();
+    } catch (err) {
+      sideFailure(err, "Не удалось создать папку");
+    }
+  }
+
+  async function renameFolder(id, title) {
+    const clean = (title || "").trim();
+    if (!clean || clean === folders.find((f) => f.id === id)?.title) return;
+    try {
+      await aiSend(`/api/ai/folders/${id}`, { method: "PATCH", body: JSON.stringify({ title: clean }) });
+      await loadDialogs();
+    } catch (err) {
+      sideFailure(err, "Не удалось переименовать папку");
+    }
+  }
+
+  async function deleteFolder(id, mode) {
+    try {
+      const inside = dialogs.filter((d) => d.folder_id === id).map((d) => d.id);
+      await aiSend(`/api/ai/folders/${id}?dialogs=${mode}`, { method: "DELETE" });
+      if (mode === "delete" && inside.includes(activeId)) { setActiveId(null); setItems([]); }
+      await loadDialogs();
+    } catch (err) {
+      sideFailure(err, "Не удалось удалить папку");
     }
   }
 
@@ -5713,6 +6907,16 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       onRename={renameDialog}
       onPin={pinDialog}
       onDelete={removeDialog}
+      folders={folders}
+      limits={dialogLimits}
+      notice={sideNotice}
+      onNotice={setSideNotice}
+      onMove={moveDialog}
+      onArchive={archiveDialog}
+      onArchiveOldest={archiveOldest}
+      onCreateFolder={createFolder}
+      onRenameFolder={renameFolder}
+      onDeleteFolder={deleteFolder}
       whoLabel={whoLabel}
       whoName={status?.ownName || status?.ownEmail || ""}
       onClose={drawer ? () => onDrawer(false) : undefined}
@@ -5837,7 +7041,8 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                 fallback={<AiMark state="idle" />}
               />
               <div className="ai-welcome-text">
-                <p className="ai-welcome-title">Спросите о ваших объектах</p>
+                <p className="ai-welcome-title">{aiWelcomeTitle(status?.ownName)}</p>
+                <p className="ai-welcome-scope">{aiWelcomeScope(status, identity)}</p>
                 <p className="ai-welcome-sub">
                   Вопрос на русском языке превращается в запрос к витрине. Запрос проверяется перед выполнением,
                   и ответ считается только по вашей области данных.
@@ -5846,7 +7051,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
               <div className="ai-welcome-examples">
                 {/* Три подсказки: четвёртая не помещалась в отведённую высоту
                     и вылезала за нижний контур. */}
-                {AI_EXAMPLES.slice(0, 3).map((example) => (
+                {examples.map((example) => (
                   <button
                     type="button"
                     key={example.ask}
@@ -5871,6 +7076,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                   onRate={setRatingFor}
                   onRepeat={(text) => ask(text)}
                   onDeepen={(text, next) => ask(text, { depth: next })}
+                  deepBlocked={Boolean(depthOptions.find((option) => option.code === "deep")?.disabled)}
                   onCopy={copyAnswer}
                 />
               ))}
@@ -5882,7 +7088,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                   transition={{ duration: 0.22, ease: AI_EASE }}
                 >
                   <div className="ai-ask-row"><p className="ai-question">{pending}</p></div>
-                  <div className="ai-reply"><AiThinking pending stages={liveStages} /></div>
+                  <div className="ai-reply"><AiThinking pending stages={liveStages} onStop={stopAsking} /></div>
                 </motion.article>
               )}
               <div ref={feedEnd} />
@@ -5891,15 +7097,50 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
         </div>
 
         {error && (
-          <div className="ai-error" role="alert">
-            <AlertTriangle size={15} /> {error}
+          <div className="ai-note-slot" role="alert">
+            {errorInfo ? (
+              <Note
+                type="warning"
+                fill
+                label="Лимит"
+                action={errorInfo.action === "archive_oldest" ? (
+                  <NoteAction
+                    onClick={async () => {
+                      const info = errorInfo;
+                      if (await archiveOldest(10)) ask(info.question);
+                    }}
+                  >
+                    Архивировать 10 старых и спросить
+                  </NoteAction>
+                ) : errorInfo.suggest ? (
+                  <NoteAction
+                    onClick={() => {
+                      const info = errorInfo;
+                      setDepth(info.suggest);
+                      ask(info.question, { depth: info.suggest });
+                    }}
+                  >
+                    {`Спросить на «${AI_DEPTH_ON[errorInfo.suggest] || "Среднем"}»`}
+                  </NoteAction>
+                ) : null}
+              >
+                {error}
+              </Note>
+            ) : (
+              <Note type="error" fill label="Ошибка">{error}</Note>
+            )}
+          </div>
+        )}
+        {notice && !error && (
+          <div className="ai-note-slot" role="status">
+            <Note type="secondary" fill label="Остановлено">{notice}</Note>
           </div>
         )}
 
         <div className="ai-composer-wrap">
           {items.length > 0 && !pending && (
             <div className="ai-chips">
-              {AI_EXAMPLES.slice(0, 3).map((example) => (
+              {examples.map((example) => (
                 <button
                   type="button"
                   key={example.ask}
@@ -5911,13 +7152,32 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
               ))}
             </div>
           )}
+          {depth === "deep" && limits.deep && !pending && !errorInfo && (
+            <div className="ai-note-slot">
+              {limits.deep.left > 0 ? (
+                <Note size="small" type="secondary" label="Высокий">
+                  {`осталось ${limits.deep.left} из ${limits.deep.limit} запусков на сегодня`}
+                </Note>
+              ) : (
+                <Note
+                  size="small"
+                  type="warning"
+                  fill
+                  label="Лимит"
+                  action={<NoteAction onClick={() => setDepth("analyze")}>Переключить на «Средний»</NoteAction>}
+                >
+                  {`«Высокий» на сегодня израсходован: ${limits.deep.limit} из ${limits.deep.limit}. Счётчик обнулится в ${limits.resets || "00:00 МСК"}.`}
+                </Note>
+              )}
+            </div>
+          )}
           <div className="ai-composer">
             <label>
               <span className="visually-hidden">Вопрос к витрине данных</span>
               <textarea
                 ref={composer}
                 rows={1}
-                maxLength={AI_QUESTION_MAX}
+                maxLength={questionMax}
                 value={question}
                 placeholder="Спросите о показателях ваших объектов"
                 onChange={(event) => setQuestion(event.target.value)}
@@ -5936,21 +7196,33 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
               />
             </label>
             <AiDepthPicker value={depth} options={depthOptions} onChange={setDepth} disabled={Boolean(pending)} />
-            <button
-              type="button"
-              className="ai-send"
-              onClick={() => ask()}
-              disabled={Boolean(pending) || !question.trim()}
-              aria-label="Отправить вопрос"
-            >
-              <Send size={17} />
-            </button>
+            {pending ? (
+              <button
+                type="button"
+                className="ai-send stop"
+                onClick={stopAsking}
+                aria-label="Остановить ответ"
+                title="Остановить ответ"
+              >
+                <Square size={14} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="ai-send"
+                onClick={() => ask()}
+                disabled={!question.trim()}
+                aria-label="Отправить вопрос"
+              >
+                <Send size={17} />
+              </button>
+            )}
           </div>
           <div className="ai-composer-meta">
             <span className="ai-composer-hint">Enter — отправить, Shift+Enter — перенос строки</span>
-            {question.length >= AI_QUESTION_MAX * 0.8 && (
-              <span className={question.length >= AI_QUESTION_MAX ? "ai-composer-count full" : "ai-composer-count"}>
-                {question.length} / {AI_QUESTION_MAX}
+            {question.length >= questionMax * 0.8 && (
+              <span className={question.length >= questionMax ? "ai-composer-count full" : "ai-composer-count"}>
+                {question.length} / {questionMax}
               </span>
             )}
           </div>
@@ -6751,9 +8023,66 @@ function AnalyticsCompare({ stations, state, compareIds, notice, onAdd, onRemove
   );
 }
 
+// Ключ старых записей: до 24.09.2026 замечания лежали только в браузере (№30).
+const FEEDBACK_LEGACY_KEY = "azs:feedback";
+
+function feedbackClientId(entry) {
+  const text = `${entry?.createdAt || ""}|${entry?.station || ""}|${entry?.message || ""}`;
+  let hash = 5381;
+  for (let index = 0; index < text.length; index += 1) hash = ((hash * 33) ^ text.charCodeAt(index)) >>> 0;
+  return `local-${String(entry?.createdAt || "").slice(0, 24)}-${hash.toString(16)}`;
+}
+
 function ControlDashboard({ stations, onOpenStation }) {
   const [feedback, setFeedback] = useState({ station: "", field: "", message: "" });
-  const [feedbackSent, setFeedbackSent] = useState(false);
+  // idle | sending | sent | error — статус честный: «отправлено» только после ответа сервера.
+  const [feedbackState, setFeedbackState] = useState({ status: "idle", error: "", info: "" });
+
+  // Замечания, сохранённые раньше только в этом браузере, досылаются один раз;
+  // повтор сервер отсекает по clientId. Неотправленные остаются до следующего раза.
+  useEffect(() => {
+    let stored = [];
+    try {
+      stored = JSON.parse(window.localStorage.getItem(FEEDBACK_LEGACY_KEY) || "[]");
+    } catch {
+      return undefined;
+    }
+    if (!Array.isArray(stored) || !stored.length) return undefined;
+    let alive = true;
+    (async () => {
+      const left = [];
+      let sent = 0;
+      for (const entry of stored) {
+        const message = String(entry?.message || "").trim();
+        if (!message) continue;
+        try {
+          await authJson("/api/feedback", {
+            method: "POST",
+            body: JSON.stringify({
+              station: String(entry.station || "").slice(0, 120),
+              field: String(entry.field || "").slice(0, 200),
+              message: message.slice(0, 2000),
+              clientId: feedbackClientId(entry),
+              createdAt: entry.createdAt || null,
+            }),
+          });
+          sent += 1;
+        } catch {
+          left.push(entry);
+        }
+      }
+      try {
+        if (left.length) window.localStorage.setItem(FEEDBACK_LEGACY_KEY, JSON.stringify(left));
+        else window.localStorage.removeItem(FEEDBACK_LEGACY_KEY);
+      } catch {
+        // хранилище недоступно — попробуем в следующий раз
+      }
+      if (alive && sent) {
+        setFeedbackState({ status: "idle", error: "", info: `Досланы замечания, сохранённые раньше только в этом браузере: ${sent}.` });
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
   const issueStations = stations.filter((station) => station.qualityIssues.length > 0);
   const issueCounts = groupTop(
     stations.flatMap((station) => station.qualityIssues).map((issue) => ({ issue })),
@@ -6761,20 +8090,22 @@ function ControlDashboard({ stations, onOpenStation }) {
     8,
   );
 
-  function submitFeedback(event) {
+  async function submitFeedback(event) {
     event.preventDefault();
     const text = feedback.message.trim();
-    if (!text) return;
-    const entry = {
-      ...feedback,
-      message: text,
-      createdAt: new Date().toISOString(),
-    };
-    const current = JSON.parse(localStorage.getItem("azs:feedback") || "[]");
-    localStorage.setItem("azs:feedback", JSON.stringify([entry, ...current].slice(0, 100)));
-    setFeedback({ station: "", field: "", message: "" });
-    setFeedbackSent(true);
-    window.setTimeout(() => setFeedbackSent(false), 2600);
+    if (!text || feedbackState.status === "sending") return;
+    setFeedbackState({ status: "sending", error: "", info: "" });
+    try {
+      await authJson("/api/feedback", {
+        method: "POST",
+        body: JSON.stringify({ station: feedback.station.trim(), field: feedback.field.trim(), message: text }),
+      });
+      setFeedback({ station: "", field: "", message: "" });
+      setFeedbackState({ status: "sent", error: "", info: "" });
+    } catch (error) {
+      const reason = error.status === 401 ? "сессия истекла — войдите снова" : error.message || "сервер не ответил";
+      setFeedbackState({ status: "error", error: `${reason}. Текст остался в форме — отправьте ещё раз.`, info: "" });
+    }
   }
 
   return (
@@ -6807,8 +8138,13 @@ function ControlDashboard({ stations, onOpenStation }) {
 
         <FeedbackCard
           feedback={feedback}
-          sent={feedbackSent}
-          onChange={setFeedback}
+          state={feedbackState}
+          onChange={(update) => {
+            setFeedback(update);
+            if (feedbackState.status === "sent" || feedbackState.status === "error") {
+              setFeedbackState({ status: "idle", error: "", info: "" });
+            }
+          }}
           onSubmit={submitFeedback}
         />
       </div>
@@ -6833,8 +8169,10 @@ function ControlDashboard({ stations, onOpenStation }) {
   );
 }
 
-function FeedbackCard({ feedback, sent, onChange, onSubmit }) {
-  const disabled = !feedback.message.trim();
+function FeedbackCard({ feedback, state, onChange, onSubmit }) {
+  const sending = state.status === "sending";
+  const sent = state.status === "sent";
+  const disabled = !feedback.message.trim() || sending;
   return (
     <form className="analytics-card feedback-card" onSubmit={onSubmit}>
       <div className="feedback-head">
@@ -6875,8 +8213,15 @@ function FeedbackCard({ feedback, sent, onChange, onSubmit }) {
       </label>
       <button type="submit" disabled={disabled}>
         {sent ? <CheckCircle2 size={16} /> : <Send size={16} />}
-        {sent ? "Сохранено локально" : "Отправить замечание"}
+        {sending ? "Отправляю…" : sent ? "Отправлено" : "Отправить замечание"}
       </button>
+      {sent && (
+        <Note size="small" type="success" fill label="Отправлено">
+          Администратор увидит замечание в разделе «Админ» → «Обратная связь».
+        </Note>
+      )}
+      {state.status === "error" && <Note size="small" type="error" fill label="Не отправлено">{state.error}</Note>}
+      {state.info && <Note size="small" type="secondary" label="Готово">{state.info}</Note>}
     </form>
   );
 }
@@ -8359,7 +9704,7 @@ function StationKpis({ ksss }) {
         <>
           <div className="kpi-source">
             {kpiState.data.source === "mock"
-              ? "Демо-данные API до подключения SQL"
+              ? "Тестовые данные — не для решений"
               : kpiState.data.source === "local"
                 ? `Агрегаты DWH · обновлено ${formatMetaDate(kpiState.data)}`
                 : "Данные из БД"}
@@ -8530,7 +9875,7 @@ function StationStaff({ ksss }) {
         <>
           <div className="kpi-source">
             {staffState.data.source === "mock"
-              ? "Демо-рекомендации до подключения SQL"
+              ? "Тестовые рекомендации — не для решений"
               : staffState.data.source === "file"
                 ? "Рекомендации из Excel"
                 : "Данные из БД"}

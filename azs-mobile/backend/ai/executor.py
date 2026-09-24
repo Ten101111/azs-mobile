@@ -28,6 +28,8 @@ REFERENCE_DB = Path(os.environ.get("AI_REFERENCE_DB") or DATA / "ai_reference.sq
 
 BACKEND = (os.environ.get("AI_DB_BACKEND") or "sqlite").strip().lower()
 DEFAULT_TIMEOUT_S = float(os.environ.get("AI_SQL_TIMEOUT", "15"))
+# Потолок строк одного запроса: выше не поднимет ни роль, ни вкладка «Лимиты ИИ» (ИИ-26).
+MAX_ROWS = int(os.environ.get("AI_MAX_ROWS", "10000"))
 
 
 @dataclass
@@ -191,6 +193,7 @@ def run(sql: str, row_limit: int, timeout_s: float = DEFAULT_TIMEOUT_S) -> Resul
             f"Неизвестный исполнитель AI_DB_BACKEND={BACKEND!r}; "
             f"допустимые значения: {', '.join(sorted(RUNNERS))}"
         )
+    row_limit = max(1, min(int(row_limit), MAX_ROWS))
     started = time.monotonic()
     columns, rows = runner(sql, row_limit, timeout_s)
     truncated = len(rows) > row_limit

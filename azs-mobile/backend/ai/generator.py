@@ -12,6 +12,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 from .contract import NARRATION_SYSTEM, narration_prompt, system_prompt, user_prompt
@@ -49,6 +50,20 @@ class Generated:
     elapsed_ms: int
 
 
+# Счётчик вызовов модели и токенов одного ответа (ИИ-03, журнал). Конвейер
+# кладёт сюда словарь на время ответа; вызовы модели идут в том же потоке.
+USAGE: ContextVar[dict | None] = ContextVar("ai_model_usage", default=None)
+
+
+def _count_usage(data: dict) -> None:
+    usage = USAGE.get()
+    if usage is None or not isinstance(data, dict):
+        return
+    usage["calls"] = usage.get("calls", 0) + 1
+    usage["tokens_in"] = usage.get("tokens_in", 0) + int(data.get("prompt_eval_count") or 0)
+    usage["tokens_out"] = usage.get("tokens_out", 0) + int(data.get("eval_count") or 0)
+
+
 def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
     request = urllib.request.Request(
         f"{OLLAMA_HOST}{path}",
@@ -58,7 +73,9 @@ def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout or TIMEOUT_S) as response:
-            return json.loads(response.read().decode("utf-8"))
+            data = json.loads(response.read().decode("utf-8"))
+        _count_usage(data)
+        return data
     except urllib.error.HTTPError as err:
         # Ollama запущена, но не смогла ответить: причина — в теле ответа
         # («не хватает памяти», «модель не найдена», «процесс завершился»).

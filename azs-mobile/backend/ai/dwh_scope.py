@@ -24,7 +24,9 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from .. import roles
 from . import executor
@@ -42,8 +44,34 @@ MANAGER_TABLES = {
 }
 DEFAULT_SCHEMAS = {"l_azs_rm_dt_vers": "bds", "l_azs_tm_dt_vers": "bds"}
 
+# Витрина не ответила (например, выключен VPN) — не повторять попытку при каждом
+# открытии раздела: статус ИИ не должен ждать таймаутов подключения к ОХД.
+FAIL_TTL_SECONDS = float(os.environ.get("AI_SCOPE_FAIL_TTL", "120"))
+
 _cache: dict[tuple[str, str], tuple[float, Scope]] = {}
 _identities_cache: dict[int, tuple[float, list]] = {}
+_identities_failed: dict[int, float] = {}
+_warming: set = set()
+_warm_lock = threading.Lock()
+
+
+def _in_background(key: tuple, fn, *args) -> None:
+    """Прогреть кэш в фоне — один поток на ключ, ответ на запрос не ждёт витрину."""
+    with _warm_lock:
+        if key in _warming:
+            return
+        _warming.add(key)
+
+    def run() -> None:
+        try:
+            fn(*args)
+        except Exception:  # noqa: BLE001 - прогрев не должен ронять процесс
+            pass
+        finally:
+            with _warm_lock:
+                _warming.discard(key)
+
+    threading.Thread(target=run, name="dwh-warm", daemon=True).start()
 
 
 def enabled() -> bool:
@@ -59,6 +87,7 @@ def enabled() -> bool:
 def clear_cache() -> None:
     _cache.clear()
     _identities_cache.clear()
+    _identities_failed.clear()
 
 
 def _literal(value: str) -> str:
@@ -148,16 +177,24 @@ def build(role: str, binding: str = "", catalog: Catalog | None = None) -> Scope
     return scope
 
 
-def identities(limit_per_role: int = 12, catalog: Catalog | None = None) -> list[tuple[str, str, int]]:
+def identities(limit_per_role: int = 12, catalog: Catalog | None = None,
+               wait: bool = True) -> list[tuple[str, str, int]] | None:
     """Самые крупные привязки ОНПО, РУ и ТМ по ОХД — для режима «от имени».
 
     Возвращает (роль, привязка, число объектов). Ошибка витрины — пустой список:
-    выбор «от имени» не должен ронять статус ИИ-раздела.
+    выбор «от имени» не должен ронять статус ИИ-раздела. `wait=False` — только
+    из кэша: если его нет, запрос уходит в фон, а функция сразу возвращает None.
     """
     catalog = catalog or CATALOG
     cached = _identities_cache.get(limit_per_role)
     if cached and time.monotonic() - cached[0] < TTL_SECONDS:
         return cached[1]
+    failed = _identities_failed.get(limit_per_role)
+    if failed and time.monotonic() - failed < FAIL_TTL_SECONDS:
+        return []
+    if not wait:
+        _in_background(("identities", limit_per_role), identities, limit_per_role, catalog)
+        return None
     items: list[tuple[str, str, int]] = []
     queries = []
     facts = catalog.facts_table or "data_for_ai_analytic_part_1"
@@ -175,12 +212,40 @@ def identities(limit_per_role: int = 12, catalog: Catalog | None = None) -> list
                         f"WHERE {column} IS NOT NULL AND CURRENT_DATE >= dt_vers_start "
                         f"AND CURRENT_DATE <= COALESCE(dt_vers_end, DATE '9999-12-31') "
                         f"GROUP BY {column} ORDER BY n DESC LIMIT {int(limit_per_role)}"))
-    for role, sql in queries:
+    def fetch(item: tuple[str, str]) -> list[tuple[str, str, int]]:
+        role, sql = item
         try:
             rows = executor.run(sql, limit_per_role).rows
         except executor.ExecutionError:
-            continue
-        items.extend((role, str(binding), int(count)) for binding, count in rows if binding)
+            return []
+        return [(role, str(binding), int(count)) for binding, count in rows if binding]
+
+    # Три запроса параллельно: при недоступной витрине ждём один таймаут, а не три.
+    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+        for found in pool.map(fetch, queries):
+            items.extend(found)
     if items:
         _identities_cache[limit_per_role] = (time.monotonic(), items)
+        _identities_failed.pop(limit_per_role, None)
+    else:
+        _identities_failed[limit_per_role] = time.monotonic()
     return items
+
+
+def cached_build(role: str, binding: str = "", catalog: Catalog | None = None) -> Scope | None:
+    """Область без похода в ОХД: из кэша; нет в кэше — посчитать в фоне и вернуть None.
+
+    Для статуса раздела (приветствие ИИ-08): экран не должен ждать витрину.
+    """
+    role = (role or "").strip()
+    binding = (binding or "").strip()
+    spec = roles.ROLES.get(role)
+    if not spec:
+        raise ValueError(f"Неизвестная роль: {role!r}")
+    if spec.unrestricted or not binding:
+        return build(role, binding, catalog)
+    cached = _cache.get((role, binding))
+    if cached and time.monotonic() - cached[0] < TTL_SECONDS:
+        return cached[1]
+    _in_background(("scope", role, binding), build, role, binding, catalog)
+    return None

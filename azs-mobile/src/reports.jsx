@@ -121,6 +121,157 @@ function PlanSection({ plan }) {
   );
 }
 
+// Сервис (СП-07, 24.09.2026): оценки клиентов в приложении, негатив, жалобы ЕГЛ.
+// Цели уровня сервиса в витрине нет — ни цели, ни статуса «выполнен» не показываем.
+const SERVICE_LOWER_BETTER = new Set(["negative", "negativeShare", "complaints", "quality"]);
+const SERVICE_NOTE =
+  "Средняя оценка — по всем оценкам клиентов в приложении, без правил методики, поэтому это не официальный уровень сервиса; цели в витрине нет. Значения — по всей сети, изменения — по сопоставимой базе. Качество сервиса — негатив и жалобы ЕГЛ на 100 тыс. чеков, меньше — лучше.";
+
+function signed(value, decimals = 0) {
+  if (value === null || value === undefined) return "—";
+  return `${value > 0 ? "+" : ""}${num(value, decimals)}`;
+}
+
+// Изменение по виду: abs — разность («+3», «−0,004»), pp — п. п., pct — %. Цвет — «лучше/хуже».
+function ServiceDelta({ value, kind, decimals, lowerBetter = false }) {
+  if (value === null || value === undefined) return <span className="report-delta flat">—</span>;
+  const text = kind === "abs" ? signed(value, decimals)
+    : kind === "pp" ? `${signed(value, decimals)}${NBSP}п.${NBSP}п.` : delta(value);
+  const good = value === 0 ? "flat" : (value > 0) !== lowerBetter ? "up" : "down";
+  return <span className={`report-delta ${good}`}>{text}</span>;
+}
+
+function serviceMonthLine(month) {
+  const head = month.closed ? `Итоги ${month.labelGen}` : `С начала ${month.labelGen} (по ${shortDate(month.to)})`;
+  const parts = [`средняя оценка ${num(month.avg, 3)}`, `оценок ${num(month.ratings)}`, `негативных ${num(month.negative)}`];
+  if (month.complaints !== null && month.complaints !== undefined) parts.push(`жалоб ЕГЛ ${num(month.complaints)}`);
+  if (month.quality !== null && month.quality !== undefined) parts.push(`качество сервиса ${num(month.quality, 2)}`);
+  return `${head}: ${parts.join(", ")}.`;
+}
+
+function ServiceSection({ service }) {
+  if (!service?.metrics?.length) return null;
+  return (
+    <Section title="Сервис: оценки в приложении и жалобы" note={SERVICE_NOTE}>
+      <div className="report-table-wrap">
+        <table className="report-table report-metrics">
+          <thead>
+            <tr>
+              <th>Показатель</th>
+              <th className="num">Неделя</th>
+              <th className="num opt">Прошлая неделя</th>
+              <th className="num">Δ н/н</th>
+              <th className="num opt">Прошлый год</th>
+              <th className="num">Δ г/г</th>
+            </tr>
+          </thead>
+          <tbody>
+            {service.metrics.map((m) => {
+              const lower = SERVICE_LOWER_BETTER.has(m.code);
+              return (
+                <tr key={m.code}>
+                  <td>{m.title}{m.unit ? `, ${unit(m.unit)}` : ""}</td>
+                  <td className="num strong">{num(m.value, m.decimals)}</td>
+                  <td className="num opt">{num(m.prev, m.decimals)}</td>
+                  <td className="num" data-label="н/н">
+                    <ServiceDelta value={m.deltaPrev} kind={m.deltaKind} decimals={m.decimals} lowerBetter={lower} />
+                  </td>
+                  <td className="num opt">{num(m.lastYear, m.decimals)}</td>
+                  <td className="num" data-label="г/г">
+                    <ServiceDelta value={m.deltaYear} kind={m.deltaKind} decimals={m.decimals} lowerBetter={lower} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {(service.months || []).map((month) => <p className="report-text" key={month.month}>{serviceMonthLine(month)}</p>)}
+      {service.categories?.length > 0 && (
+        <>
+          <h4 className="report-subtitle">Негатив по категориям</h4>
+          <div className="report-table-wrap">
+            <table className="report-table">
+              <thead>
+                <tr><th>Категория</th><th className="num">Неделя</th><th className="num">Прошлая неделя</th></tr>
+              </thead>
+              <tbody>
+                {service.categories.map((c) => (
+                  <tr key={c.code}><td>{c.title}</td><td className="num strong">{num(c.week)}</td><td className="num">{num(c.prev)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      {service.onpo?.length > 0 && (
+        <>
+          <h4 className="report-subtitle">ОНПО: слабые оценки — сверху</h4>
+          <div className="report-table-wrap">
+            <table className="report-table">
+              <thead>
+                <tr>
+                  <th>ОНПО</th>
+                  <th className="num opt">АЗС с оценками</th>
+                  <th className="num">Средняя оценка</th>
+                  <th className="num">Δ н/н</th>
+                  <th className="num">Негатив</th>
+                  <th className="num opt">Жалоб ЕГЛ</th>
+                  <th className="num opt">Качество сервиса</th>
+                </tr>
+              </thead>
+              <tbody>
+                {service.onpo.map((o) => (
+                  <tr key={o.name}>
+                    <td>{o.name}</td>
+                    <td className="num opt">{num(o.stations)}</td>
+                    <td className="num strong">{num(o.avg, 3)}</td>
+                    <td className="num"><ServiceDelta value={o.avgDeltaPrev} kind="abs" decimals={3} /></td>
+                    <td className="num">{num(o.negative)}</td>
+                    <td className="num opt">{num(o.complaints)}</td>
+                    <td className="num opt">{num(o.quality, 2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Section>
+  );
+}
+
+function NegativeTable({ rows }) {
+  return (
+    <div className="report-table-wrap">
+      <table className="report-table">
+        <thead>
+          <tr>
+            <th>Объект</th>
+            <th className="opt">Регион</th>
+            <th>ОНПО</th>
+            <th className="num">Негативных</th>
+            <th className="num opt">Средняя</th>
+            <th className="opt">Главная категория</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td>{r.label}</td>
+              <td className="opt">{r.region}</td>
+              <td>{r.onpo}</td>
+              <td className="num strong">{num(r.negative)}</td>
+              <td className="num opt">{num(r.avg, 3)}</td>
+              <td className="opt">{r.category || "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function Recommendations({ items }) {
   return (
     <ul className="report-recs">
@@ -318,6 +469,15 @@ function Attention({ attention, thresholds, fuelUnit }) {
         <span>{attention.noSales.length ? `${attention.noSales.length}` : "нет"}</span>
       </h4>
       {attention.noSales.length > 0 && <StationTable rows={attention.noSales} fuelUnit={fuelUnit} idle />}
+      {attention.negativeTotal !== undefined && (
+        <>
+          <h4 className="report-subtitle">
+            {num(thresholds?.negativeMin ?? 2)} и больше негативных оценок в приложении за неделю
+            <span>{attention.negativeTotal ? `всего ${attention.negativeTotal}, показаны ${attention.negative.length} с наибольшим числом` : "нет"}</span>
+          </h4>
+          {attention.negative.length > 0 && <NegativeTable rows={attention.negative} />}
+        </>
+      )}
       {attention.leaders.length > 0 && (
         <>
           <h4 className="report-subtitle">Лидеры роста топлива к прошлой неделе</h4>
@@ -380,6 +540,8 @@ function IssueView({ issue, isCurrent, onDownload }) {
 
       <PlanSection plan={model.plan} />
 
+      <ServiceSection service={model.service} />
+
       {charts.length > 0 && (
         <Section title="Динамика 8 недель" note="Подпись — понедельник недели. Прошлый год — те же недели со сдвигом на 364 дня.">
           <div className="report-charts">
@@ -400,7 +562,7 @@ function IssueView({ issue, isCurrent, onDownload }) {
         </Section>
       )}
 
-      <Section title="Зоны внимания" note="Только объекты с данными за все 7 дней в обеих неделях; объекты с малой базой не ранжируются.">
+      <Section title="Зоны внимания" note="Падения и дни без продаж — только объекты с данными за все 7 дней в обеих неделях; объекты с малой базой не ранжируются. Негатив — оценки «1» и «2» в приложении за неделю.">
         <Attention attention={model.attention} thresholds={passport.thresholds} fuelUnit={model.fuelUnit} />
       </Section>
 

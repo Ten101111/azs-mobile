@@ -225,6 +225,10 @@ def render(model: dict, path: Path) -> Path:
     for month in plan_months(model):
         story.append(KeepTogether(_plan_block(month, model.get("plan") or {}, width, st)))
 
+    # 3б. Сервис (СП-07): оценки в приложении, негатив, жалобы ЕГЛ, качество сервиса
+    if model.get("service"):
+        story.extend(_service_block(model["service"], width, st))
+
     # 4. Динамика 8 недель
     charts = model["dynamics"]["charts"]
     if charts:
@@ -277,6 +281,22 @@ def render(model: dict, path: Path) -> Path:
             f"Действующие объекты без продаж {fmt.days(th['noSalesDays'])} и больше за неделю — {len(att['noSales'])}",
             st["small"]), _table(rows, [width * 0.16, width * 0.26, width * 0.14, width * 0.44], st, numeric_from=3)]))
     story.append(Spacer(1, 4))
+    if "negativeTotal" in att:
+        least = fmt.number(th.get("negativeMin", 2))
+        if att["negative"]:
+            rows = [["Объект", "Регион", "ОНПО", "Главная категория", "Негативных", "Оценок", "Средняя"]]
+            for r in att["negative"]:
+                rows.append([r["label"], r["region"], r["onpo"], r["category"] or "—",
+                             _num_cell(fmt.number(r["negative"]), st), _num_cell(fmt.number(r["ratings"]), st),
+                             _num_cell(fmt.number(r["avg"], 3), st)])
+            story.append(KeepTogether([Paragraph(
+                f"{least} и больше негативных оценок («1» и «2») в приложении за неделю — всего {att['negativeTotal']}, "
+                f"показаны {len(att['negative'])} с наибольшим числом", st["small"]),
+                _table(rows, [width * 0.13, width * 0.19, width * 0.12, width * 0.23, width * 0.11, width * 0.10,
+                              width * 0.12], st, numeric_from=4)]))
+        else:
+            story.append(Paragraph(f"Объектов с {least} и больше негативными оценками в приложении нет.", st["body"]))
+        story.append(Spacer(1, 4))
     if att["leaders"]:
         rows = [["Объект", "Регион", "ОНПО", f"Топливо, {unit}", "Прошлая неделя", "Δ н/н"]]
         for r in att["leaders"]:
@@ -310,6 +330,54 @@ def render(model: dict, path: Path) -> Path:
 
     doc.build(story, onFirstPage=_header_footer(model), onLaterPages=_header_footer(model))
     return path
+
+
+SERVICE_TITLE = "Сервис: оценки в приложении и жалобы"
+SERVICE_NOTE = ("Средняя оценка — по всем оценкам клиентов в приложении, без правил методики, поэтому это не "
+                "официальный уровень сервиса; цели в витрине нет. Значения — по всей сети, изменения — по "
+                "сопоставимой базе. Качество сервиса — негатив и жалобы ЕГЛ на 100 тыс. чеков, меньше — лучше.")
+
+
+def service_title(metric: dict) -> str:
+    return metric["title"] + (f", {fmt.unit(metric['unit'])}" if metric["unit"] else "")
+
+
+def service_month_line(month: dict) -> str:
+    """Итог сервиса с начала месяца — общий для PDF и Excel."""
+    head = f"Итоги {month['labelGen']}" if month["closed"] else f"С начала {month['labelGen']} (по {_date(month['to'])})"
+    parts = [f"средняя оценка {fmt.number(month['avg'], 3)}", f"оценок {fmt.number(month['ratings'])}",
+             f"негативных {fmt.number(month['negative'])}"]
+    if month.get("complaints") is not None:
+        parts.append(f"жалоб ЕГЛ {fmt.number(month['complaints'])}")
+    if month.get("quality") is not None:
+        parts.append(f"качество сервиса {fmt.number(month['quality'], 2)}")
+    return f"{head}: {', '.join(parts)}."
+
+
+def _service_block(service: dict, width: float, st) -> list:
+    rows = [["Показатель", "Неделя", "Прошлая неделя", "Δ н/н", "Прошлый год", "Δ г/г"]]
+    for m in service["metrics"]:
+        rows.append([service_title(m), _num_cell(fmt.number(m["value"], m["decimals"]), st),
+                     _num_cell(fmt.number(m["prev"], m["decimals"]), st),
+                     _num_cell(fmt.change(m["deltaPrev"], m["deltaKind"], m["decimals"]), st),
+                     _num_cell(fmt.number(m["lastYear"], m["decimals"]), st),
+                     _num_cell(fmt.change(m["deltaYear"], m["deltaKind"], m["decimals"]), st)])
+    out = [KeepTogether([_h(SERVICE_TITLE, st), _table(rows, [width * 0.30] + [width * 0.14] * 5, st)] +
+                        [Paragraph(escape(service_month_line(month)), st["body"]) for month in service.get("months", [])])]
+    if service.get("categories"):
+        rows = [["Негатив по категориям", "Неделя", "Прошлая неделя"]]
+        rows += [[c["title"], _num_cell(fmt.number(c["week"]), st), _num_cell(fmt.number(c["prev"]), st)]
+                 for c in service["categories"]]
+        out.append(KeepTogether([Spacer(1, 4), _table(rows, [width * 0.5, width * 0.25, width * 0.25], st)]))
+    if service.get("onpo"):
+        rows = [["ОНПО", "АЗС с оценками", "Средняя оценка", "Δ н/н", "Негативных", "Жалоб ЕГЛ", "Качество сервиса"]]
+        for o in service["onpo"]:
+            rows.append([o["name"], _num_cell(fmt.number(o["stations"]), st), _num_cell(fmt.number(o["avg"], 3), st),
+                         _num_cell(fmt.signed(o.get("avgDeltaPrev"), 3), st), _num_cell(fmt.number(o["negative"]), st),
+                         _num_cell(fmt.number(o.get("complaints")), st), _num_cell(fmt.number(o.get("quality"), 2), st)])
+        out.append(KeepTogether([Spacer(1, 4), _table(rows, [width * 0.2] + [width * 0.8 / 6] * 6, st)]))
+    out.append(Paragraph(escape(SERVICE_NOTE), st["small"]))
+    return out
 
 
 def plan_months(model: dict) -> list[dict]:

@@ -9,7 +9,8 @@ from openpyxl.utils import get_column_letter
 
 from . import fmt
 from . import narrative
-from .render_pdf import passport_lines, plan_caption, plan_months, version_label
+from .render_pdf import (SERVICE_NOTE, passport_lines, plan_caption, plan_months, service_month_line, service_title,
+                         version_label)
 
 RED = "E31E24"
 HEAD_FONT = Font(bold=True, color="FFFFFF")
@@ -127,6 +128,45 @@ def render(model: dict, path: Path) -> Path:
             ws.column_dimensions[get_column_letter(col)].width = width
         ws.freeze_panes = "A2"
 
+    service = model.get("service")
+    if service:
+        ws = wb.create_sheet("Сервис")
+        ws.append(["Показатель", "Неделя", "Прошлая неделя", "Δ н/н", "Прошлый год", "Δ г/г", "Изменение"])
+        for cell in ws[1]:
+            cell.font, cell.fill = HEAD_FONT, HEAD_FILL
+            cell.alignment = Alignment(wrap_text=True, vertical="center")
+        kinds = {"abs": "разность", "pct": "%", "pp": "п. п."}
+        for m in service["metrics"]:
+            ws.append([service_title(m), m["value"], m["prev"], m["deltaPrev"], m["lastYear"], m["deltaYear"],
+                       kinds.get(m["deltaKind"], "")])
+            for col in (2, 3, 4, 5, 6):
+                ws.cell(ws.max_row, col).number_format = _fmt(m["decimals"]) if m["decimals"] <= 2 else "0.000"
+        for month in service.get("months", []):
+            ws.append([])
+            ws.append([service_month_line(month)])
+        if service.get("categories"):
+            ws.append([])
+            ws.append(["Негатив по категориям", "Неделя", "Прошлая неделя"])
+            ws.cell(ws.max_row, 1).font = Font(bold=True)
+            for c in service["categories"]:
+                ws.append([c["title"], c["week"], c["prev"]])
+        if service.get("onpo"):
+            ws.append([])
+            ws.append(["ОНПО", "АЗС с оценками", "Средняя оценка", "Δ н/н", "Негативных", "Жалоб ЕГЛ",
+                       "Качество сервиса, на 100 тыс. чеков"])
+            ws.cell(ws.max_row, 1).font = Font(bold=True)
+            for o in service["onpo"]:
+                ws.append([o["name"], o["stations"], o["avg"], o.get("avgDeltaPrev"), o["negative"], o.get("complaints"),
+                           o.get("quality")])
+                ws.cell(ws.max_row, 3).number_format = "0.000"
+                ws.cell(ws.max_row, 4).number_format = "+0.000;-0.000;0.000"
+                ws.cell(ws.max_row, 7).number_format = DEC2
+        ws.append([])
+        ws.append([SERVICE_NOTE])
+        for col, width in enumerate([40, 16, 16, 14, 16, 14, 14], start=1):
+            ws.column_dimensions[get_column_letter(col)].width = width
+        ws.freeze_panes = "A2"
+
     unit = fmt.unit(model["fuelUnit"])
     rows = [[r["name"], r.get("stations"), r.get("fuel"), r.get("fuelDeltaPrev"), r.get("fuelDeltaYear"),
              r.get("ntu"), r.get("ntuDeltaPrev"), r.get("ntuDeltaYear"), r.get("conversion")]
@@ -142,9 +182,14 @@ def render(model: dict, path: Path) -> Path:
     rows += [["Без продаж", r["label"], r["region"], r["onpo"], None, None, None, r["idleDays"]] for r in att["noSales"]]
     rows += [["Лидер роста", r["label"], r["region"], r["onpo"], r["fuel"], r["fuelPrev"], r["delta"], None]
              for r in att["leaders"]]
+    rows = [r + [None, None, None] for r in rows]
+    rows += [["Негатив в приложении", r["label"], r["region"], r["onpo"], None, None, None, None, r["negative"],
+              r["avg"], r["category"]] for r in att.get("negative", [])]
     _sheet(wb, "Зоны внимания", ["Зона", "Объект", "Регион", "ОНПО", f"Топливо, {unit}",
-                                 f"Прошлая неделя, {unit}", "Δ н/н, %", "Дней без продаж"],
-           rows, [None, None, None, None, INT, INT, DELTA, INT], [16, 14, 28, 16, 16, 18, 10, 14])
+                                 f"Прошлая неделя, {unit}", "Δ н/н, %", "Дней без продаж",
+                                 "Негативных оценок", "Средняя оценка", "Главная категория негатива"],
+           rows, [None, None, None, None, INT, INT, DELTA, INT, INT, "0.000", None],
+           [20, 14, 28, 16, 16, 18, 10, 14, 14, 14, 28])
 
     charts = model["dynamics"]["charts"]
     if charts:

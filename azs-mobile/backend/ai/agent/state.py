@@ -45,7 +45,12 @@ class Budget:
     def for_depth(cls, depth: str, limits=None) -> "Budget":
         """Бюджет глубины; `limits` (backend/ai/limits.py) заменяет пределы роли, например администратора."""
         base = cls._standard(depth)
-        if limits is None or not getattr(limits, "unlimited", False):
+        if limits is None:
+            return base
+        if not getattr(limits, "unlimited", False):
+            # Роль задаёт только строки уровня (ИИ-03); число шагов — общее для всех.
+            if getattr(limits, "agent_rows", None):
+                base.row_limit = int(limits.agent_rows)
             return base
         return cls(
             depth=base.depth,
@@ -303,6 +308,9 @@ class AgentOutcome:
     rule: str | None = None
     grounding: dict = field(default_factory=dict)
     frame: dict = field(default_factory=dict)
+    # Для журнала (ИИ-03): почему закончился сбор данных и сколько было вызовов инструментов.
+    stop_reason: str = ""
+    tool_calls: int = 0
 
     @property
     def main_result(self) -> ResultSet | None:

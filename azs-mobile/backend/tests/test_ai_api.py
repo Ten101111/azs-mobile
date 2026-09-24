@@ -67,8 +67,15 @@ class AiApiTests(unittest.TestCase):
         self.assertFalse(data["maySeeSql"])
         self.assertEqual(data["commentRequiredUpTo"], store.COMMENT_REQUIRED_UPTO)
         self.assertEqual(data["ownScopeLabel"], "территория 58 · 18 АЗС")
+        self.assertIsInstance(data["ownStations"], int)
+        self.assertFalse(data["ownUnrestricted"])
         self.current = _User(9, "admin", is_admin=True)
-        self.assertTrue(self.client.get("/api/ai/status").json()["maySeeSql"])
+        admin = self.client.get("/api/ai/status").json()
+        self.assertTrue(admin["maySeeSql"])
+        self.assertTrue(admin["ownUnrestricted"])  # приветствие ИИ-08: «по всей сети»
+        self.assertEqual(admin["examples"][0]["hint"], "План НТУ по обществам")
+        self.assertEqual(data["examples"][0]["hint"], "Выручка НТУ за месяц")  # роль без набора — «мои АЗС»
+        self.assertEqual(data["examplesByRole"], {})  # примеры других ролей — только тому, кто спрашивает «от имени»
 
     def test_feedback_rejects_low_rating_without_a_reason(self):
         bad = self.client.post("/api/ai/feedback",

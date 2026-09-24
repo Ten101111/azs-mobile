@@ -38,6 +38,7 @@ STAGES = {
     "check": ("Проверяю допустимость", "Проверил допустимость"),
     "read": ("Читаю витрину", "Прочитал витрину"),
     "write": ("Формулирую ответ", "Сформулировал ответ"),
+    "queue": ("Жду очереди", "Дождался очереди"),
 }
 
 # Названия уровней для людей (ИИ-20, 23.09.2026). Коды в API и журнале
@@ -109,29 +110,57 @@ class Answer:
     plan: dict | None = None
     grounding: dict | None = None
     plan_ms: int = 0
+    # Для журнала (ИИ-03): причина остановки, вызовы инструментов, токены модели.
+    stop_reason: str = ""
+    tool_calls: int = 0
+    model_calls: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
 
 
 def ask(question: str, role: str, binding: str | None, actor: str | None = None,
         model: str | None = None,
         on_stage: Callable[[dict], None] | None = None,
-        depth: str = "auto", history: list[dict] | None = None) -> Answer:
-    """Ответ на вопрос с полным временем ожидания — для ориентира на уровнях."""
+        depth: str = "auto", history: list[dict] | None = None, control=None) -> Answer:
+    """Ответ на вопрос с полным временем ожидания — для ориентира на уровнях.
+
+    `control` — запуск из backend/ai/quotas.py: отмена человеком и место в
+    очереди «Высокого»; без него (тесты, скрипты) лимитов очереди нет.
+    """
     started = time.monotonic()
     requested = (depth or "auto").strip().lower()
-    answer = _ask(question, role, binding, actor, model, on_stage, depth, history)
+    usage = {"calls": 0, "tokens_in": 0, "tokens_out": 0}
+    token = generator.USAGE.set(usage)
+    try:
+        answer = _ask(question, role, binding, actor, model, on_stage, depth, history, control)
+    finally:
+        generator.USAGE.reset(token)
     answer.depth_requested = requested if requested in DEPTHS else "auto"
     answer.total_ms = int((time.monotonic() - started) * 1000)
+    answer.model_calls = usage["calls"]
+    answer.tokens_in = usage["tokens_in"]
+    answer.tokens_out = usage["tokens_out"]
     try:
-        journal.set_total_ms(answer.journal_id, answer.total_ms)
+        journal.set_run_stats(
+            answer.journal_id, total_ms=answer.total_ms, tokens_in=answer.tokens_in,
+            tokens_out=answer.tokens_out, model_calls=answer.model_calls, tool_calls=answer.tool_calls,
+            stop_reason=answer.stop_reason or None, depth_requested=answer.depth_requested,
+            truncated=1 if answer.truncated else 0,
+        )
     except Exception:  # noqa: BLE001 - журнал не должен ронять ответ
         pass
     return answer
 
 
+def _cancelled(question: str, scope: Scope, depth: str) -> Answer:
+    return Answer(ok=False, question=question, scope_label=scope.label, error="Запрос остановлен",
+                  rule="cancelled", depth=depth, stop_reason="cancelled")
+
+
 def _ask(question: str, role: str, binding: str | None, actor: str | None = None,
          model: str | None = None,
          on_stage: Callable[[dict], None] | None = None,
-         depth: str = "auto", history: list[dict] | None = None) -> Answer:
+         depth: str = "auto", history: list[dict] | None = None, control=None) -> Answer:
     question = (question or "").strip()
     if not question:
         return Answer(ok=False, question="", scope_label="", error="Пустой вопрос")
@@ -151,7 +180,8 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
 
     if not AGENT_ENABLED or (depth == "fast" and not history):
         return _ask_fast(question, question, scope, role, binding, actor, model, on_stage,
-                         context=context, person_note=person_note, limits=limits)
+                         context=context, person_note=person_note,
+                         limits=ai_limits.for_run(role, "fast"), control=control)
 
     # Разбор задачи: эвристика для очевидных фактов, иначе одна подсказка модели.
     from .agent import loop as agent_loop, schema_tools, tools as agent_tools
@@ -185,30 +215,69 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
                  f"уровень «{DEPTH_TITLES.get(plan.depth, plan.depth)}»")
     _notify(on_stage, "plan", "done", ms=plan.elapsed_ms or None, note=plan_note, kind="plan")
 
+    if control is not None and control.cancelled():
+        answer = _cancelled(question, scope, plan.depth)
+        _log(answer, scope, role, binding, actor, "cancelled")
+        return answer
+
     if plan.depth == "fast":
         answer = _ask_fast(question, plan.standalone_question or question, scope, role, binding,
                            actor, model, on_stage, plan_ms=plan.elapsed_ms,
-                           context=context, person_note=person_note, limits=limits)
+                           context=context, person_note=person_note,
+                           limits=ai_limits.for_run(role, "fast"), control=control)
         answer.plan = plan.as_dict()
         answer.frame.update({"standalone": plan.standalone_question or question,
                              "taskType": plan.task_type, "metrics": plan.metrics,
                              "period": plan.period, "filters": plan.filters})
         return answer
 
-    outcome = agent_loop.run(
-        question, scope, plan=plan, history=history, model=chat, on_stage=on_stage,
-        generate_sql=lambda q: generator.generate(q, None, model, context=context, **_timeout(limits)).sql,
-        run_query=((lambda sql, n: executor.run(sql, n, timeout_s=limits.sql_timeout_s))
-                   if limits.sql_timeout_s else None),
-        scope_label=scope.label, today=today, data_range=data_range, hits=hits, limits=limits,
-    )
+    # «Высокий» — тяжёлая задача (ИИ-03): квота на день и общая очередь сервера.
+    level_note = ""
+    entered = False
+    if plan.depth == "deep" and control is not None:
+        waited = {"yes": False}
+
+        def on_position(place: int) -> None:
+            waited["yes"] = True
+            _notify(on_stage, "queue", "active", kind="queue",
+                    note=f"В очереди сложных вопросов: вы {place}-й")
+
+        granted, level_note = control.enter_deep(on_position)
+        if granted == "cancelled":
+            _notify(on_stage, "queue", "failed", kind="queue", note="Запрос остановлен")
+            answer = _cancelled(question, scope, plan.depth)
+            _log(answer, scope, role, binding, actor, "cancelled")
+            return answer
+        entered = granted == "deep"
+        if waited["yes"]:
+            _notify(on_stage, "queue", "done", kind="queue",
+                    note="Дождался очереди" if entered else "Очередь не дошла — отвечаю на «Среднем»")
+        if not entered:
+            plan.depth = "analyze"
+            _notify(on_stage, "plan", "done", kind="plan", note=level_note)
+
+    run_limits = ai_limits.for_run(role, plan.depth)
+    try:
+        outcome = agent_loop.run(
+            question, scope, plan=plan, history=history, model=chat, on_stage=on_stage,
+            generate_sql=lambda q: generator.generate(q, None, model, context=context, **_timeout(run_limits)).sql,
+            run_query=((lambda sql, n: executor.run(sql, n, timeout_s=run_limits.sql_timeout_s))
+                       if run_limits.sql_timeout_s else None),
+            scope_label=scope.label, today=today, data_range=data_range, hits=hits, limits=run_limits,
+            should_stop=control.cancelled if control is not None else None,
+        )
+    finally:
+        if entered:
+            control.leave_deep()
     answer = _from_outcome(question, scope, outcome, plan)
-    if person_note:
-        answer.notes = [person_note] + list(answer.notes)
+    front = [note for note in (person_note, level_note) if note]
+    if front:
+        answer.notes = front + list(answer.notes)
         if answer.analysis is not None:
-            limits = list(answer.analysis.get("limitations") or [])
-            answer.analysis["limitations"] = [person_note] + limits
-    _log(answer, scope, role, binding, actor, "ok" if answer.ok else (answer.rule or "agent_failed"))
+            existing = list(answer.analysis.get("limitations") or [])
+            answer.analysis["limitations"] = front + existing
+    verdict = "ok" if answer.ok else ("cancelled" if answer.rule == "cancelled" else (answer.rule or "agent_failed"))
+    _log(answer, scope, role, binding, actor, verdict)
     return answer
 
 
@@ -217,13 +286,22 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
 def _ask_fast(question: str, model_question: str, scope: Scope, role: str, binding: str | None,
               actor: str | None, model: str | None, on_stage: Callable[[dict], None] | None,
               plan_ms: int = 0, context: str = "", person_note: str = "",
-              limits: ai_limits.Limits = ai_limits.STANDARD) -> Answer:
+              limits: ai_limits.Limits = ai_limits.STANDARD, control=None) -> Answer:
     answer = Answer(ok=False, question=question, scope_label=scope.label, plan_ms=plan_ms)
+    started = time.monotonic()
 
     feedback: str | None = None
     last_rejection: Rejected | None = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        if control is not None and control.cancelled():
+            answer = _cancelled(question, scope, "fast")
+            _log(answer, scope, role, binding, actor, "cancelled")
+            return answer
+        # Предел времени «Лёгкого» (ИИ-03): повторную попытку не начинаем, если он вышел.
+        if attempt > 1 and limits.max_seconds and time.monotonic() - started > limits.max_seconds:
+            answer.stop_reason = "лимит времени"
+            break
         answer.attempts = attempt
         _notify(on_stage, "draft", "active",
                 note="Составляю запрос заново по замечанию проверки" if attempt > 1 else None)
@@ -270,6 +348,8 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
             return answer
 
         answer.ok = True
+        answer.tool_calls = 1
+        answer.stop_reason = "finish"
         answer.sql = checked.sql
         answer.notes = ([person_note] if person_note else []) + list(checked.notes)
         # Заголовки по-русски, даже если модель не дала колонкам псевдонимы.
@@ -305,6 +385,11 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
     if last_rejection is not None:
         answer.error = last_rejection.message
         answer.rule = last_rejection.rule
+    if answer.stop_reason == "лимит времени":
+        seconds = int(limits.max_seconds or 0)
+        answer.notes = list(answer.notes) + [
+            f"Повторная попытка не запускалась: лимит времени уровня «Лёгкий» — {seconds} с. "
+            "Задайте вопрос на уровне «Средний»."]
     _log(answer, scope, role, binding, actor, "rejected")
     return answer
 
@@ -346,6 +431,8 @@ def _from_outcome(question: str, scope: Scope, outcome, plan) -> Answer:
         analysis=analysis.as_dict(), grounding=outcome.grounding, frame=dict(outcome.frame),
     )
     answer.summary = analysis.text()
+    answer.stop_reason = getattr(outcome, "stop_reason", "") or ""
+    answer.tool_calls = int(getattr(outcome, "tool_calls", 0) or 0)
     workspace = outcome.workspace
     answer.charts = list(workspace.charts)
     answer.steps = [step.public(with_code=True) for step in workspace.steps]

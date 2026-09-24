@@ -19,18 +19,36 @@ def unit(code: str) -> str:
 def value(value, unit_code: str, decimals: int = 0) -> str:
     if value is None:
         return "—"
+    if not unit_code:  # средняя оценка, качество сервиса — единица в названии показателя
+        return number(value, decimals)
     if unit_code == "%":
         return f"{number(value, decimals)}{NBSP}%"
     return f"{number(value, decimals)}{NBSP}{unit(unit_code)}"
 
 
-def delta(value, share: bool = False) -> str:
+def delta(value, share: bool = False, decimals: int = 1) -> str:
     """Изменение со знаком: «+3,1 %», «−0,4 п. п.»; нет данных — «—»."""
     if value is None:
         return "—"
     sign = "+" if value > 0 else ""
     suffix = f"{NBSP}п.{NBSP}п." if share else f"{NBSP}%"
-    return f"{sign}{number(value, 1)}{suffix}"
+    return f"{sign}{number(value, decimals)}{suffix}"
+
+
+def signed(value, decimals: int = 0) -> str:
+    """Разность со знаком без единицы: «+3», «−0,012»; нет данных — «—»."""
+    if value is None:
+        return "—"
+    return f"{'+' if value > 0 else ''}{number(value, decimals)}"
+
+
+def change(value, kind: str, decimals: int = 1) -> str:
+    """Изменение по виду: pct — «+3,1 %», pp — «+0,12 п. п.», abs — «−0,004»."""
+    if kind == "pp":
+        return delta(value, share=True, decimals=decimals)
+    if kind == "abs":
+        return signed(value, decimals)
+    return delta(value)
 
 
 def compact(value, unit_code: str) -> str:

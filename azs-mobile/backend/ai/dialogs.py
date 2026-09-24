@@ -8,6 +8,12 @@
 Владение проверяется в каждой операции: диалог виден только своему автору,
 включая администратора. Это модель приватности ИБ-4 — администратор работает
 с метаданными и оценками, а не с чужой перепиской.
+
+Папки и архив (ИИ-10, решение Р-6 — только личные папки): диалог лежит в папке
+(folder_id) или «без папки», архивный (archived_at) скрыт из списка, находится
+поиском и восстанавливается. Лимиты числа активных и закреплённых диалогов и
+папок — по роли (ИИ-02, quotas.py); при превышении — понятный отказ, без
+молчаливого удаления. Срок хранения истории — backend/ai/retention.py.
 """
 from __future__ import annotations
 
@@ -15,6 +21,7 @@ import json
 import sqlite3
 import time
 
+from . import quotas
 from .journal import DDL as JOURNAL_DDL, JOURNAL_DB
 
 MIN_RATING = 1
@@ -58,7 +65,35 @@ CREATE TABLE IF NOT EXISTS ai_feedback (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_feedback_rating ON ai_feedback(rating, created_at);
+
+-- ИИ-12: каждая выгрузка таблицы или графика из ответа (кто, какой ответ, что и в каком формате).
+CREATE TABLE IF NOT EXISTS ai_exports (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    journal_id INTEGER,
+    part       TEXT    NOT NULL,
+    format     TEXT    NOT NULL,
+    row_count  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_exports_user ON ai_exports(user_id, created_at);
+
+-- ИИ-10: личные папки диалогов (Р-6).
+CREATE TABLE IF NOT EXISTS ai_folders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    title      TEXT    NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_folders_user ON ai_folders(user_id);
 """
+
+# Колонки диалога, появившиеся после первых запусков (ИИ-02, ИИ-10).
+LATE_COLUMNS = (("folder_id", "INTEGER"), ("archived_at", "INTEGER"), ("owner_role", "TEXT"))
+WARN_DAYS = 7          # за столько дней до удаления по сроку диалог помечается в списке
+FOLDER_TITLE_LIMIT = 60
 
 
 class NotFound(Exception):
@@ -69,6 +104,16 @@ class Invalid(Exception):
     """Данные не проходят проверку — сообщение предназначено пользователю."""
 
 
+class Limit(Exception):
+    """Лимит роли (ИИ-02): сообщение для человека и что можно сделать."""
+
+    def __init__(self, param: str, message: str, action: str = ""):
+        super().__init__(message)
+        self.param = param
+        self.message = message
+        self.action = action
+
+
 def _connect() -> sqlite3.Connection:
     JOURNAL_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(JOURNAL_DB)
@@ -77,6 +122,11 @@ def _connect() -> sqlite3.Connection:
     # существовать независимо от того, кто первым открыл файл.
     conn.executescript(JOURNAL_DDL)
     conn.executescript(DDL)
+    have = {row[1] for row in conn.execute("PRAGMA table_info(ai_dialogs)")}
+    for name, kind in LATE_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE ai_dialogs ADD COLUMN {name} {kind}")
+    conn.commit()
     return conn
 
 
@@ -94,11 +144,27 @@ def _title_from_question(question: str) -> str:
 
 # --- диалоги ---------------------------------------------------------------
 
-def list_dialogs(user_id: int, limit: int = 200) -> list[dict]:
+def expires_at(updated_at: int, role: str | None, pinned: bool) -> int | None:
+    """Когда диалог удалится по сроку хранения роли (ИИ-02); закреплённый — не удаляется."""
+    if pinned:
+        return None
+    return int(updated_at) + int(quotas.value(role, "history_days")) * 86400
+
+
+def list_dialogs(user_id: int, limit: int = 500, role: str | None = None) -> list[dict]:
+    """Все диалоги владельца, включая архивные (интерфейс прячет их и находит поиском).
+
+    `role` — действующая роль владельца: запоминается у диалогов, чтобы ночная
+    очистка знала срок хранения, и даёт дату удаления для пометки в списке.
+    """
     conn = _connect()
     try:
+        if role:
+            conn.execute("UPDATE ai_dialogs SET owner_role = ? WHERE user_id = ? AND owner_role IS NOT ?",
+                         (role, user_id, role))
+            conn.commit()
         rows = conn.execute(
-            "SELECT d.id, d.title, d.created_at, d.updated_at, d.pinned,"
+            "SELECT d.id, d.title, d.created_at, d.updated_at, d.pinned, d.folder_id, d.archived_at,"
             "       (SELECT question FROM ai_messages m WHERE m.dialog_id = d.id"
             "         ORDER BY m.id DESC LIMIT 1) AS last_question,"
             "       (SELECT COUNT(*) FROM ai_messages m WHERE m.dialog_id = d.id) AS messages "
@@ -108,24 +174,60 @@ def list_dialogs(user_id: int, limit: int = 200) -> list[dict]:
         ).fetchall()
     finally:
         conn.close()
-    return [dict(row) for row in rows]
+    now = _now()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["archived"] = bool(item.get("archived_at"))
+        expires = expires_at(item["updated_at"], role, bool(item["pinned"])) if role else None
+        item["expires_at"] = expires
+        item["expires_soon"] = bool(expires and expires - now <= WARN_DAYS * 86400)
+        out.append(item)
+    return out
 
 
-def create_dialog(user_id: int, title: str = "") -> dict:
+def _active_count(conn: sqlite3.Connection, user_id: int) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM ai_dialogs WHERE user_id = ? AND archived_at IS NULL",
+                            (user_id,)).fetchone()[0])
+
+
+def _check_active(conn: sqlite3.Connection, user_id: int, role: str | None) -> None:
+    limit = quotas.value(role, "active_dialogs") if role else None
+    if limit is not None and _active_count(conn, user_id) >= int(limit):
+        quotas.record_hit(role, "active_dialogs")
+        raise Limit("active_dialogs",
+                    f"Активных диалогов — {limit} из {limit}. Перенесите старые в архив: "
+                    "они останутся доступны через поиск.", action="archive_oldest")
+
+
+def can_start(user_id: int, role: str | None) -> None:
+    """Новый диалог по первому вопросу: проверить лимит активных до того, как спрашивать модель."""
+    conn = _connect()
+    try:
+        _check_active(conn, user_id, role)
+    finally:
+        conn.close()
+
+
+def create_dialog(user_id: int, title: str = "", role: str | None = None, check: bool = True) -> dict:
+    """Новый диалог. `check=False` — ответ уже получен, его нельзя потерять из-за лимита."""
     now = _now()
     clean = " ".join((title or "").split())[:TITLE_LIMIT] or "Новый диалог"
     conn = _connect()
     try:
+        if check:
+            _check_active(conn, user_id, role)
         cursor = conn.execute(
-            "INSERT INTO ai_dialogs (user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (user_id, clean, now, now),
+            "INSERT INTO ai_dialogs (user_id, title, created_at, updated_at, owner_role) VALUES (?, ?, ?, ?, ?)",
+            (user_id, clean, now, now, role),
         )
         conn.commit()
         dialog_id = int(cursor.lastrowid)
     finally:
         conn.close()
     return {"id": dialog_id, "title": clean, "created_at": now, "updated_at": now,
-            "pinned": 0, "last_question": None, "messages": 0}
+            "pinned": 0, "last_question": None, "messages": 0, "folder_id": None,
+            "archived_at": None, "archived": False, "expires_at": None, "expires_soon": False}
 
 
 def _owned(conn: sqlite3.Connection, dialog_id: int, user_id: int) -> sqlite3.Row:
@@ -152,10 +254,18 @@ def rename_dialog(dialog_id: int, user_id: int, title: str) -> dict:
     return {"id": dialog_id, "title": clean}
 
 
-def set_pinned(dialog_id: int, user_id: int, pinned: bool) -> dict:
+def set_pinned(dialog_id: int, user_id: int, pinned: bool, role: str | None = None) -> dict:
     conn = _connect()
     try:
-        _owned(conn, dialog_id, user_id)
+        dialog = _owned(conn, dialog_id, user_id)
+        if pinned and not dialog["pinned"] and role:
+            limit = int(quotas.value(role, "pinned_dialogs"))
+            count = conn.execute("SELECT COUNT(*) FROM ai_dialogs WHERE user_id = ? AND pinned = 1 "
+                                 "AND archived_at IS NULL", (user_id,)).fetchone()[0]
+            if count >= limit:
+                quotas.record_hit(role, "pinned_dialogs")
+                raise Limit("pinned_dialogs", f"Закреплённых диалогов — {limit} из {limit}. "
+                                              "Открепите один из них, чтобы закрепить этот.")
         conn.execute("UPDATE ai_dialogs SET pinned = ? WHERE id = ?",
                      (1 if pinned else 0, dialog_id))
         conn.commit()
@@ -164,17 +274,162 @@ def set_pinned(dialog_id: int, user_id: int, pinned: bool) -> dict:
     return {"id": dialog_id, "pinned": bool(pinned)}
 
 
+# --- папки и архив (ИИ-10) -------------------------------------------------
+
+def _folder(conn: sqlite3.Connection, folder_id: int, user_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM ai_folders WHERE id = ? AND user_id = ?", (folder_id, user_id)).fetchone()
+    if row is None:
+        raise NotFound("Папка не найдена")
+    return row
+
+
+def _title_taken(conn: sqlite3.Connection, user_id: int, title: str, skip: int | None = None) -> bool:
+    """Одинаковое имя без учёта регистра; SQLite NOCASE не знает кириллицы — сравниваем в Python."""
+    wanted = title.casefold()
+    return any(row["title"].casefold() == wanted and row["id"] != skip
+               for row in conn.execute("SELECT id, title FROM ai_folders WHERE user_id = ?", (user_id,)))
+
+
+def _folder_title(title: str) -> str:
+    clean = " ".join((title or "").split())[:FOLDER_TITLE_LIMIT]
+    if not clean:
+        raise Invalid("Название папки не может быть пустым")
+    return clean
+
+
+def list_folders(user_id: int) -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT f.id, f.title, f.created_at, f.updated_at,"
+            "       (SELECT COUNT(*) FROM ai_dialogs d WHERE d.folder_id = f.id AND d.archived_at IS NULL) AS dialogs "
+            "FROM ai_folders f WHERE f.user_id = ?",
+            (user_id,)).fetchall()
+    finally:
+        conn.close()
+    return sorted((dict(row) for row in rows), key=lambda item: (item["title"].casefold(), item["id"]))
+
+
+def create_folder(user_id: int, title: str, role: str | None = None) -> dict:
+    clean = _folder_title(title)
+    now = _now()
+    conn = _connect()
+    try:
+        if role:
+            limit = int(quotas.value(role, "folders"))
+            count = conn.execute("SELECT COUNT(*) FROM ai_folders WHERE user_id = ?", (user_id,)).fetchone()[0]
+            if count >= limit:
+                quotas.record_hit(role, "folders")
+                raise Limit("folders", f"Папок — {limit} из {limit}. Удалите или объедините ненужные папки.")
+        if _title_taken(conn, user_id, clean):
+            raise Invalid("Папка с таким названием уже есть")
+        cursor = conn.execute("INSERT INTO ai_folders (user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                              (user_id, clean, now, now))
+        conn.commit()
+        folder_id = int(cursor.lastrowid)
+    finally:
+        conn.close()
+    return {"id": folder_id, "title": clean, "created_at": now, "updated_at": now, "dialogs": 0}
+
+
+def rename_folder(folder_id: int, user_id: int, title: str) -> dict:
+    clean = _folder_title(title)
+    conn = _connect()
+    try:
+        _folder(conn, folder_id, user_id)
+        if _title_taken(conn, user_id, clean, skip=folder_id):
+            raise Invalid("Папка с таким названием уже есть")
+        conn.execute("UPDATE ai_folders SET title = ?, updated_at = ? WHERE id = ?", (clean, _now(), folder_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": folder_id, "title": clean}
+
+
+def delete_folder(folder_id: int, user_id: int, dialogs: str = "move") -> dict:
+    """Удалить папку: диалоги — в «Без папки» (move) или вместе с папкой (delete, необратимо)."""
+    if dialogs not in {"move", "delete"}:
+        raise Invalid("Выберите, что сделать с диалогами папки")
+    conn = _connect()
+    try:
+        _folder(conn, folder_id, user_id)
+        ids = [int(r["id"]) for r in conn.execute(
+            "SELECT id FROM ai_dialogs WHERE folder_id = ? AND user_id = ?", (folder_id, user_id))]
+        if dialogs == "delete":
+            for dialog_id in ids:
+                _delete(conn, dialog_id)
+        else:
+            conn.execute("UPDATE ai_dialogs SET folder_id = NULL WHERE folder_id = ? AND user_id = ?",
+                         (folder_id, user_id))
+        conn.execute("DELETE FROM ai_folders WHERE id = ?", (folder_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"deleted": folder_id, "dialogs": len(ids), "mode": dialogs}
+
+
+def move_dialog(dialog_id: int, user_id: int, folder_id: int | None) -> dict:
+    conn = _connect()
+    try:
+        _owned(conn, dialog_id, user_id)
+        if folder_id is not None:
+            _folder(conn, int(folder_id), user_id)
+        conn.execute("UPDATE ai_dialogs SET folder_id = ? WHERE id = ?", (folder_id, dialog_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": dialog_id, "folder_id": folder_id}
+
+
+def set_archived(dialog_id: int, user_id: int, archived: bool, role: str | None = None) -> dict:
+    """В архив — скрыть из списка (закрепление снимается); из архива — в пределах лимита активных."""
+    conn = _connect()
+    try:
+        dialog = _owned(conn, dialog_id, user_id)
+        if archived:
+            conn.execute("UPDATE ai_dialogs SET archived_at = ?, pinned = 0 WHERE id = ?", (_now(), dialog_id))
+        elif dialog["archived_at"]:
+            _check_active(conn, user_id, role)
+            conn.execute("UPDATE ai_dialogs SET archived_at = NULL, updated_at = ? WHERE id = ?", (_now(), dialog_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": dialog_id, "archived": bool(archived)}
+
+
+def archive_oldest(user_id: int, count: int = 10) -> int:
+    """Перенести в архив самые старые незакреплённые активные диалоги — ответ на лимит активных."""
+    count = max(1, min(int(count), 200))
+    conn = _connect()
+    try:
+        ids = [int(r["id"]) for r in conn.execute(
+            "SELECT id FROM ai_dialogs WHERE user_id = ? AND archived_at IS NULL AND pinned = 0 "
+            "ORDER BY updated_at ASC, id ASC LIMIT ?", (user_id, count))]
+        now = _now()
+        for dialog_id in ids:
+            conn.execute("UPDATE ai_dialogs SET archived_at = ? WHERE id = ?", (now, dialog_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return len(ids)
+
+
+def _delete(conn: sqlite3.Connection, dialog_id: int) -> None:
+    """Удаление человеком уносит и оценки: иначе разбор качества ссылался бы на вопрос, которого нет."""
+    ids = [int(r["id"]) for r in conn.execute(
+        "SELECT id FROM ai_messages WHERE dialog_id = ?", (dialog_id,))]
+    if ids:
+        marks = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM ai_feedback WHERE message_id IN ({marks})", ids)
+    conn.execute("DELETE FROM ai_messages WHERE dialog_id = ?", (dialog_id,))
+    conn.execute("DELETE FROM ai_dialogs WHERE id = ?", (dialog_id,))
+
+
 def delete_dialog(dialog_id: int, user_id: int) -> None:
     conn = _connect()
     try:
         _owned(conn, dialog_id, user_id)
-        ids = [int(r["id"]) for r in conn.execute(
-            "SELECT id FROM ai_messages WHERE dialog_id = ?", (dialog_id,))]
-        if ids:
-            marks = ",".join("?" * len(ids))
-            conn.execute(f"DELETE FROM ai_feedback WHERE message_id IN ({marks})", ids)
-        conn.execute("DELETE FROM ai_messages WHERE dialog_id = ?", (dialog_id,))
-        conn.execute("DELETE FROM ai_dialogs WHERE id = ?", (dialog_id,))
+        _delete(conn, dialog_id)
         conn.commit()
     finally:
         conn.close()
@@ -188,6 +443,9 @@ def append_message(dialog_id: int, user_id: int, question: str, answer: dict,
     conn = _connect()
     try:
         dialog = _owned(conn, dialog_id, user_id)
+        if dialog["archived_at"]:
+            # Новый вопрос в архивном диалоге возвращает его в список.
+            conn.execute("UPDATE ai_dialogs SET archived_at = NULL WHERE id = ?", (dialog_id,))
         cursor = conn.execute(
             "INSERT INTO ai_messages (dialog_id, created_at, question, answer_json, journal_id) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -236,6 +494,42 @@ def messages(dialog_id: int, user_id: int) -> list[dict]:
             "comment": row["comment"] or "",
         })
     return out
+
+
+def message(message_id: int, user_id: int) -> dict:
+    """Один ответ владельца с записью журнала (роль, привязка, SQL для паспорта выгрузки); чужой — NotFound."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT m.id, m.created_at, m.question, m.answer_json, m.journal_id, "
+            "       q.role, q.binding, q.actor, q.scope_label, q.sql_final "
+            "FROM ai_messages m JOIN ai_dialogs d ON d.id = m.dialog_id "
+            "LEFT JOIN ai_queries q ON q.id = m.journal_id "
+            "WHERE m.id = ? AND d.user_id = ?",
+            (message_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise NotFound("Ответ не найден")
+    try:
+        answer = json.loads(row["answer_json"])
+    except json.JSONDecodeError:
+        answer = {}
+    return {"id": int(row["id"]), "createdAt": int(row["created_at"]), "question": row["question"],
+            "answer": answer, "journalId": row["journal_id"],
+            "journal": {k: row[k] for k in ("role", "binding", "actor", "scope_label", "sql_final")}}
+
+
+def record_export(message_id: int, user_id: int, journal_id: int | None, part: str, fmt: str, row_count: int) -> None:
+    conn = _connect()
+    try:
+        conn.execute("INSERT INTO ai_exports (created_at, user_id, message_id, journal_id, part, format, row_count) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (_now(), user_id, message_id, journal_id, part[:60], fmt, row_count))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # --- оценки ----------------------------------------------------------------

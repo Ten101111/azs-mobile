@@ -201,10 +201,13 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
         run_query: Callable[[str, int], executor.Result] | None = None,
         catalog: Catalog | None = None, semantic: Semantic | None = None,
         today: str | None = None, scope_label: str = "", data_range: dict | None = None,
-        hits: dict | None = None, limits=None) -> AgentOutcome:
+        hits: dict | None = None, limits=None,
+        should_stop: Callable[[], bool] | None = None) -> AgentOutcome:
     """Прогон агента в глубине analyze/deep. Режим fast обслуживает pipeline.
 
     `limits` — пределы роли (backend/ai/limits.py); у администратора их нет.
+    `should_stop` — человек остановил вопрос: сбор прерывается перед следующим
+    ходом модели, итог не пишется (ИИ-03).
     """
     catalog = catalog or CATALOG
     semantic = semantic or SEMANTIC
@@ -246,6 +249,9 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
 
     try:
         while True:
+            if should_stop is not None and should_stop():
+                stop_reason = "cancelled"
+                break
             if budget.exhausted():
                 stop_reason = "лимит ходов модели"
                 break
@@ -308,9 +314,16 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
         _emit(on_stage, {"key": "model", "state": "failed", "label": "Модель недоступна", "kind": "plan"})
         return outcome
 
+    outcome.sql_ms = ctx.sql_ms
+    outcome.stop_reason = stop_reason
+    outcome.tool_calls = budget.used_sql + budget.used_python + budget.used_charts + budget.used_schema
+    if stop_reason == "cancelled":
+        outcome.error = "Запрос остановлен"
+        outcome.rule = "cancelled"
+        _emit(on_stage, {"key": "model", "state": "failed", "label": "Запрос остановлен", "kind": "plan"})
+        return outcome
     _emit(on_stage, {"key": "model", "state": "done", "label": "Шаги анализа выполнены",
                      "kind": "plan", "ms": outcome.model_ms})
-    outcome.sql_ms = ctx.sql_ms
 
     # --- финальный ответ -------------------------------------------------
     write_step = Step(key="write", kind="write", label="Формулирую ответ")
@@ -340,7 +353,10 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
         text = item.split(":")[0].strip()
         if text and not any(text.lower() in lim.lower() for lim in analysis.limitations):
             analysis.limitations.append(f"В витрине нет данных: {item}.")
-    if stop_reason and stop_reason not in ("finish", "finish-text", "prose"):
+    if stop_reason == "лимит времени" and max_seconds and max_seconds > 0:
+        analysis.limitations.append(
+            f"Анализ остановлен: лимит времени уровня — {_minutes(max_seconds)}; выводы — по собранным данным.")
+    elif stop_reason and stop_reason not in ("finish", "finish-text", "prose"):
         analysis.limitations.append(f"Анализ остановлен ({stop_reason}); выводы по собранным данным.")
     # Типы утверждений и правила рекомендаций ставит код, а не модель (ИИ-25, ИИ-16).
     outcome.grounding["claims"] = claims.annotate(analysis, workspace, asked=asked)
@@ -361,6 +377,13 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
     main = outcome.main_result
     outcome.frame.update(memory.build_frame(question, plan, analysis, main.sql if main else None))
     return outcome
+
+
+def _minutes(seconds: float) -> str:
+    seconds = int(round(seconds))
+    if seconds % 60 == 0:
+        return f"{seconds // 60} мин"
+    return f"{seconds} с"
 
 
 def _polish(analysis: Analysis, semantic, catalog) -> None:

@@ -1,7 +1,7 @@
 """СП-02. Еженедельная справка по сети: расчёт модели выпуска.
 
 Источник — только витрина ОХД: dm.data_for_ai_analytic_part_1 (факты по АЗС за
-день) и dm.data_for_ai_analytic_part_2 (планы по АЗС за день). Решение
+день) и dm.data_for_ai_analytic_part_2 (планы и оценки сервиса по АЗС за день). Решение
 владельца 24.09.2026: база KPI платформы и стенд для справок не годятся —
 `Source` отказывается строить выпуск по любому другому каталогу. Витрина видна
 только с компьютера владельца под VPN, поэтому справку собирает он
@@ -18,6 +18,9 @@
   объекты с данными за все 7 дней в обоих периодах;
 - для долей изменение в процентных пунктах;
 - зоны внимания — только объекты с 7/7 днями в обеих неделях, пороги Р-15;
+  плюс АЗС с негативом в приложении за неделю (СП-07);
+- сервис — оценки клиентов и жалобы из part_2, без цели и статуса, пока цели
+  нет в витрине (решение владельца 24.09.2026);
 - результат — JSON модели выпуска: экран, PDF и XLSX рисуются из него
   и ничего не пересчитывают.
 """
@@ -38,7 +41,7 @@ from ..ai.validator import Scope, validate
 from . import fmt, periods
 
 TYPE_CODE = "network_weekly"
-FORMULAS_VERSION = "2026-09-24.1"
+FORMULAS_VERSION = "2026-09-24.2"
 # Витрина ОХД, по которой только и строится справка (решение владельца 24.09.2026).
 MART_FACTS, MART_PLANS = "data_for_ai_analytic_part_1", "data_for_ai_analytic_part_2"
 MART_COLUMNS = ("npo", "num_azs", "region_name")
@@ -49,8 +52,8 @@ PLAN_BLOCK = ("fuel_plan", "ntu_plan")
 PENDING_BLOCKS = (
     (PLAN_BLOCK, PLAN_TITLE),
     (("ntu_vd",), "Валовой доход НТУ"),
-    (("service_avg", "service_quality"), "Уровень и качество сервиса"),
 )
+CHECKS_COLUMN = "cnt_cheq"  # чеки всего — знаменатель качества сервиса
 MSK = timezone(timedelta(hours=3))
 ROW_LIMIT = 20_000
 NO_ONPO = "Без ОНПО"
@@ -74,6 +77,10 @@ THRESHOLDS = {
     # Объекты с малой базой (меньше этой доли медианы сети) не ранжируются:
     # на маленьком объёме любое колебание выглядит как «падение на 60 %».
     "minBaseShareOfMedian": _env_float("REPORT_MIN_BASE_SHARE", 0.2),
+    # Сервис в зоне внимания (решение владельца 24.09.2026): АЗС с наибольшим
+    # числом оценок «1» и «2» за неделю — не меньше порога, не больше списка.
+    "negativeMin": int(_env_float("REPORT_NEGATIVE_MIN", 2)),
+    "topNegative": int(_env_float("REPORT_TOP_NEGATIVE", 10)),
 }
 
 
@@ -228,11 +235,20 @@ def _stations(src: Source, week, prev, year) -> list[dict]:
            f'       COUNT(DISTINCT CASE WHEN {src.within(week)} AND {fuel} > 0 THEN {src.date} END) AS "sales_w",\n'
            f'       COUNT(DISTINCT CASE WHEN {src.within(prev)} AND {fuel} > 0 THEN {src.date} END) AS "sales_p",\n'
            f'       SUM(CASE WHEN {src.within(week)} THEN {fuel} END) AS "fuel_w",\n'
-           f'       SUM(CASE WHEN {src.within(prev)} THEN {fuel} END) AS "fuel_p"\n'
+           f'       SUM(CASE WHEN {src.within(prev)} THEN {fuel} END) AS "fuel_p"{_checks_selects(src, week, prev, year)}\n'
            f"FROM {src.facts} AS f {src.join}\n"
            f"WHERE ({src.within(week)}) OR ({src.within(prev)}) OR ({src.within(year)})\n"
            f"GROUP BY {src.key}")
     return src.query(sql)
+
+
+def _checks_selects(src: Source, week, prev, year) -> str:
+    """Чеки по объектам за три недели — знаменатель качества сервиса; нет столбца — пусто."""
+    if CHECKS_COLUMN not in src.catalog.tables.get(src.catalog.facts_table, set()):
+        return ""
+    column = f"f.{CHECKS_COLUMN}"
+    return "".join(f',\n       SUM(CASE WHEN {src.within(w)} THEN {column} END) AS "checks_{name}"'
+                   for name, w in (("w", week), ("p", prev), ("y", year)))
 
 
 def latest_date(src: Source) -> date | None:
@@ -397,10 +413,13 @@ def _plan_month(src: Source, metrics: list[tuple], start: date, end: date, to_da
     plans = src.query(f'SELECT {pkey} AS "key", COUNT(DISTINCT {pdate}) AS "days",\n       {plan_sums}\n'
                       f"FROM {src.plans} AS p\nWHERE {pdate} BETWEEN {src.lit(start)} AND {src.lit(end)}\n"
                       f"GROUP BY {pkey}")
+    # В той же витрине лежат оценки сервиса: строка без плана — не план.
+    plans = [r for r in plans if any((_num(r.get(f"{code}_m")) or 0) > 0 for code, *_ in metrics)]
     if not plans:
         return None
-    covered = src.query(f'SELECT COUNT(DISTINCT {pdate}) AS "days" FROM {src.plans} AS p\n'
-                        f"WHERE {pdate} BETWEEN {src.lit(start)} AND {src.lit(end)}", 1)
+    any_plan = " + ".join(f"({plan})" for code, *_, plan, _cols in metrics)
+    covered = src.query(f'SELECT COUNT(DISTINCT CASE WHEN {any_plan} > 0 THEN {pdate} END) AS "days"\n'
+                        f"FROM {src.plans} AS p\nWHERE {pdate} BETWEEN {src.lit(start)} AND {src.lit(end)}", 1)
     fact_sums = ",\n       ".join(f'SUM({expr}) AS "{code}"' for code, _t, _u, _d, _c, expr, *_ in metrics)
     facts = src.query(f'SELECT {src.key} AS "key", MIN({src.onpo}) AS "onpo",\n       {fact_sums}\n'
                       f"FROM {src.facts} AS f\nWHERE {src.span(start, to_date)}\nGROUP BY {src.key}")
@@ -508,6 +527,230 @@ def _plan_headline(plan: dict | None) -> list[str]:
     return out
 
 
+# --- сервис (СП-07, решение владельца 24.09.2026) -----------------------------
+# Оценки клиентов в мобильном приложении (1–5), негатив по категориям и жалобы ЕГЛ
+# лежат в той же dm.data_for_ai_analytic_part_2 — по АЗС за день. Средняя оценка
+# считается по всем оценкам, без правил методики (категории по роли, исключения),
+# поэтому это не официальный уровень сервиса. Цели в витрине нет — статуса
+# «выполнен» нет; он появится, когда цель придёт в витрине. Качество сервиса —
+# (негатив + жалобы ЕГЛ) на 100 тыс. чеков, меньше — лучше. Неделя — к прошлой
+# неделе и к году: значения по всей сети, изменения по сопоставимой базе, как вся
+# справка; плюс итог с начала месяца — методика итожит сервис за месяц.
+SERVICE_TITLE = "Сервис: оценки в приложении и жалобы"
+RATING_COLUMNS = ("all_rate", "rate_cnt_1", "rate_cnt_2", "rate_cnt_3", "rate_cnt_4", "rate_cnt_5")
+COMPLAINTS_COLUMN = "cnt_num_compl"
+NEGATIVE_CATEGORIES = (
+    ("rate_pers_act_azs_cnt", "Обслуживание на кассе"),
+    ("rate_clear_azs_cnt", "Чистота АЗС"),
+    ("rate_tech_azs_cnt", "Техническое состояние"),
+    ("rate_refueller_azs_cnt", "Работа заправщика"),
+    ("rate_asort_azs_cnt", "Ассортимент и качество НТУ"),
+    ("rate_app_mob_azs_cnt", "Мобильное приложение"),
+    ("rate_loy_card_azs_cnt", "Программа лояльности"),
+    ("rate_other_azs_cnt", "Другое"),
+)
+SERVICE_METRICS = (
+    # код, название, единица, знаков, изменение: abs — разность, pct — %, pp — п. п.
+    ("avg", "Средняя оценка в приложении", "", 3, "abs"),
+    ("ratings", "Оценок в приложении", "шт", 0, "pct"),
+    ("negative", "Негативные оценки («1» и «2»)", "шт", 0, "abs"),
+    ("negativeShare", "Доля негативных оценок", "%", 2, "pp"),
+    ("complaints", "Жалобы ЕГЛ", "шт", 0, "abs"),
+    ("quality", "Качество сервиса, на 100 тыс. чеков", "", 2, "abs"),
+)
+SERVICE_RULE = ("Сервис — оценки клиентов в мобильном приложении (1–5) и жалобы ЕГЛ из витрины ОХД. "
+                "Средняя оценка — по всем оценкам, без правил методики по категориям и ролям, поэтому это не "
+                "официальный уровень сервиса; цели в витрине нет — статуса «выполнен» нет. Негатив — оценки «1» и «2». "
+                "Качество сервиса — (негатив + жалобы ЕГЛ) на 100 тыс. чеков, меньше — лучше.")
+
+
+def _service_values(sums: dict) -> dict:
+    """Показатели сервиса из сумм; нет ни одной оценки — нет данных (а не нули)."""
+    ratings = sums.get("ratings") or 0.0
+    if ratings <= 0:
+        return {code: None for code, *_ in SERVICE_METRICS}
+    negative = (sums.get("r1") or 0.0) + (sums.get("r2") or 0.0)
+    complaints = sums.get("complaints")
+    checks = sums.get("checks") or 0.0
+    total = sum(k * (sums.get(f"r{k}") or 0.0) for k in range(1, 6))
+    return {
+        "avg": round(total / ratings, 3),
+        "ratings": int(round(ratings)),
+        "negative": int(round(negative)),
+        "negativeShare": round(100.0 * negative / ratings, 2),
+        "complaints": int(round(complaints)) if complaints is not None else None,
+        "quality": round(100000.0 * (negative + (complaints or 0.0)) / checks, 2) if checks else None,
+    }
+
+
+def _service_delta(kind: str, decimals: int, now, was):
+    if now is None or was is None:
+        return None
+    if kind == "pct":
+        return change(now, was, False)
+    return round(float(now) - float(was), decimals)
+
+
+def _service_sums_sql(src: Source) -> list[str]:
+    sums = ['SUM(p.all_rate) AS "ratings"'] + [f'SUM(p.rate_cnt_{k}) AS "r{k}"' for k in range(1, 6)]
+    if COMPLAINTS_COLUMN in src.plan_columns:
+        sums.append(f'SUM(p.{COMPLAINTS_COLUMN}) AS "complaints"')
+    sums += [f'SUM(p.{column}) AS "{column}"' for column, _ in NEGATIVE_CATEGORIES if column in src.plan_columns]
+    return sums
+
+
+def _service_rows(src: Source, parts: dict[str, periods.Week]) -> list[dict]:
+    """Суммы оценок по объектам за каждую из недель — одним запросом."""
+    pkey = f"p.{src.catalog.scope_column_of(src.catalog.plans_table)}"
+    pdate = f"p.{src.catalog.date_column}"
+    within = {name: f"{pdate} BETWEEN {src.lit(w.start)} AND {src.lit(w.end)}" for name, w in parts.items()}
+    cases = " ".join(f"WHEN {cond} THEN '{name}'" for name, cond in within.items())
+    where = " OR ".join(f"({cond})" for cond in within.values())
+    sql = (f'SELECT {pkey} AS "key", CASE {cases} END AS "part",\n       ' + ",\n       ".join(_service_sums_sql(src))
+           + f"\nFROM {src.plans} AS p\nWHERE {where}\nGROUP BY 1, 2")
+    return src.query(sql)
+
+
+def _service_span(src: Source, start: date, end: date) -> dict:
+    """Итог сервиса по сети за отрезок дней (с начала месяца)."""
+    pdate = f"p.{src.catalog.date_column}"
+    rows = src.query(f"SELECT " + ",\n       ".join(_service_sums_sql(src)) +
+                     f"\nFROM {src.plans} AS p\nWHERE {pdate} BETWEEN {src.lit(start)} AND {src.lit(end)}", 1)
+    sums = {k: _num(v) for k, v in (rows[0] if rows else {}).items()}
+    if CHECKS_COLUMN in src.catalog.tables.get(src.catalog.facts_table, set()):
+        checks = src.query(f'SELECT SUM(f.{CHECKS_COLUMN}) AS "checks" FROM {src.facts} AS f '
+                           f"WHERE {src.span(start, end)}", 1)
+        sums["checks"] = _num(checks[0]["checks"]) if checks else None
+    return _service_values(sums)
+
+
+def _add(sums: dict, row: dict) -> None:
+    for k, v in row.items():
+        if k not in ("key", "part"):
+            sums[k] = (sums.get(k) or 0.0) + (_num(v) or 0.0)
+
+
+def _service(src: Source, stations: list[dict], week: periods.Week, prev: periods.Week,
+             year: periods.Week) -> tuple[dict | None, str]:
+    """Блок сервиса и АЗС с негативом; вторым — причина, если блока нет."""
+    if not src.plans:
+        return None, f"в каталоге нет витрины dm.{MART_PLANS} с оценками клиентов"
+    if not all(c in src.plan_columns for c in RATING_COLUMNS):
+        return None, "в витрине нет оценок клиентов в приложении"
+    by_part: dict[str, dict[str, dict]] = {"w": {}, "p": {}, "y": {}}
+    for row in _service_rows(src, {"w": week, "p": prev, "y": year}):
+        by_part.setdefault(row["part"], {})[_ident(row["key"])] = row
+    if not sum(_num(r.get("ratings")) or 0 for r in by_part["w"].values()):
+        return None, f"в витрине нет оценок клиентов за неделю {week.label}"
+    info = {_ident(s["key"]): s for s in stations}
+    has_checks = CHECKS_COLUMN in src.catalog.tables.get(src.catalog.facts_table, set())
+
+    def total(part: str, keys: set[str] | None = None) -> dict:
+        sums: dict = {}
+        for key, row in by_part.get(part, {}).items():
+            if keys is None or key in keys:
+                _add(sums, row)
+        if has_checks:
+            sums["checks"] = sum(_num(s.get(f"checks_{part}")) or 0 for k, s in info.items()
+                                 if keys is None or k in keys)
+        return _service_values(sums)
+
+    def full(a: str, b: str) -> set[str]:
+        return {k for k, s in info.items() if int(s.get(f"days_{a}") or 0) == 7 and int(s.get(f"days_{b}") or 0) == 7}
+
+    nn, yy = full("w", "p"), full("w", "y")
+    now, was, last = total("w"), total("p"), total("y")
+    nn_a, nn_b, yy_a, yy_b = total("w", nn), total("p", nn), total("w", yy), total("y", yy)
+    metrics = []
+    for code, title, unit, decimals, kind in SERVICE_METRICS:
+        if now[code] is None and code in ("complaints", "quality"):
+            continue  # нет столбца жалоб или чеков — строки нет
+        metrics.append({"code": code, "title": title, "unit": unit, "decimals": decimals, "deltaKind": kind,
+                        "value": now[code], "prev": was[code], "lastYear": last[code],
+                        "deltaPrev": _service_delta(kind, decimals, nn_a[code], nn_b[code]),
+                        "deltaYear": _service_delta(kind, decimals, yy_a[code], yy_b[code])})
+
+    week_sums: dict = {}
+    prev_sums: dict = {}
+    for row in by_part["w"].values():
+        _add(week_sums, row)
+    for row in by_part["p"].values():
+        _add(prev_sums, row)
+    categories = []
+    for column, title in NEGATIVE_CATEGORIES:
+        if column not in src.plan_columns:
+            continue
+        count = int(round(week_sums.get(column) or 0))
+        before = int(round(prev_sums.get(column) or 0)) if was["avg"] is not None else None
+        if count or before:
+            categories.append({"code": column, "title": title, "week": count, "prev": before})
+    categories.sort(key=lambda c: -c["week"])
+
+    groups: dict[str, set[str]] = {}
+    for key, row in by_part["w"].items():
+        if (_num(row.get("ratings")) or 0) > 0:
+            groups.setdefault((info.get(key) or {}).get("onpo") or NO_ONPO, set()).add(key)
+    onpo = []
+    for name, keys in groups.items():
+        v = total("w", keys)
+        a, b = total("w", keys & nn), total("p", keys & nn)
+        onpo.append({"name": name, "stations": len(keys), **v,
+                     "avgDeltaPrev": _service_delta("abs", 3, a["avg"], b["avg"])})
+    onpo.sort(key=lambda r: (r["avg"] is None, r["avg"] if r["avg"] is not None else 0, r["name"]))
+
+    flagged = []
+    for key, row in by_part["w"].items():
+        negative = int(round((_num(row.get("r1")) or 0) + (_num(row.get("r2")) or 0)))
+        if negative < THRESHOLDS["negativeMin"]:
+            continue
+        station = info.get(key) or {"key": key}
+        top = max(((int(round(_num(row.get(c)) or 0)), t) for c, t in NEGATIVE_CATEGORIES if c in row),
+                  default=(0, ""))
+        v = _service_values({**{k: _num(row.get(k)) for k in ("ratings", "r1", "r2", "r3", "r4", "r5", "complaints")},
+                             "checks": _num(station.get("checks_w"))})
+        flagged.append({"key": key, "label": _label(station), "region": station.get("region") or "",
+                        "onpo": station.get("onpo") or NO_ONPO, "negative": negative, "ratings": v["ratings"],
+                        "avg": v["avg"], "complaints": v["complaints"], "category": top[1] if top[0] > 0 else ""})
+    flagged.sort(key=lambda r: (-r["negative"], r["avg"] if r["avg"] is not None else 5.0, r["label"]))
+
+    months = []
+    for start, end in periods.months_of(week):
+        to_date = min(end, week.end)
+        v = _service_span(src, start, to_date)
+        if v["avg"] is None:
+            continue
+        months.append({"month": start.strftime("%Y-%m"), "label": periods.month_label(start),
+                       "labelGen": periods.month_label(start, "gen"), "from": start.isoformat(),
+                       "to": to_date.isoformat(), "closed": to_date >= end,
+                       "daysPassed": (to_date - start).days + 1, "daysTotal": (end - start).days + 1, **v})
+    return {"metrics": metrics, "months": months, "onpo": onpo, "categories": categories,
+            "negative": flagged[: THRESHOLDS["topNegative"]], "negativeTotal": len(flagged),
+            "negativeKeys": [r["key"] for r in flagged]}, ""
+
+
+def _service_headline(service: dict | None) -> list[str]:
+    if not service:
+        return []
+    rows = {r["code"]: r for r in service["metrics"]}
+    avg = rows.get("avg")
+    if not avg or avg["value"] is None:
+        return []
+    text = f"Средняя оценка в приложении за неделю — {fmt.number(avg['value'], 3)}"
+    if avg["deltaPrev"] is not None:
+        text += f" ({fmt.signed(avg['deltaPrev'], 3)} к прошлой неделе)"
+    parts = [f"{what} — {fmt.number(rows[code]['value'])}" for code, what in
+             (("negative", "негативных оценок"), ("complaints", "жалоб ЕГЛ"))
+             if rows.get(code) and rows[code]["value"] is not None]
+    return [text + (f"; {', '.join(parts)}" if parts else "") + "."]
+
+
+def zone_keys(attention: dict) -> set[str]:
+    """Объекты зоны внимания: падение топлива, дни без продаж и негатив в приложении."""
+    return (set(attention.get("dropKeys") or [r["key"] for r in attention.get("drops", [])])
+            | {r["key"] for r in attention.get("noSales", [])}
+            | set(attention.get("negativeKeys") or []))
+
+
 def _headline(metrics, onpo, attention, week, holidays) -> list[str]:
     by_code = {m["code"]: m for m in metrics}
     out = []
@@ -530,11 +773,15 @@ def _headline(metrics, onpo, attention, week, holidays) -> list[str]:
         if best["name"] != worst["name"]:
             out.append(f"По реализации топлива к прошлой неделе лучше всех ОНПО «{best['name']}» — "
                        f"{fmt.delta(best['fuelDeltaPrev'])}, слабее всех «{worst['name']}» — {fmt.delta(worst['fuelDeltaPrev'])}.")
-    zone = len(set(attention["dropKeys"]) | {r["key"] for r in attention["noSales"]})
+    zone = len(zone_keys(attention))
     if zone:
-        out.append(f"В зоне внимания {zone} {_objects(zone)}: падение топлива на "
-                   f"{fmt.number(THRESHOLDS['fuelDropPct'])} % и больше — {attention['dropsTotal']}, "
-                   f"без продаж {fmt.days(THRESHOLDS['noSalesDays'])} и больше — {len(attention['noSales'])}.")
+        text = (f"В зоне внимания {zone} {_objects(zone)}: падение топлива на "
+                f"{fmt.number(THRESHOLDS['fuelDropPct'])} % и больше — {attention['dropsTotal']}, "
+                f"без продаж {fmt.days(THRESHOLDS['noSalesDays'])} и больше — {len(attention['noSales'])}")
+        if "negativeTotal" in attention:
+            text += (f", {fmt.number(THRESHOLDS['negativeMin'])} и больше негативных оценок в приложении — "
+                     f"{attention['negativeTotal']}")
+        out.append(text + ".")
     else:
         out.append("Объектов в зоне внимания нет.")
     if holidays:
@@ -594,7 +841,11 @@ def build(week: periods.Week, *, catalog: Catalog | None = None,
     metrics = _metrics(src, tiles, totals, nn, yy)
     onpo = _onpo_rows(src, onpo_week, onpo_nn, onpo_yy)
     plan, plan_missing = _plan(src, week)
+    service, service_missing = _service(src, stations, week, prev, year)
     attention = _attention(stations)
+    if service:
+        attention.update(negative=service.pop("negative"), negativeTotal=service.pop("negativeTotal"),
+                         negativeKeys=service.pop("negativeKeys"))
     dynamics = _dynamics(src, week)
     holidays = week.holidays() + prev.holidays() + year.holidays()
 
@@ -604,6 +855,8 @@ def build(week: periods.Week, *, catalog: Catalog | None = None,
     seen_yy = sum(1 for s in stations if int(s.get("days_w") or 0) or int(s.get("days_y") or 0))
     pending = [title for codes, title in PENDING_BLOCKS
                if codes != PLAN_BLOCK and not all(c in src.tiles for c in codes)]
+    if service is None:
+        pending.insert(0, SERVICE_TITLE)
     if plan is None:
         pending.insert(0, PLAN_TITLE)
     generated = (now or datetime.now(timezone.utc)).astimezone(MSK)
@@ -618,8 +871,10 @@ def build(week: periods.Week, *, catalog: Catalog | None = None,
         "scopeLabel": "Вся сеть",
         "week": week.as_dict(),
         "compare": {"prev": prev.as_dict(), "lastYear": year.as_dict()},
-        "headline": _insert_plan(_headline(metrics, onpo, attention, week, holidays), _plan_headline(plan)),
+        "headline": _insert_plan(_headline(metrics, onpo, attention, week, holidays),
+                                 _plan_headline(plan) + _service_headline(service)),
         "plan": plan,
+        "service": service,
         "metrics": metrics,
         "dynamics": dynamics,
         "onpo": onpo,
@@ -644,12 +899,13 @@ def build(week: periods.Week, *, catalog: Catalog | None = None,
             "completeness": complete,
             "latestDate": latest.isoformat(),
             "source": f"Витрина ОХД: dm.{MART_FACTS} (факты по АЗС за день)"
-                      + (f", dm.{MART_PLANS} (планы)" if src.plans else ""),
+                      + (f", dm.{MART_PLANS} (планы и оценки сервиса)" if src.plans else ""),
             "fuelUnitNote": f"Реализация топлива — в {'тоннах' if fuel_tile.unit == 'т' else 'литрах'}",
             "formulasVersion": FORMULAS_VERSION,
             "runId": run_id,
             "holidays": holidays,
             "planNote": (plan or {}).get("note") or (f"Блока плана нет: {plan_missing}." if plan is None else ""),
+            "serviceNote": f"Блока сервиса нет: {service_missing}." if service is None else "",
             "thresholds": dict(THRESHOLDS),
             "generatedAt": generated.isoformat(timespec="seconds"),
             "durationMs": int((time.monotonic() - started) * 1000),
@@ -662,6 +918,7 @@ def build(week: periods.Week, *, catalog: Catalog | None = None,
                 "План месяца — сумма дневных планов витрины; выполнение — по объектам, у которых есть план на месяц; "
                 "отставание — % плана минус % прошедших дней: до 3 п. п. — норма, 3–8 — внимание, больше 8 — критично "
                 "(статус — по выручке НТУ, без учёта сервиса).",
+                SERVICE_RULE,
             ],
         },
     }

@@ -136,6 +136,7 @@ ssh root@<IP> "chown azs:azs /opt/azs/data/stations.json && systemctl restart az
 # /opt/azs/.env
 APP_DATA_MODE=local
 KPI_DATA_MODE=local
+APP_STAGE=production          # тестовые данные (mock) на сервере запрещены — ответ 503
 KPI_IMPORT_TOKEN=<длинный случайный токен>
 
 systemctl restart azs-api

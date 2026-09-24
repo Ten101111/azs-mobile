@@ -129,6 +129,48 @@ class DwhScopeTest(unittest.TestCase):
         self.assertIn(("territory_manager", "Петрова Анна Ивановна", 45), items)
 
 
+class DwhUnreachableTest(DwhScopeTest):
+    """Витрина недоступна (выключен VPN): статус раздела ИИ не должен ждать таймаутов ОХД."""
+
+    def _down(self):
+        def fake(sql, row_limit, timeout_s=None):
+            self.sql.append(sql)
+            raise ExecutionError("could not connect to server: timeout")
+        return mock.patch.object(executor, "run", side_effect=fake)
+
+    def test_failed_identities_are_not_retried_on_every_status(self):
+        with self._down():
+            self.assertEqual(dwh_scope.identities(5), [])
+            self.assertEqual(len(self.sql), 3)
+            self.assertEqual(dwh_scope.identities(5), [])        # в пределах FAIL_TTL — без новых попыток
+            self.assertEqual(len(self.sql), 3)
+
+    def test_status_path_does_not_wait_for_dwh(self):
+        import threading
+        import time
+
+        gate = threading.Event()
+
+        def slow(sql, row_limit, timeout_s=None):
+            gate.wait(2)
+            self.sql.append(sql)
+            return _result([["Петрова Анна Ивановна", 45]])
+
+        with mock.patch.object(executor, "run", side_effect=slow):
+            started = time.monotonic()
+            self.assertIsNone(dwh_scope.identities(5, wait=False))
+            self.assertIsNone(dwh_scope.cached_build("territory_manager", "Петрова Анна Ивановна"))
+            self.assertLess(time.monotonic() - started, 0.5)        # ответ сразу, запросы — в фоне
+            gate.set()
+            for _ in range(100):
+                if (dwh_scope.identities(5, wait=False) is not None
+                        and dwh_scope.cached_build("territory_manager", "Петрова Анна Ивановна") is not None):
+                    break
+                time.sleep(0.02)
+            self.assertIn(("territory_manager", "Петрова Анна Ивановна", 45), dwh_scope.identities(5, wait=False))
+        self.assertTrue(dwh_scope.cached_build("admin", "").unrestricted)
+
+
 class StandUnchangedTest(unittest.TestCase):
     def test_sqlite_uses_app_reference(self):
         dwh_scope.clear_cache()

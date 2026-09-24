@@ -12,6 +12,11 @@ SQLite (sqlglot) и выполняет его на файле, подключё�
   7012 — открыт в 2026 году (нет прошлого года).
 Планы (part_2) — на каждый день месяца, включая будущие дни, до конца сентября 2026:
 топливо — на 2 % выше обычного дня, выручка НТУ — на 5 %, ВД НТУ — на 5 %.
+Оценки сервиса (part_2) — на каждый день с данными: 10–14 оценок, из них две «4» и
+одна «3», остальные «5». Негатив («1» и «2») в отчётной неделе: 7005 — четыре
+(касса — 3, чистота — 1) и жалоба ЕГЛ, 7020 — две (техсостояние), 7030 — одна
+(другое, ниже порога); в прошлой неделе — одна у 7005 (касса); в той же неделе
+прошлого года — одна у 7003 (чистота).
 """
 from __future__ import annotations
 
@@ -62,13 +67,44 @@ def mart_catalog() -> Catalog:
     )
 
 
+PREV_WEEK = periods.previous(REPORT_WEEK)
+LAST_YEAR_WEEK = periods.last_year(REPORT_WEEK)
+# (объект, неделя, день недели) → (оценка «1» или «2», категория негатива)
+NEGATIVE = {
+    (7005, "w", 0): (1, "rate_pers_act_azs_cnt"), (7005, "w", 1): (1, "rate_pers_act_azs_cnt"),
+    (7005, "w", 2): (1, "rate_pers_act_azs_cnt"), (7005, "w", 3): (2, "rate_clear_azs_cnt"),
+    (7020, "w", 0): (2, "rate_tech_azs_cnt"), (7020, "w", 1): (2, "rate_tech_azs_cnt"),
+    (7030, "w", 2): (1, "rate_other_azs_cnt"),
+    (7005, "p", 0): (1, "rate_pers_act_azs_cnt"),
+    (7003, "y", 1): (2, "rate_clear_azs_cnt"),
+}
+COMPLAINTS = {(7005, "w", 4): 1}
+
+
+def _ratings(key: int, i: int, day: date) -> dict:
+    part = next((name for name, w in (("w", REPORT_WEEK), ("p", PREV_WEEK), ("y", LAST_YEAR_WEEK))
+                 if w.start <= day <= w.end), "")
+    total = 10 + i % 5
+    row = {"all_rate": total, "rate_cnt_5": total - 3, "rate_cnt_4": 2, "rate_cnt_3": 1,
+           "rate_cnt_2": 0, "rate_cnt_1": 0, "all_negative_rate_category": 0,
+           "cnt_num_compl": COMPLAINTS.get((key, part, day.weekday()), 0)}
+    bad = NEGATIVE.get((key, part, day.weekday()))
+    if bad:
+        grade, category = bad
+        row["rate_cnt_5"] -= 1
+        row[f"rate_cnt_{grade}"] += 1
+        row[category] = 1
+        row["all_negative_rate_category"] = 1
+    return row
+
+
 def _day_fuel(i: int, day: date) -> float:
     return 3000 + 100 * i + (400 if day.weekday() >= 5 else 0)
 
 
 def build(folder: pathlib.Path, *, last_day: date = date(2026, 9, 20), sparse: bool = False,
-          plan_until: date | None = date(2026, 9, 30)) -> pathlib.Path:
-    """Файл SQLite с таблицами витрины; `plan_until=None` — планов нет вовсе."""
+          plan_until: date | None = date(2026, 9, 30), ratings: bool = True) -> pathlib.Path:
+    """Файл SQLite с таблицами витрины; `plan_until=None` — планов нет вовсе, `ratings=False` — оценок нет."""
     path = folder / "dm.sqlite3"
     conn = sqlite3.connect(path)
     def kind(column: str) -> str:
@@ -87,11 +123,15 @@ def build(folder: pathlib.Path, *, last_day: date = date(2026, 9, 20), sparse: b
             if key == 7012 and day < date(2026, 1, 1):
                 continue
             usual = _day_fuel(i, day)
+            part2 = {"ksss_azs_code": key, "account_date": day.isoformat()}
             if day <= plan_end and day >= date(2026, 8, 1):
                 ntu_usual = usual / 40 * 0.3 * 350
-                plans.append({"ksss_azs_code": key, "account_date": day.isoformat(),
-                              "plan_weights_b2c": usual * 1.02 * 0.9, "plan_weights_b2b": usual * 1.02 * 0.1,
+                part2.update({"plan_weights_b2c": usual * 1.02 * 0.9, "plan_weights_b2b": usual * 1.02 * 0.1,
                               "plan_ntu_revenue": ntu_usual * 1.05, "plan_ntu_vd": ntu_usual * 0.3 * 1.05})
+            if day <= last_day and ratings:
+                part2.update(_ratings(key, i, day))
+            if len(part2) > 2:
+                plans.append(part2)
             if day > last_day:
                 continue
             in_week = REPORT_WEEK.start <= day <= REPORT_WEEK.end

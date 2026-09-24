@@ -150,14 +150,15 @@ def entries(days: int = 30, rating: int | None = None, role: str = "",
     try:
         rows = conn.execute(
             "SELECT f.message_id, f.rating, f.comment, f.created_at,"
-            "       m.question, q.role, q.binding, q.scope_label, q.model, q.verdict,"
+            "       COALESCE(m.question, q.question) AS question, q.role, q.binding, q.scope_label, q.model, q.verdict,"
             "       q.rule, q.sql_final, q.prompt_version,"
             "       COALESCE(q.model_ms, 0) + COALESCE(q.sql_ms, 0) AS total_ms,"
             "       COALESCE(r.status, 'new') AS status, COALESCE(r.owner, '') AS owner,"
             "       COALESCE(r.note, '') AS note, COALESCE(r.in_golden, 0) AS in_golden,"
             "       r.first_seen "
             "FROM ai_feedback f "
-            "JOIN ai_messages m ON m.id = f.message_id "
+            # LEFT JOIN: диалог мог удалиться по сроку хранения (ИИ-02), а журнал аудита живёт дольше.
+            "LEFT JOIN ai_messages m ON m.id = f.message_id "
             "LEFT JOIN ai_queries q ON q.id = f.journal_id "
             "LEFT JOIN ai_feedback_review r ON r.message_id = f.message_id "
             f"WHERE {' AND '.join(where)} "

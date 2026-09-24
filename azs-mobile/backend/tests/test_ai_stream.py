@@ -150,8 +150,9 @@ class AiStreamTests(unittest.TestCase):
             raise RuntimeError("Витрина недоступна")
         ai_api.pipeline.ask = boom
         frames = _frames(self._ask())
-        self.assertEqual([n for n, _ in frames], ["failed"])
-        self.assertEqual(frames[0][1]["detail"], "Витрина недоступна")
+        # Первым идёт номер запуска (ИИ-03: по нему вопрос можно остановить).
+        self.assertEqual([n for n, _ in frames], ["run", "failed"])
+        self.assertEqual(frames[1][1]["detail"], "Витрина недоступна")
 
 
 if __name__ == "__main__":

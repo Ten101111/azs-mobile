@@ -499,6 +499,18 @@ def startup():
             "AUTH_EMAIL_DEV_MODE is active — OTP codes are returned in API responses. "
             "This MUST NEVER be used in production."
         )
+    try:
+        # ИИ-02: ночная очистка истории ИИ по срокам хранения ролей (фоновый поток).
+        from backend.ai import retention as _ai_retention
+
+        if (os.environ.get("AI_DEMO_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            _ai_retention.start_scheduler()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AI retention scheduler not started: %s", exc)
+    if mock_blocked():
+        _sec.critical("APP_DATA_MODE=mock on a production server (APP_STAGE=production): KPI endpoints answer 503.")
+    elif data_mode() == "mock":
+        logger.warning("APP_DATA_MODE=mock — screens show generated test numbers, not real stations.")
 
 
 @app.middleware("http")
@@ -553,8 +565,40 @@ def current_period() -> str:
     return datetime.now().strftime("%Y-%m")
 
 
+DATA_MODES = {"mock", "local", "file", "db"}
+
+
+def is_production() -> bool:
+    """Рабочий сервер: APP_STAGE=production в его .env (deploy/env.production.example)."""
+    return (os.getenv("APP_STAGE") or "").strip().lower() in {"production", "prod"}
+
+
 def data_mode() -> str:
-    return os.getenv("APP_DATA_MODE") or os.getenv("KPI_DATA_MODE", "mock")
+    """Источник показателей АЗС. По умолчанию — local (агрегаты витрины), а не тестовые числа.
+
+    Бэклог №31: раньше без APP_DATA_MODE сервер молча отдавал сгенерированные
+    показатели (mock) — их легко было принять за настоящие. Теперь mock — только
+    явным APP_DATA_MODE=mock, в рабочем режиме запрещён (kpi_mode), а интерфейс
+    показывает плашку «Тестовые данные».
+    """
+    return (os.getenv("APP_DATA_MODE") or os.getenv("KPI_DATA_MODE") or "local").strip().lower()
+
+
+def mock_blocked() -> bool:
+    return data_mode() == "mock" and is_production()
+
+
+def kpi_mode() -> str:
+    """Режим данных для запросов показателей: тестовые данные на рабочем сервере — отказ, а не подмена."""
+    mode = data_mode()
+    if mode == "mock" and is_production():
+        raise HTTPException(
+            status_code=503,
+            detail="Тестовые данные на рабочем сервере запрещены: задайте APP_DATA_MODE=local",
+        )
+    if mode not in DATA_MODES:
+        raise HTTPException(status_code=500, detail=f"Unsupported APP_DATA_MODE: {mode}")
+    return mode
 
 
 def auth_enabled() -> bool:
@@ -2505,7 +2549,7 @@ def health():
     except Exception:
         pass
     return {
-        "status": "ok" if db_ok else "degraded",
+        "status": "ok" if db_ok and not mock_blocked() else "degraded",
         "db": "ok" if db_ok else "error",
         "kpiDb": "ok" if kpi_db_ok else "error",
         "fuelStockDb": "ok" if fuel_stock_db_ok else "error",
@@ -2515,6 +2559,7 @@ def health():
         "fuelOutages": fuel_outages,
         "activeSessions": active_sessions,
         "mode": data_mode(),
+        "mockBlocked": mock_blocked(),
         "version": "0.5.0",
     }
 
@@ -3225,7 +3270,7 @@ def available_staff_periods(_user: AuthUser = Depends(require_user)):
 
 @app.get("/api/kpis/periods", response_model=KpiPeriodsResponse)
 def available_kpi_periods(_user: AuthUser = Depends(require_user)):
-    mode = data_mode().lower()
+    mode = kpi_mode()
     periods = kpi_periods() if mode in {"local", "file"} else []
     with kpi_connection() as conn:
         updated_at = latest_kpi_updated_at(conn) if periods else datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -3245,7 +3290,7 @@ def station_kpis(
     ksss = validate_ksss(ksss)
     ensure_station_in_scope(ksss, user)
     period = validate_period(period)
-    mode = data_mode().lower()
+    mode = kpi_mode()
 
     if mode == "mock":
         return mock_kpis(ksss, period)
@@ -3266,7 +3311,7 @@ def station_staff(
     ksss = validate_ksss(ksss)
     ensure_station_in_scope(ksss, user)
     period = validate_period(period)
-    mode = data_mode().lower()
+    mode = kpi_mode()
 
     if mode in {"mock", "file", "local"}:
         staff = file_staff(ksss, period)
@@ -3403,7 +3448,7 @@ def analytics_overview(
 ):
     period = validate_period(period)
     stations = stations_in_scope(user)
-    mode = data_mode().lower()
+    mode = kpi_mode()
 
     if mode == "mock":
         return mock_overview(period, groupBy)
@@ -3425,7 +3470,7 @@ def station_similar(
     ksss = validate_ksss(ksss)
     ensure_station_in_scope(ksss, user)
     period = validate_period(period)
-    mode = data_mode().lower()
+    mode = kpi_mode()
 
     if mode == "mock":
         return mock_similar(ksss, period, limit)
@@ -3445,7 +3490,7 @@ def analytics_compare(
 ):
     period = validate_period(period)
     ksss = ksss_in_scope(ksss, user)
-    mode = data_mode().lower()
+    mode = kpi_mode()
 
     if mode == "mock":
         return mock_compare(ksss, period)
@@ -3475,6 +3520,14 @@ try:
     logger.info("Roles router mounted")
 except Exception as _roles_err:  # noqa: BLE001
     logger.warning("Roles router not mounted: %s", _roles_err)
+
+try:
+    from backend.feedback import build_router as _build_feedback_router
+
+    app.include_router(_build_feedback_router(require_user, require_admin, auth_connection))
+    logger.info("Feedback router mounted")
+except Exception as _feedback_err:  # noqa: BLE001
+    logger.warning("Feedback router not mounted: %s", _feedback_err)
 
 # --- Справки (СП-01…СП-05, 23.09.2026) ---------------------------------------
 def send_notice_email(to: str, subject: str, text: str) -> None:
@@ -3542,10 +3595,22 @@ try:
 except Exception as _reports_err:  # noqa: BLE001
     logger.warning("Reports router not mounted: %s", _reports_err)
 
+def notify_ai_alert(subject: str, text: str, to: str = "") -> None:
+    """Алерт ИИ-контура (решение №12): получатель — из «Лимитов ИИ», по умолчанию администраторы."""
+    if not email_configured():
+        logger.warning("AI alert not sent (email is not configured): %s", subject)
+        return
+    for email in ([to] if to else sorted(admin_emails())):
+        try:
+            send_notice_email(email, subject, text)
+        except Exception as exc:  # noqa: BLE001 - письмо не должно ронять вопрос
+            logger.warning("AI alert to %s failed: %s", email, exc)
+
+
 try:
     from backend.ai.api import build_router as _build_ai_router
 
-    app.include_router(_build_ai_router(require_admin, require_user))
+    app.include_router(_build_ai_router(require_admin, require_user, notify_ai_alert))
     logger.info("AI demo router mounted")
 except Exception as _ai_err:  # noqa: BLE001
     logger.warning("AI demo router not mounted: %s", _ai_err)

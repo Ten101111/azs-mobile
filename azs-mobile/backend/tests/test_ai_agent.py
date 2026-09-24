@@ -507,7 +507,8 @@ class ApiAgentTests(unittest.TestCase):
         store.JOURNAL_DB = path
         self.seen: list[dict] = []
 
-        def fake_ask(question, role, binding, actor, model=None, on_stage=None, depth="auto", history=None):
+        def fake_ask(question, role, binding, actor, model=None, on_stage=None, depth="auto", history=None,
+                     control=None):
             self.seen.append({"question": question, "depth": depth, "history": history or []})
             return ApiAgentTests._Answer()
 

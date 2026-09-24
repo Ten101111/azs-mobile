@@ -35,9 +35,9 @@ from ..ai.agent import grounding, recommend
 from ..ai.agent.claims import HYPOTHESIS_RE
 from . import fmt
 
-PROMPT_VERSION = "2026-09-24.1"
+PROMPT_VERSION = "2026-09-24.2"
 AI, TEMPLATE = "ai", "template"
-MAX_HEADLINE = 6
+MAX_HEADLINE = 7
 MAX_ATTENTION = 4
 MAX_RECOMMENDATIONS = 2
 MAX_LINE = 400
@@ -60,8 +60,8 @@ SYSTEM = """Ты пишешь текст еженедельной справки
 2. Только факты из сводки. Не объясняй причины и не строй предположений: без слов «из-за», «благодаря», «вероятно», «возможно», «может», «связано», «вызвано».
 3. Названия ОНПО, регионов и объектов пиши так же, как в сводке; ОНПО — в кавычках-ёлочках: ОНПО «Юг».
 4. Без заголовков, markdown, эмодзи и английских слов.
-5. headline — от 3 до 6 предложений: реализация топлива и выручка НТУ за неделю с изменением к прошлой неделе и к той же неделе прошлого года; если в сводке есть план месяца — его выполнение по выручке НТУ и топливу рядом с долей прошедших дней и отставание в п. п.; ОНПО с лучшей и худшей динамикой топлива; сколько объектов в зоне внимания.
-6. attention — от 1 до 4 коротких пунктов о зоне внимания: какие объекты сильнее всего потеряли в топливе и где не было продаж. Если в зоне внимания нет объектов — пустой список.
+5. headline — от 3 до 7 предложений: реализация топлива и выручка НТУ за неделю с изменением к прошлой неделе и к той же неделе прошлого года; если в сводке есть план месяца — его выполнение по выручке НТУ и топливу рядом с долей прошедших дней и отставание в п. п.; если есть сервис — одно предложение: средняя оценка в приложении за неделю с изменением к прошлой неделе, число негативных оценок и жалоб ЕГЛ (не называй среднюю оценку уровнем сервиса); ОНПО с лучшей и худшей динамикой топлива; сколько объектов в зоне внимания.
+6. attention — от 1 до 4 коротких пунктов о зоне внимания: какие объекты сильнее всего потеряли в топливе, где не было продаж и где больше всего негативных оценок в приложении. Если в зоне внимания нет объектов — пустой список.
 7. recommendations — не больше двух и только если в зоне внимания есть объекты. Каждая: action — осторожное действие для руководителя («стоит проверить…», «имеет смысл уточнить…»); basis — факт из сводки с числом; effect — чего ждать, без новых чисел; limits — когда рекомендация не подходит. Не предлагай акции, скидки, промо и бонусы клиентам; не предлагай оценивать, наказывать или премировать работников. Если рекомендовать нечего — пустой список.
 
 Ответ — только JSON: {"headline": ["..."], "attention": ["..."], "recommendations": [{"action": "...", "basis": "...", "effect": "...", "limits": "..."}]}"""
@@ -88,7 +88,9 @@ class Rejected(Exception):
 # --- сводка для модели -------------------------------------------------------
 
 def _zone(att: dict) -> int:
-    return len(set(att.get("dropKeys") or [r["key"] for r in att.get("drops", [])]) | {r["key"] for r in att.get("noSales", [])})
+    """Объекты зоны внимания — как в weekly.zone_keys: падение топлива, дни без продаж, негатив в приложении."""
+    return len(set(att.get("dropKeys") or [r["key"] for r in att.get("drops", [])])
+               | {r["key"] for r in att.get("noSales", [])} | set(att.get("negativeKeys") or []))
 
 
 def facts(model: dict) -> dict:
@@ -117,7 +119,10 @@ def facts(model: dict) -> dict:
 
     def station(r: dict) -> dict:
         out = {"объект": r["label"], "регион": r.get("region") or "", "ОНПО": r.get("onpo") or ""}
-        if "idleDays" in r:
+        if "negative" in r:
+            out.update({"негативных оценок за неделю": r["negative"], "оценок за неделю": r.get("ratings"),
+                        "средняя оценка": fmt.number(r.get("avg"), 3), "главная категория негатива": r.get("category") or "—"})
+        elif "idleDays" in r:
             out["дней без продаж"] = r["idleDays"]
         else:
             out.update({"топливо за неделю": fmt.value(r["fuel"], unit), "прошлая неделя": fmt.value(r["fuelPrev"], unit),
@@ -142,11 +147,41 @@ def facts(model: dict) -> dict:
             "самые сильные падения топлива": [station(r) for r in att["drops"][:TOP_ROWS]],
             "без продаж": [station(r) for r in att["noSales"][:TOP_ROWS]],
             "лидеры роста топлива": [station(r) for r in att["leaders"][:3]],
+            **({f"{th.get('negativeMin', 2)} и больше негативных оценок в приложении за неделю": att["negativeTotal"],
+                "больше всего негатива в приложении": [station(r) for r in att.get("negative", [])[:TOP_ROWS]]}
+               if "negativeTotal" in att else {}),
         },
         "план месяца": _plan_facts(model.get("plan")),
+        "сервис": _service_facts(model.get("service")),
         "праздники": [f"{h['date']} — {h['name']}" for h in model["passport"].get("holidays", [])],
         "примечание": "Изменения — по сопоставимой базе: объекты с данными за все 7 дней в обоих периодах; "
                       "для долей — в процентных пунктах.",
+    }
+
+
+def _service_facts(service: dict | None):
+    if not service:
+        return "оценок сервиса в витрине нет"
+
+    def row(r: dict) -> dict:
+        v = lambda x: "нет данных" if x is None else fmt.value(x, r["unit"], r["decimals"])  # noqa: E731
+        return {"показатель": r["title"], "за неделю": v(r["value"]), "прошлая неделя": v(r["prev"]),
+                "изменение к прошлой неделе": fmt.change(r["deltaPrev"], r["deltaKind"], r["decimals"]),
+                "та же неделя прошлого года": v(r["lastYear"]),
+                "изменение к той же неделе прошлого года": fmt.change(r["deltaYear"], r["deltaKind"], r["decimals"])}
+
+    return {
+        "примечание": "средняя оценка — по всем оценкам клиентов в приложении; это не официальный уровень сервиса, "
+                      "цели в витрине нет",
+        "показатели": [row(r) for r in service["metrics"]],
+        "с начала месяца": [{"месяц": m["label"], "месяц закрыт": m["closed"], "средняя оценка": fmt.number(m["avg"], 3),
+                             "оценок": m["ratings"], "негативных оценок": m["negative"], "жалоб ЕГЛ": m["complaints"]}
+                            for m in service.get("months", [])],
+        "негатив по категориям": [{"категория": c["title"], "за неделю": c["week"], "прошлая неделя": c["prev"]}
+                                  for c in service.get("categories", [])],
+        "ОНПО": [{"ОНПО": o["name"], "средняя оценка": fmt.number(o["avg"], 3),
+                  "к прошлой неделе": fmt.signed(o.get("avgDeltaPrev"), 3), "негативных оценок": o["negative"]}
+                 for o in service.get("onpo", [])],
     }
 
 
@@ -263,7 +298,9 @@ class Evidence:
                                                              "pacePerDay", "stations") if r.get(k) is not None)
             for o in month["onpo"]:
                 self.percent.update(abs(float(v)) for k, v in o.items() if k.endswith(("Pct", "Gap")) and v is not None)
+        self._service(model.get("service") or {}, att)
         th = p["thresholds"]
+        self.plain.update(float(th[k]) for k in ("negativeMin", "topNegative") if th.get(k) is not None)
         self.percent.update(float(v) for v in (th["fuelDropPct"], th["completeSharePct"], th["minBaseShareOfMedian"] * 100,
                                                p["completeness"]["sharePct"], p["completeness"]["thresholdPct"]))
         self.plain.update(float(v) for v in (th["noSalesDays"], th["topDrops"], th["topLeaders"], p["stationsWeek"],
@@ -281,6 +318,31 @@ class Evidence:
                 self.plain.add(float(number))
         self.names.update(r for r in (model.get("scopeLabel"), model.get("title"), "Вся сеть", "вся сеть") if r)
         self.lower_names = {n.lower() for n in self.names}
+
+    def _service(self, service: dict, att: dict) -> None:
+        """Числа сервиса: средняя оценка и разности — простые числа, доли и изменения в % — проценты."""
+        for r in service.get("metrics", []):
+            (self.percent if r["unit"] == "%" else self.plain).update(
+                abs(float(v)) for v in (r["value"], r["prev"], r["lastYear"]) if v is not None)
+            (self.percent if r["deltaKind"] in ("pct", "pp") else self.plain).update(
+                abs(float(v)) for v in (r["deltaPrev"], r["deltaYear"]) if v is not None)
+            self.names.add(r["title"])
+        for row in service.get("months", []) + service.get("onpo", []):
+            self.plain.update(abs(float(row[k])) for k in ("avg", "ratings", "negative", "complaints", "quality",
+                                                          "stations", "avgDeltaPrev", "daysPassed", "daysTotal")
+                              if row.get(k) is not None)
+            if row.get("negativeShare") is not None:
+                self.percent.add(float(row["negativeShare"]))
+            if row.get("name"):
+                self.names.add(row["name"])
+        for c in service.get("categories", []):
+            self.plain.update(float(v) for v in (c["week"], c["prev"]) if v is not None)
+            self.names.add(c["title"])
+        for r in att.get("negative", []):
+            self.plain.update(abs(float(r[k])) for k in ("negative", "ratings", "avg", "complaints") if r.get(k) is not None)
+            self._object(r)
+        if att.get("negativeTotal") is not None:
+            self.plain.add(float(att["negativeTotal"]))
 
     def _object(self, row: dict) -> None:
         for key in ("label", "region", "onpo"):
