@@ -508,7 +508,7 @@ class ApiAgentTests(unittest.TestCase):
         self.seen: list[dict] = []
 
         def fake_ask(question, role, binding, actor, model=None, on_stage=None, depth="auto", history=None,
-                     control=None):
+                     control=None, files=None, memory=None):
             self.seen.append({"question": question, "depth": depth, "history": history or []})
             return ApiAgentTests._Answer()
 

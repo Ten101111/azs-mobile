@@ -311,9 +311,11 @@ class AgentOutcome:
     # Для журнала (ИИ-03): почему закончился сбор данных и сколько было вызовов инструментов.
     stop_reason: str = ""
     tool_calls: int = 0
+    # Сколько раз старые результаты сжимались, чтобы уложиться в контекст модели.
+    context_trims: int = 0
 
     @property
     def main_result(self) -> ResultSet | None:
         """Главная таблица ответа: последний SQL-результат с данными."""
-        candidates = [r for r in self.workspace.results.values() if r.rows]
+        candidates = [r for r in self.workspace.results.values() if r.rows and r.source != "file_text"]
         return candidates[-1] if candidates else None

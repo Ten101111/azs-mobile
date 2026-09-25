@@ -585,6 +585,8 @@ function rowsWord(n) {
 }
 
 function sourceText(source) {
+  // Файлы пользователя (ИИ-07): заголовок уже содержит имя, лист или страницу и строки.
+  if (source.kind === "file" || source.kind === "file_text") return source.title;
   const rows = typeof source.rows === "number" ? `, ${source.rows.toLocaleString("ru-RU")} ${rowsWord(source.rows)}` : "";
   const kind = source.kind === "python" ? "вычисление" : "запрос к витрине";
   return `${kind} «${source.title}»${rows}`;

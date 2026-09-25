@@ -55,7 +55,13 @@ LATE_COLUMNS = (("prompt_version", "TEXT"), ("depth", "TEXT"), ("task_type", "TE
                 ("tokens_in", "INTEGER"), ("tokens_out", "INTEGER"), ("model_calls", "INTEGER"),
                 ("tool_calls", "INTEGER"), ("stop_reason", "TEXT"), ("depth_requested", "TEXT"),
                 # ИИ-26: результат обрезан лимитом строк — «упирались в лимит» во вкладке «Лимиты ИИ».
-                ("truncated", "INTEGER"))
+                ("truncated", "INTEGER"),
+                # 25.09.2026: время модели — чтение контекста, письмо, загрузка в память;
+                # model_trace — то же по каждому вызову и число сжатий переписки (JSON).
+                ("model_prompt_ms", "INTEGER"), ("model_eval_ms", "INTEGER"), ("model_load_ms", "INTEGER"),
+                ("model_trace", "TEXT"),
+                # ИИ-07 / ИИ-11: файлы вопроса (имя, вид, размер, хэш — без содержимого) и память папки.
+                ("files_json", "TEXT"), ("memory_folder", "TEXT"))
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -87,7 +93,8 @@ def write(entry: dict) -> int:
 
 
 RUN_STATS = ("total_ms", "tokens_in", "tokens_out", "model_calls", "tool_calls", "stop_reason", "depth_requested",
-             "truncated")
+             "truncated", "model_prompt_ms", "model_eval_ms", "model_load_ms", "model_trace",
+             "files_json", "memory_folder")
 
 
 def set_run_stats(entry_id: int | None, **stats) -> None:
@@ -146,6 +153,39 @@ def depth_timings(days: int = 7) -> dict[str, dict]:
         median = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) // 2
         out[depth] = {"median_ms": median, "count": len(values)}
     return out
+
+
+def model_timings(days: int = 7) -> list[dict]:
+    """Куда уходит время модели по уровням глубины за последние дни (25.09.2026).
+
+    Только ответы, у которых время модели записано (с 25.09.2026). Средние на
+    ответ: чтение контекста, письмо, загрузка модели; вызовов модели и размер
+    контекста на один вызов (в токенах, вместе с частью из кэша).
+    """
+    since = int(time.time()) - days * 86400
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT depth, COUNT(*) AS n, AVG(total_ms) AS total, AVG(model_prompt_ms) AS prompt,"
+            "       AVG(model_eval_ms) AS eval, AVG(model_load_ms) AS load,"
+            "       SUM(model_calls) AS calls, SUM(tokens_in) AS tin, SUM(tokens_out) AS tout "
+            "FROM ai_queries WHERE created_at >= ? AND model_prompt_ms IS NOT NULL AND depth IS NOT NULL "
+            "GROUP BY depth", (since,),
+        ).fetchall()
+    finally:
+        conn.close()
+    order = {"fast": 0, "analyze": 1, "deep": 2}
+    out = []
+    for depth, n, total, prompt, eval_ms, load, calls, tin, tout in rows:
+        calls = int(calls or 0)
+        out.append({
+            "depth": str(depth), "answers": int(n), "totalMs": int(total or 0),
+            "promptMs": int(prompt or 0), "evalMs": int(eval_ms or 0), "loadMs": int(load or 0),
+            "callsPerAnswer": round(calls / n, 1) if n else 0,
+            "tokensInPerCall": int((tin or 0) / calls) if calls else 0,
+            "tokensOutPerCall": int((tout or 0) / calls) if calls else 0,
+        })
+    return sorted(out, key=lambda item: order.get(item["depth"], 9))
 
 
 def recent(limit: int = 50) -> list[dict]:

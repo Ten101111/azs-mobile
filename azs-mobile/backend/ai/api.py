@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import quote
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,8 @@ from . import export as ai_export_mod
 from . import quotas
 from . import limit_settings
 from . import retention
+from . import journal_view, topics
+from . import file_parse, files as file_store
 from .catalog import CATALOG
 
 
@@ -50,6 +52,10 @@ class AskRequest(BaseModel):
     dialogId: int | None = None
     # auto — глубину выбирает разбор задачи; fast/analyze/deep — принудительно.
     depth: str = Field(default="auto", max_length=10)
+    # ИИ-07: файлы-черновики, приложенные к вопросу нового диалога (файлы диалога и папки
+    # берутся сами); ИИ-11: учитывать ли память папки в этом вопросе.
+    fileIds: list[int] = Field(default_factory=list, max_length=10)
+    useMemory: bool = True
 
 
 class LimitChange(BaseModel):
@@ -80,6 +86,10 @@ class ArchiveRequest(BaseModel):
 
 class ArchiveOldestRequest(BaseModel):
     count: int = Field(default=10, ge=1, le=200)
+
+
+class MemoryRequest(BaseModel):
+    text: str = Field(default="", max_length=20_000)
 
 
 class FolderRequest(BaseModel):
@@ -136,6 +146,8 @@ class AskResponse(BaseModel):
     depthRequested: str = "auto"
     # Счётчики лимитов после ответа (ИИ-03): остаток «Высокого» на сегодня.
     quota: dict | None = None
+    # ИИ-07 / ИИ-11: что учёл ответ — файлы и память папки.
+    context: dict = {}
 
 
 class Identity(BaseModel):
@@ -296,6 +308,7 @@ def _response(answer, show_sql: bool) -> "AskResponse":
         planMs=int(getattr(answer, "plan_ms", 0) or 0),
         totalMs=int(getattr(answer, "total_ms", 0) or 0),
         depthRequested=getattr(answer, "depth_requested", "auto") or "auto",
+        context=getattr(answer, "context", {}) or {},
     )
 
 
@@ -579,6 +592,9 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
             if dialog_id is None:
                 # Лимит активных проверен до вопроса (_can_start); готовый ответ не теряем.
                 dialog_id = dialog_store.create_dialog(int(user_id), role=_own_role(user), check=False)["id"]
+            if payload.fileIds:
+                # ИИ-07: черновики, приложенные к вопросу, переходят в диалог.
+                file_store.link_drafts(int(user_id), payload.fileIds, int(dialog_id))
             stored = dialog_store.append_message(
                 int(dialog_id), int(user_id), answer.question,
                 response.model_dump(), answer.journal_id,
@@ -590,12 +606,23 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
         response.dialogTitle = stored["title"]
         return response
 
+    def _context(payload: AskRequest, user) -> dict:
+        """Файлы и память папки, которые учитывает вопрос (ИИ-07, ИИ-11). Только свои."""
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return {"files": [], "memory": None}
+        found = file_store.for_question(int(user_id), payload.dialogId, payload.fileIds)
+        folder = dialog_store.dialog_folder(payload.dialogId, int(user_id)) if payload.useMemory else None
+        memory = {"folder": folder["title"], "text": folder["memory"]} if folder and folder["memory"] else None
+        return {"files": found, "memory": memory}
+
     @router.post("/ask", response_model=AskResponse)
     def ai_ask(payload: AskRequest, user=Depends(guard)):
         role, binding, actor = _identity(payload, user)
         depth = _depth(payload)
         history = _history(payload, user)
         _can_start(payload, user)
+        context = _context(payload, user)
         run = _admit(payload, user, depth, actor)
         answer = None
         try:
@@ -603,6 +630,7 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
                 payload.question, role, binding, actor,
                 model=(payload.model or "").strip() or None,
                 depth=depth, history=history, control=quotas.Control(run),
+                files=context["files"], memory=context["memory"],
             )
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
@@ -629,6 +657,7 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
         history = _history(payload, user)
         # Лимиты проверяются до потока: отказ приходит обычным кодом 429 / 409 с причиной.
         _can_start(payload, user)
+        context = _context(payload, user)
         run = _admit(payload, user, depth, actor)
 
         events: queue.Queue = queue.Queue()
@@ -643,6 +672,7 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
                     payload.question, role, binding, actor, model=model,
                     on_stage=lambda event: events.put(("stage", event)),
                     depth=depth, history=history, control=quotas.Control(run),
+                    files=context["files"], memory=context["memory"],
                 )
                 _close(run, answer)
                 if getattr(answer, "rule", None) == "cancelled":
@@ -773,9 +803,70 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
     @router.get("/dialogs/{dialog_id}/messages")
     def ai_dialog_messages(dialog_id: int, user=Depends(guard)):
         try:
-            return {"messages": dialog_store.messages(dialog_id, int(user.id))}
+            messages = dialog_store.messages(dialog_id, int(user.id))
         except dialog_store.NotFound as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
+        folder = dialog_store.dialog_folder(dialog_id, int(user.id))
+        return {
+            "messages": messages,
+            # ИИ-07 / ИИ-11: файлы диалога и что даёт его папка.
+            "files": file_store.list_files(int(user.id), dialog_id=dialog_id),
+            "folder": {"id": folder["id"], "title": folder["title"], "memory": bool(folder["memory"]),
+                       "files": file_store.list_files(int(user.id), folder_id=folder["id"])} if folder else None,
+        }
+
+    # --- ИИ-07: файлы пользователя ------------------------------------------------------
+    @router.post("/files")
+    async def ai_file_upload(request: Request, name: str = Query(max_length=255), dialogId: int | None = None,
+                             folderId: int | None = None, user=Depends(guard)):
+        """Файл — телом запроса (без multipart). Разбор — в отдельном процессе."""
+        declared = int(request.headers.get("content-length") or 0)
+        if declared > file_parse.MAX_BYTES:
+            raise HTTPException(status_code=413, detail=f"Файл больше {file_parse.MAX_BYTES // (1024 * 1024)} МБ.")
+        data = await request.body()
+        if len(data) > file_parse.MAX_BYTES:
+            raise HTTPException(status_code=413, detail=f"Файл больше {file_parse.MAX_BYTES // (1024 * 1024)} МБ.")
+        from starlette.concurrency import run_in_threadpool
+
+        try:
+            return await run_in_threadpool(file_store.add, int(user.id), _own_role(user), name, data,
+                                           dialog_id=dialogId, folder_id=folderId)
+        except file_parse.Rejected as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        except file_store.Invalid as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        except dialog_store.Limit as err:
+            raise _limit(err) from err
+        except dialog_store.NotFound as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+
+    @router.get("/files")
+    def ai_file_list(dialogId: int | None = None, folderId: int | None = None, user=Depends(guard)):
+        return {"files": file_store.list_files(int(user.id), dialog_id=dialogId, folder_id=folderId),
+                "maxMb": file_parse.MAX_BYTES // (1024 * 1024),
+                "perPlace": int(quotas.value(_own_role(user), "files_per_folder")),
+                "usedMb": round(file_store.used_bytes(int(user.id)) / (1024 * 1024), 1),
+                "budgetMb": int(quotas.value(_own_role(user), "user_files_mb")),
+                "kinds": list(file_parse.KINDS)}
+
+    @router.delete("/files/{file_id}")
+    def ai_file_delete(file_id: int, user=Depends(guard)):
+        _dialog_call(file_store.delete, file_id, int(user.id))
+        return {"deleted": file_id}
+
+    # --- ИИ-11: память папки ----------------------------------------------------------------
+    @router.get("/folders/{folder_id}/memory")
+    def ai_folder_memory(folder_id: int, user=Depends(guard)):
+        memory = _dialog_call(dialog_store.folder_memory, folder_id, int(user.id), role=_own_role(user))
+        memory["files"] = file_store.list_files(int(user.id), folder_id=folder_id)
+        return memory
+
+    @router.put("/folders/{folder_id}/memory")
+    def ai_folder_memory_save(folder_id: int, payload: MemoryRequest, user=Depends(guard)):
+        memory = _dialog_call(dialog_store.set_folder_memory, folder_id, int(user.id), payload.text,
+                              role=_own_role(user))
+        memory["files"] = file_store.list_files(int(user.id), folder_id=folder_id)
+        return memory
 
     @router.post("/feedback")
     def ai_feedback(payload: FeedbackRequest, user=Depends(guard)):
@@ -842,9 +933,15 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
 
     def _load_report() -> dict:
         try:
-            return quotas.load_report(7)
+            report = quotas.load_report(7)
         except Exception:  # noqa: BLE001 - сводка нагрузки не должна ломать раздел
             return {}
+        try:
+            # Куда уходит время модели: чтение контекста, письмо, загрузка (25.09.2026).
+            report["model"] = journal.model_timings(7)
+        except Exception:  # noqa: BLE001
+            report["model"] = []
+        return report
 
     @router.post("/quality/{message_id}/review")
     def ai_quality_review(message_id: int, payload: ReviewRequest,
@@ -917,5 +1014,37 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
     @router.get("/journal")
     def ai_journal(limit: int = 50, _admin=Depends(require_admin)):
         return {"entries": journal.recent(max(1, min(limit, 200)))}
+
+    # --- «Журнал ИИ» (25.09.2026): все обращения с тематическими фильтрами --------
+    def _journal_args(days: int, role: str, depth: str, outcome: str, q: str, topic: list[str]) -> dict:
+        return {"days": max(0, min(int(days), 3650)), "role": role.strip(), "depth": depth.strip(),
+                "outcome": outcome.strip(), "text": q[:200], "chosen": journal_view.parse_topics(topic)}
+
+    @router.get("/admin/journal")
+    def ai_journal_list(days: int = 30, role: str = "", depth: str = "", outcome: str = "", q: str = "",
+                        topic: list[str] = Query(default=[]), limit: int = 50, offset: int = 0,
+                        _admin=Depends(require_admin)):
+        try:
+            topics.sync()          # новые вопросы — по правилам сразу; модель — фоном
+        except Exception:  # noqa: BLE001 - тематики не должны ломать журнал
+            pass
+        return journal_view.search(**_journal_args(days, role, depth, outcome, q, topic), limit=limit, offset=offset)
+
+    @router.get("/admin/journal/export")
+    def ai_journal_export(days: int = 30, role: str = "", depth: str = "", outcome: str = "", q: str = "",
+                          topic: list[str] = Query(default=[]), _admin=Depends(require_admin)):
+        blob = journal_view.export(**_journal_args(days, role, depth, outcome, q, topic))
+        stamp = time.strftime("%Y-%m-%d")
+        return Response(content=blob,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="ai-journal-{stamp}.xlsx"',
+                                 "Cache-Control": "no-store"})
+
+    @router.get("/admin/journal/{query_id}")
+    def ai_journal_detail(query_id: int, _admin=Depends(require_admin)):
+        item = journal_view.detail(query_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Записи нет в журнале")
+        return item
 
     return router

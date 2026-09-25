@@ -197,7 +197,7 @@ class ApiTests(Case):
             sql_ms = 0; attempts = 1; error = None; rule = None; journal_id = None; depth = "fast"
 
         def fake_ask(question, role, binding, actor, model=None, on_stage=None, depth="auto", history=None,
-                     control=None):
+                     control=None, files=None, memory=None):
             self.histories.append(len(history or []))
             return _Answer()
 

@@ -67,6 +67,8 @@ class OllamaErrorTests(unittest.TestCase):
             _Handler.body = OllamaErrorTests._memory_body()
         self.assertIn("перезапустите Ollama", str(caught.exception))
         self.assertEqual(_Handler.seen[-1]["options"]["num_ctx"], generator.NUM_CTX)
+        # Модель держится в памяти дольше пяти минут Ollama по умолчанию (AI_KEEP_ALIVE).
+        self.assertEqual(_Handler.seen[-1]["keep_alive"], generator.KEEP_ALIVE)
 
     @staticmethod
     def _memory_body():

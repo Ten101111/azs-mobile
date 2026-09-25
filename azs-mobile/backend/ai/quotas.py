@@ -485,6 +485,11 @@ class Runs:
             self._cond.notify_all()
             return True
 
+    def busy(self) -> bool:
+        """Идёт или ждёт очереди хотя бы один вопрос — фоновой работе модели лучше подождать."""
+        with self._cond:
+            return bool(self._active or self._waiting)
+
     def active_count(self, user) -> int:
         key = user_key_of(user)
         with self._cond:

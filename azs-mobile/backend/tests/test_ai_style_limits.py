@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
+import pathlib
+import tempfile
 import unittest
 
-from backend.ai import api, limits, semantic, textstyle
+from backend.ai import api, journal, limits, semantic, textstyle
 from backend.ai.agent import llm, loop, sql_tool
 from backend.ai.agent.state import Budget, Plan
 from backend.tests.test_ai_agent import StandCase
@@ -81,7 +83,14 @@ class AdminLimitsTests(unittest.TestCase):
         self.assertEqual(limits.ADMIN.max_seconds, 0)  # общего предела времени нет
 
     def test_depth_hint_for_admin_has_no_time_limit(self):
-        texts = {o["code"]: o["typical"] for o in api.depth_options(unlimited=True)}
+        # Ориентир времени читается из журнала — только из временного, не из data/ai_journal.sqlite3.
+        with tempfile.TemporaryDirectory() as folder:
+            saved = journal.JOURNAL_DB
+            journal.JOURNAL_DB = pathlib.Path(folder) / "journal.sqlite3"
+            try:
+                texts = {o["code"]: o["typical"] for o in api.depth_options(unlimited=True)}
+            finally:
+                journal.JOURNAL_DB = saved
         if "deep" in texts and not texts["deep"].startswith("обычно"):
             self.assertEqual(texts["deep"], "без ограничения времени")
 

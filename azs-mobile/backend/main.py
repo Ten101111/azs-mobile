@@ -507,6 +507,14 @@ def startup():
             _ai_retention.start_scheduler()
     except Exception as exc:  # noqa: BLE001
         logger.warning("AI retention scheduler not started: %s", exc)
+    try:
+        # «Журнал ИИ»: тематики вопросов — правила сразу, модель фоном, когда никто не ждёт ответа.
+        from backend.ai import topics as _ai_topics
+
+        if (os.environ.get("AI_DEMO_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            _ai_topics.start_worker()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AI topics worker not started: %s", exc)
     if mock_blocked():
         _sec.critical("APP_DATA_MODE=mock on a production server (APP_STAGE=production): KPI endpoints answer 503.")
     elif data_mode() == "mock":

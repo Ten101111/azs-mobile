@@ -8,6 +8,11 @@
 доступ только на чтение и песочница расчётов — это защита данных. Остаётся и
 страховка от зацикливания: число ходов модели велико, но конечно.
 
+Решение владельца от 25.09.2026: на «Среднем» у администратора — обычный бюджет
+шагов (5 запросов, 2 расчёта, 2 графика, 10 ходов модели). Без него «Средний»
+шёл по 20 шагов и 7 минут, как «Высокий». Время и строки остаются без пределов,
+«Высокий» — без ограничений. Вернуть прежнее — AI_ADMIN_ANALYZE_UNLIMITED=1.
+
 Роль берётся действующая: администратор, который смотрит ответы «от имени»
 другой роли, получает её пределы — так проверка показывает то, что увидит она.
 Значения меняются переменными окружения AI_ADMIN_* без правки кода.
@@ -33,6 +38,8 @@ def _float(name: str, default: float) -> float:
 
 
 UNLIMITED_ROLES = {r.strip() for r in (os.environ.get("AI_UNLIMITED_ROLES") or "admin").split(",") if r.strip()}
+# «Средний» у администратора без бюджета шагов — как было до 25.09.2026.
+ADMIN_ANALYZE_UNLIMITED = (os.environ.get("AI_ADMIN_ANALYZE_UNLIMITED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -81,16 +88,20 @@ def for_role(role: str | None) -> Limits:
 def for_run(role: str | None, depth: str) -> Limits:
     """Пределы одного ответа на уровне `depth` (ИИ-03, таблица Р-2 в quotas.py).
 
-    Администратор — без пределов (ADMIN). Остальным роли задают предел времени
-    уровня (Лёгкий / Средний / Высокий — 60 / 120 / 240 с) и строк в результате
-    (200 / 1000 / 2000, у РУ на «Высоком» — 1000).
+    Администратор — без пределов времени и строк (ADMIN); на «Среднем» у него
+    обычный бюджет шагов (решение 25.09.2026), на «Высоком» — без ограничений.
+    Остальным роли задают предел времени уровня (Лёгкий / Средний / Высокий —
+    60 / 120 / 240 с) и строк в результате (200 / 1000 / 2000, у РУ на «Высоком» — 1000).
     """
     base = for_role(role)
+    level = depth if depth in ("fast", "analyze", "deep") else "analyze"
     if base.unlimited:
+        if level == "analyze" and not ADMIN_ANALYZE_UNLIMITED:
+            # None — берётся бюджет уровня (agent/state.py Budget._standard).
+            return replace(base, sql_calls=None, python_calls=None, charts=None, model_turns=None)
         return base
     from . import quotas
 
-    level = depth if depth in ("fast", "analyze", "deep") else "analyze"
     return replace(
         base,
         max_seconds=float(quotas.value(role, f"seconds_{level}")),

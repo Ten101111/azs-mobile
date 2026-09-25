@@ -34,6 +34,8 @@ class ToolContext:
     sql_ms: int = 0
     # Предел одного расчёта в песочнице; None — AI_PY_TIMEOUT (у администратора больше).
     python_timeout_s: float | None = None
+    # ИИ-07: текстовые части файлов пользователя (t1, t2…) — file_tools.read_file.
+    file_texts: dict = field(default_factory=dict)
     _range: tuple | None = None
 
     def emit(self, step: Step, state: str) -> None:
@@ -194,4 +196,4 @@ def compact(result: dict, limit: int = 6000) -> str:
 
 
 # Регистрация инструментов: модули ниже добавляют себя в REGISTRY при импорте.
-from . import schema_tools, sql_tool, sandbox, charts  # noqa: E402,F401
+from . import schema_tools, sql_tool, sandbox, charts, file_tools  # noqa: E402,F401

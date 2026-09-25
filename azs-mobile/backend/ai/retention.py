@@ -71,6 +71,10 @@ def cleanup(now: int | None = None) -> dict:
                 expired.append(int(row["id"]))
         for dialog_id in expired:
             deleted_messages += conn.execute("DELETE FROM ai_messages WHERE dialog_id = ?", (dialog_id,)).rowcount
+            # ИИ-07: файлы диалога живут столько же, сколько диалог.
+            conn.execute("DELETE FROM ai_file_parts WHERE file_id IN (SELECT id FROM ai_files WHERE dialog_id = ?)",
+                         (dialog_id,))
+            conn.execute("DELETE FROM ai_files WHERE dialog_id = ?", (dialog_id,))
             conn.execute("DELETE FROM ai_dialogs WHERE id = ?", (dialog_id,))
         deleted_dialogs = len(expired)
 
@@ -81,6 +85,18 @@ def cleanup(now: int | None = None) -> dict:
                 audit += conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (audit_since,)).rowcount
             except sqlite3.OperationalError:
                 continue                    # таблицы ещё нет — чистить нечего
+        # Тематики «Журнала ИИ» живут, пока жива запись журнала.
+        for table in ("ai_query_topics", "ai_topic_state"):
+            try:
+                conn.execute(f"DELETE FROM {table} WHERE query_id NOT IN (SELECT id FROM ai_queries)")
+            except sqlite3.OperationalError:
+                continue
+        # Черновики файлов, так и не приложенные к вопросу, — через сутки.
+        drafts = [int(r[0]) for r in conn.execute(
+            "SELECT id FROM ai_files WHERE dialog_id IS NULL AND folder_id IS NULL AND created_at < ?", (now - DAY,))]
+        for file_id in drafts:
+            conn.execute("DELETE FROM ai_file_parts WHERE file_id = ?", (file_id,))
+            conn.execute("DELETE FROM ai_files WHERE id = ?", (file_id,))
         conn.execute("INSERT INTO ai_retention_runs (started_at, dialogs_deleted, messages_deleted, audit_deleted) "
                      "VALUES (?, ?, ?, ?)", (now, deleted_dialogs, deleted_messages, audit))
         conn.commit()
@@ -162,4 +178,11 @@ def storage_report(now: int | None = None) -> dict:
     for item in items:
         item["users"] = len(item["users"])
     size = journal.JOURNAL_DB.stat().st_size if journal.JOURNAL_DB.exists() else 0
-    return {"groups": items, "folders": int(folders), "dbBytes": size, "lastRun": last_run()}
+    # ИИ-07: файлы пользователей — сколько и какого объёма (по размеру исходных файлов).
+    conn = _connect()
+    try:
+        file_rows = conn.execute("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM ai_files").fetchone()
+    finally:
+        conn.close()
+    return {"groups": items, "folders": int(folders), "dbBytes": size, "lastRun": last_run(),
+            "files": int(file_rows[0]), "filesBytes": int(file_rows[1])}

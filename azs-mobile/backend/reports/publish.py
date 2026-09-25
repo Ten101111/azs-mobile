@@ -201,9 +201,13 @@ def ask_model(task: dict) -> tuple[str, str, int]:
     """Запрос к локальной Ollama: тот же, что собрал narrative.task()."""
     host = os.environ.get("AI_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     model = os.environ.get("AI_MODEL", "qwen3:8b")
-    options = dict(task["options"], num_ctx=int(os.environ.get("AI_NUM_CTX") or os.environ.get("AI_AGENT_NUM_CTX") or 16384))
+    # Тот же контекст, что у приложения (backend/ai/generator.py): при другом num_ctx
+    # Ollama перезагрузила бы модель, которую держит для ИИ-аналитика.
+    options = dict(task["options"], num_ctx=int(os.environ.get("AI_NUM_CTX") or os.environ.get("AI_AGENT_NUM_CTX") or 32768))
+    keep_alive = (os.environ.get("AI_KEEP_ALIVE") or "24h").strip()
     payload = {"model": model, "messages": task["messages"], "stream": False, "think": False,
-               "format": task["format"], "options": options}
+               "format": task["format"], "options": options,
+               "keep_alive": int(keep_alive) if keep_alive.lstrip("-").isdigit() else keep_alive}
     started = time.time()
     data = _post(f"{host}/api/chat", payload, timeout=float(os.environ.get("AI_MODEL_TIMEOUT") or 900))
     return (data.get("message") or {}).get("content") or "", model, int((time.time() - started) * 1000)

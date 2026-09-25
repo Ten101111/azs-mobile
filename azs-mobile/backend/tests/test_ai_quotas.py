@@ -325,7 +325,7 @@ class ApiQuotaTests(QuotaCase):
         self.seen = []
 
         def fake_ask(question, role, binding, actor, model=None, on_stage=None, depth="auto", history=None,
-                     control=None):
+                     control=None, files=None, memory=None):
             self.seen.append(depth)
             if control is not None and depth == "deep":
                 control.enter_deep()

@@ -7802,6 +7802,9 @@ a {
 .quality-load-line { margin: 0; font-size: var(--t-meta); color: var(--text-secondary); }
 .quality-load-line.muted { color: var(--muted); }
 .quality-load-alerts { display: flex; flex-direction: column; gap: 6px; }
+.quality-load-model ul { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px;
+  font-size: var(--t-meta); color: var(--text-secondary); line-height: 1.5; }
+.quality-load-model strong { color: var(--text); font-weight: 600; }
 .quality-spread-row {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) 52px 60px;
@@ -8548,3 +8551,284 @@ a {
 .ai-archive-toggle:hover { background: var(--surface-2); }
 .ai-archive-toggle .ai-folder-count { text-transform: none; letter-spacing: 0; }
 .ai-new-row .ai-new { width: auto; }
+
+/* --- «Журнал ИИ» (25.09.2026): все обращения к ИИ с тематическими фильтрами ------ */
+.journal-card { display: flex; flex-direction: column; gap: var(--s4); }
+.journal-tiles { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .journal-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.journal-filters { display: grid; grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(150px, 190px)); gap: var(--s2); }
+.journal-search { height: 40px; }
+.journal-filters .ui-select { height: 40px; }
+.journal-facets { display: flex; flex-direction: column; gap: var(--s2); }
+.journal-facet { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: var(--s2); align-items: start; }
+.journal-facet-name { padding-top: 6px; font-size: var(--t-meta); font-weight: 600; color: var(--muted); }
+.journal-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.journal-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  min-height: 30px; padding: 4px 10px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+  color: var(--text-secondary); font: inherit; font-size: 13px; line-height: 1.3; text-align: left;
+}
+.journal-chip:hover { background: var(--surface-2); color: var(--text); }
+.journal-chip:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.journal-chip.on { border-color: color-mix(in srgb, var(--red) 45%, transparent); background: var(--red-soft); color: var(--red-soft-text); }
+.journal-chip.more { border-style: dashed; color: var(--muted); }
+.journal-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.journal-chip-count { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
+.journal-chip.on .journal-chip-count { color: inherit; opacity: 0.8; }
+.journal-chip-new {
+  font-style: normal; font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 999px; background: var(--amber-soft); color: var(--amber-soft-text);
+}
+.journal-reset { align-self: flex-start; }
+
+.journal-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.journal-item { border-bottom: 1px solid var(--line); }
+.journal-row {
+  display: grid; grid-template-columns: 78px minmax(0, 1fr) 76px 96px 72px 18px; gap: var(--s3); align-items: center;
+  width: 100%; padding: var(--s3) var(--s2); cursor: pointer;
+  border: 0; background: none; color: var(--text); font: inherit; text-align: left;
+}
+.journal-row:hover { background: var(--surface-2); }
+.journal-row:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }
+.journal-item.open .journal-row { background: var(--surface-2); }
+.journal-when { display: flex; flex-direction: column; font-size: var(--t-meta); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.journal-when small { color: var(--muted); font-size: 12px; }
+.journal-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.journal-question {
+  font-size: var(--t-ui); line-height: 1.4; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+}
+.journal-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
+.journal-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.journal-tag { padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-secondary); font-size: 12px; }
+.journal-row:hover .journal-tag, .journal-item.open .journal-row .journal-tag { background: var(--surface); }
+.journal-depth { font-size: var(--t-meta); color: var(--text-secondary); }
+.journal-outcome {
+  justify-self: start; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--surface-2); color: var(--text-secondary);
+}
+.journal-outcome.ok { background: var(--green-soft); color: var(--green-soft-text); }
+.journal-outcome.refused, .journal-outcome.nodata { background: var(--amber-soft); color: var(--amber-soft-text); }
+.journal-outcome.failed { background: var(--red-soft); color: var(--red-soft-text); }
+.journal-time { font-size: var(--t-meta); color: var(--text-secondary); font-variant-numeric: tabular-nums; text-align: right; }
+.journal-caret { color: var(--muted); transition: transform 150ms ease; }
+.journal-item.open .journal-caret { transform: rotate(180deg); }
+.journal-more { align-self: center; }
+
+.journal-detail { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--s2) var(--s4) calc(78px + var(--s3) + var(--s2)); }
+.journal-detail-question { margin: 0; font-size: var(--t-ui); line-height: 1.5; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.journal-detail-standalone { margin: 0; font-size: var(--t-meta); color: var(--muted); }
+.journal-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s2) var(--s4); margin: 0; }
+.journal-facts div { min-width: 0; }
+.journal-facts dt { font-size: 12px; color: var(--muted); }
+.journal-facts dd { margin: 2px 0 0; font-size: var(--t-meta); color: var(--text-secondary); overflow-wrap: anywhere; }
+.journal-detail-topics { display: flex; flex-direction: column; gap: 6px; }
+.journal-detail-topics > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.journal-detail-topics > div > span:first-child { min-width: 96px; color: var(--muted); }
+.journal-detail-topics small { color: var(--muted); }
+.journal-steps h5 { margin: 0 0 6px; font-size: var(--t-meta); font-weight: 650; }
+.journal-steps ol, .journal-calls { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; font-size: var(--t-meta); color: var(--text-secondary); }
+.journal-steps li { display: grid; grid-template-columns: 140px minmax(0, 1fr) auto; gap: var(--s2); }
+.journal-steps li.failed { color: var(--red-soft-text); }
+.journal-step-kind { color: var(--muted); }
+.journal-step-label { overflow-wrap: anywhere; }
+.journal-step-ms { font-variant-numeric: tabular-nums; color: var(--muted); }
+.journal-sql summary { cursor: pointer; font-size: var(--t-meta); color: var(--text-secondary); }
+.journal-sql pre {
+  margin: var(--s2) 0 0; padding: var(--s3); max-height: 320px; overflow: auto;
+  border-radius: var(--r-sm); background: var(--surface-2); font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+}
+.journal-calls { margin-top: var(--s2); }
+
+@media (max-width: 760px) {
+  .journal-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .journal-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .journal-search { grid-column: 1 / -1; }
+  .journal-facet { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .journal-facet-name { padding-top: 0; }
+  .journal-chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+  .journal-chips::-webkit-scrollbar { display: none; }
+  .journal-chip { flex: 0 0 auto; }
+  .journal-row {
+    grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "when outcome" "main main" "depth time";
+    gap: 6px var(--s2); padding: var(--s3) var(--s1);
+  }
+  .journal-when { grid-area: when; flex-direction: row; gap: 6px; }
+  .journal-main { grid-area: main; }
+  .journal-outcome { grid-area: outcome; justify-self: end; }
+  .journal-depth { grid-area: depth; }
+  .journal-time { grid-area: time; }
+  .journal-caret { display: none; }
+  .journal-detail { padding: var(--s2) var(--s1) var(--s4); }
+  .journal-steps li { grid-template-columns: minmax(0, 1fr) auto; }
+  .journal-step-kind { grid-column: 1 / -1; }
+}
+
+/* --- Значок файла (src/fileCard.jsx, образец владельца 25.09.2026) ---------------- */
+:root {
+  --file-pdf: #e5484d; --file-docx: #3b6fe0; --file-xlsx: #1f9d63;
+  --file-csv: #127a78; --file-txt: #6b7280; --file-pptx: #e8701a;
+}
+.file-card { position: relative; display: inline-block; flex: 0 0 auto; vertical-align: middle; }
+.file-card-md { width: 44px; height: 56px; }
+.file-card-sm { width: 26px; height: 33px; }
+.file-card-sheet {
+  position: absolute; inset: 0; display: block; box-sizing: border-box; padding: 7px 6px;
+  border-radius: 6px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden;
+}
+.file-card-sm .file-card-sheet { padding: 4px 3px; border-radius: 4px; }
+.file-card-tag {
+  position: absolute; right: -7px; bottom: 5px; z-index: 1;
+  padding: 1px 4px; border-radius: 3px; font-size: 7.5px; font-weight: 650; line-height: 1.3;
+  letter-spacing: 0.04em; text-transform: uppercase; color: #fff; background: var(--file-txt);
+}
+.file-card-sm .file-card-tag { right: -5px; bottom: 3px; padding: 0 3px; font-size: 6px; }
+.file-card.is-pdf .file-card-tag { background: var(--file-pdf); }
+.file-card.is-docx .file-card-tag { background: var(--file-docx); }
+.file-card.is-xlsx .file-card-tag { background: var(--file-xlsx); }
+.file-card.is-csv .file-card-tag { background: var(--file-csv); }
+.file-card.is-pptx .file-card-tag { background: var(--file-pptx); }
+.file-card-lines { display: flex; flex-direction: column; gap: 4px; }
+.file-card-sm .file-card-lines { gap: 2px; }
+.file-card-row { display: flex; gap: 3px; }
+.file-card-bar { display: block; height: 2px; border-radius: 99px; background: color-mix(in srgb, var(--text) 12%, transparent); }
+.file-card-bar.strong { background: color-mix(in srgb, var(--text) 24%, transparent); }
+.file-card-sm .file-card-bar { height: 1.5px; }
+.file-card-grid { display: flex; flex-direction: column; gap: 2px; }
+.file-card-grid-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
+.file-card-cell { display: block; height: 6px; background: color-mix(in srgb, var(--text) 7%, transparent); }
+.file-card-cell.head { background: color-mix(in srgb, var(--text) 22%, transparent); }
+.file-card-cell.empty { background: transparent; }
+.file-card-grid.pills .file-card-cell { height: 3px; border-radius: 99px; }
+.file-card-grid.pills .file-card-grid-row:first-child { margin-bottom: 3px; }
+.file-card-sm .file-card-cell { height: 3px; }
+.file-card-slide-wrap { display: flex; flex-direction: column; gap: 4px; }
+.file-card-slide {
+  display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 3px;
+  border-radius: 3px; background: color-mix(in srgb, var(--text) 5%, transparent); box-shadow: inset 0 0 0 1px var(--line);
+}
+.file-card-slide-mark { display: block; width: 9px; height: 9px; border-radius: 2px; background: color-mix(in srgb, var(--file-pptx) 45%, transparent); }
+.file-card-sm .file-card-slide { padding: 2px; gap: 2px; }
+.file-card-sm .file-card-slide-mark { width: 5px; height: 5px; }
+
+/* --- Файлы и память папки (ИИ-07, ИИ-11, 25.09.2026) ------------------------
+   Файл — карточка со значком формата (fileCard.jsx), именем и сводкой разбора.
+   Над полем вопроса — ряд вложений; под вопросом — строка «Учтены: …». */
+.ai-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
+.ai-attachments.composer { width: 100%; max-width: var(--ai-column, 720px); }
+.ai-attachments-files { display: contents; }
+.ai-file {
+  display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; max-width: 280px;
+  padding: 6px 6px 6px 10px; border-radius: var(--r-md);
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.ai-file .file-card { margin-right: 4px; }
+.ai-file-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.ai-file-name { font-size: var(--t-meta); font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-file-meta { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.ai-file.busy .ai-file-meta { animation: ai-file-pulse 1.2s ease-in-out infinite; }
+.ai-file.failed { background: var(--red-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 30%, transparent); }
+.ai-file.failed .ai-file-meta { color: var(--red-soft-text); white-space: normal; }
+.ai-file-remove {
+  flex: 0 0 auto; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: transparent; color: var(--icon-muted); cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-file-remove:hover { background: var(--surface-2); color: var(--text); }
+@keyframes ai-file-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .ai-file.busy .ai-file-meta { animation: none; } }
+
+/* Кнопка-скрепка — как выбор уровня: мягкая подложка, без рамки. */
+.ai-attach {
+  flex: 0 0 auto; align-self: flex-end; width: 38px; height: 38px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-attach:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.ai-attach:disabled { opacity: 0.5; cursor: default; }
+
+.ai-composer-wrap.drag .ai-composer { border-color: var(--red); border-style: dashed; box-shadow: 0 0 0 3px var(--red-soft); }
+.ai-drop-hint {
+  width: 100%; max-width: var(--ai-column, 720px); padding: var(--s2) var(--s4);
+  border-radius: var(--r-md); background: var(--red-soft); color: var(--red-soft-text);
+  font-size: var(--t-meta); font-weight: 600; text-align: center; pointer-events: none;
+}
+
+/* Контекст папки над полем: имя папки, переключатель памяти, файлы папки. */
+.ai-folder-context {
+  flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s2);
+  font-size: var(--t-meta); color: var(--muted);
+}
+.ai-folder-context-name { font-weight: 600; color: var(--text-secondary); }
+.ai-memory-toggle {
+  height: 26px; display: inline-flex; align-items: center; gap: 5px; padding: 0 10px;
+  border: 0; border-radius: var(--r-full); background: var(--surface-2); color: var(--muted);
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-memory-toggle.on { background: var(--amber-soft); color: var(--amber-soft-text); }
+.ai-memory-toggle:hover { filter: brightness(0.97); }
+.ai-folder-file {
+  display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 220px; padding-right: 4px;
+  color: var(--text-secondary);
+}
+.ai-folder-file .file-card { transform: scale(0.8); transform-origin: left center; margin-right: -4px; }
+.ai-folder-files-count { display: none; align-items: center; gap: 4px; }
+.ai-context-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Под вопросом: что учёл ответ. */
+.ai-context-line {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s3);
+  font-size: var(--t-meta); color: var(--muted);
+}
+.ai-context-label { font-weight: 600; color: var(--text-secondary); }
+.ai-context-item { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.ai-context-item svg { color: var(--amber); flex: 0 0 auto; }
+.ai-context-item .file-card { transform: scale(0.72); transform-origin: left center; margin-right: -6px; }
+
+/* Отметки у папки в боковой панели: есть память, есть файлы. */
+.ai-folder-marks { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; }
+.ai-folder-open .ai-folder-marks svg { color: var(--amber); }
+
+/* Окно «Память и файлы папки». */
+.ai-folder-context-modal { width: min(560px, 100%); }
+.ai-folder-context-modal .ui-field > span { font-weight: 600; color: var(--text-secondary); }
+.ai-memory-count { align-self: flex-end; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ai-memory-count.over { color: var(--red); font-weight: 600; }
+.ai-memory-history { border-radius: var(--r-md); background: var(--surface-2); padding: var(--s2) var(--s3); }
+.ai-memory-history summary { cursor: pointer; font-size: var(--t-meta); font-weight: 600; color: var(--text-secondary); }
+.ai-memory-history ul { list-style: none; margin: var(--s2) 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ai-memory-history li {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s2);
+  font-size: 12.5px; line-height: 1.4;
+}
+.ai-memory-history time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ai-memory-history li span { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-memory-history .ai-action { padding: 2px 8px; }
+.ai-folder-files { display: flex; flex-direction: column; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--hairline); }
+.ai-folder-files-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); font-size: var(--t-ui); font-weight: 600; color: var(--text-secondary); }
+.ai-folder-files-head .ai-action { white-space: nowrap; }
+.ai-folder-files-empty { margin: 0; font-size: var(--t-meta); line-height: 1.45; color: var(--muted); }
+.ai-folder-files .ai-file { max-width: 100%; }
+
+/* Файлы в журнале обращений (админ): только имя, тип, размер и хеш. */
+.journal-files { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.journal-files .ai-file { max-width: 320px; }
+
+@media (max-width: 640px) {
+  /* На телефоне: строка папки без списка её файлов (он — в окне папки),
+     вложения — одна строка с прокруткой, чтобы поле не уезжало вверх. */
+  .ai-attachments.composer .ai-folder-file { display: none; }
+  .ai-attachments.composer .ai-folder-files-count { display: inline-flex; }
+  .ai-attachments-files {
+    display: flex; flex: 1 1 100%; gap: var(--s2); min-width: 0;
+    overflow-x: auto; scrollbar-width: none; padding-bottom: 2px;
+  }
+  .ai-attachments-files::-webkit-scrollbar { display: none; }
+  .ai-attachments-files .ai-file { flex: 0 0 auto; max-width: 240px; }
+  .ai-attach { width: 34px; height: 34px; }
+  .ai-memory-history li { grid-template-columns: minmax(0, 1fr) auto; row-gap: 0; padding: 4px 0; }
+  .ai-memory-history time { grid-column: 1 / -1; font-size: 11.5px; }
+}

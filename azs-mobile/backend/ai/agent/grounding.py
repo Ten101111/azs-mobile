@@ -182,6 +182,12 @@ def base_proofs(workspace: Workspace) -> list[Proof]:
     large_facts: list[Proof] = []
     large_derived: list[Proof] = []
     for rs in workspace.results.values():
+        if rs.source == "file_text":
+            # ИИ-07: прочитанная часть текста файла — числа из неё тоже факт, с местом в файле.
+            for row in rs.rows:
+                for value in numbers_in_text(str(row[-1] or "")):
+                    small_facts.append(Proof(value, FACT, rs.id, "text", rs.purpose))
+            continue
         from_sql = rs.source != "python"
         small = rs.row_count <= SMALL_RESULT
         for index, name in enumerate(rs.columns):

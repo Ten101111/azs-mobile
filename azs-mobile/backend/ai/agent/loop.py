@@ -17,9 +17,9 @@ from .. import executor
 from ..catalog import CATALOG, Catalog
 from ..semantic import SEMANTIC, Semantic
 from ..validator import Scope
-from . import claims, grounding, memory, prompts, recommend, schema_tools, tools
+from . import claims, file_tools, grounding, memory, prompts, recommend, schema_tools, tools
 from .. import textstyle
-from .llm import ModelUnavailable, OllamaChat, Reply, extract_json, salvage_json
+from .llm import MAX_TOKENS, NUM_CTX, ModelUnavailable, OllamaChat, Reply, extract_json, salvage_json
 from .state import DEPTHS, TASK_TYPES, AgentOutcome, Analysis, Budget, Plan, Step, Workspace
 
 MAX_SECONDS = float(os.environ.get("AI_AGENT_MAX_SECONDS", "240"))
@@ -29,6 +29,17 @@ MAX_CALLS_PER_TURN = 3
 MAX_NUDGES = 1
 TOOL_TEXT_LIMIT = int(os.environ.get("AI_AGENT_TOOL_TEXT", "3500"))
 EVIDENCE_ROWS = 15
+
+# Контекст модели и кэш Ollama (25.09.2026). Ollama не пересчитывает начало
+# переписки, если оно не изменилось с прошлого хода, — читает только новое.
+# Прежде каждый ход сжимался ещё один старый результат в середине переписки,
+# и модель на каждом шаге перечитывала контекст с этого места (≈10 тыс. токенов
+# на шаг). Теперь переписка только дописывается, а старые результаты сжимаются
+# разом, когда она подходит к пределу контекста: кэш сбрасывается один раз.
+CHARS_PER_TOKEN = float(os.environ.get("AI_CHARS_PER_TOKEN", "2.5"))   # с запасом: цифры — по токену
+TRIM_SHARE = float(os.environ.get("AI_CONTEXT_TRIM_SHARE", "0.75"))    # доля контекста до сжатия
+KEEP_RECENT_RESULTS = 2
+BRIEF_MARK = " (подробности выше по ходу)"
 
 StageListener = Callable[[dict], None] | None
 
@@ -181,18 +192,55 @@ def _assistant_message(reply: Reply) -> dict:
     return message
 
 
-def _trim(messages: list[dict], keep_recent: int = 6) -> None:
-    """Старые результаты инструментов сжимаются до одной строки, чтобы контекст не рос без конца."""
+def context_chars(messages: list[dict], tool_specs: list[dict] | None = None) -> int:
+    """Размер переписки с моделью в знаках — вместе с описанием инструментов."""
+    size = len(json.dumps(tool_specs, ensure_ascii=False)) if tool_specs else 0
+    for message in messages:
+        size += len(message.get("content") or "")
+        if message.get("tool_calls"):
+            size += len(json.dumps(message["tool_calls"], ensure_ascii=False, default=str))
+    return size
+
+
+def context_limit_chars(reply_tokens: int | None = None) -> int:
+    """Сколько знаков переписки помещается в контекст с запасом на ответ хода."""
+    reply = reply_tokens or MAX_TOKENS
+    return max(4000, int((NUM_CTX * TRIM_SHARE - reply) * CHARS_PER_TOKEN))
+
+
+def _brief(content: str) -> str:
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return content[:300] + "…"
+    if not isinstance(data, dict):
+        return content[:300] + "…"
+    brief = {k: data[k] for k in ("id", "columns", "row_count", "error") if k in data}
+    return json.dumps(brief, ensure_ascii=False) + BRIEF_MARK
+
+
+def _trim(messages: list[dict], *, limit_chars: int, tool_specs: list[dict] | None = None,
+          keep_recent: int = KEEP_RECENT_RESULTS) -> bool:
+    """Сжать старые результаты инструментов — только когда переписка подходит к пределу.
+
+    Сжимаются все старые результаты разом (кроме `keep_recent` последних), чтобы
+    начало переписки менялось как можно реже: каждое изменение заставляет Ollama
+    перечитать контекст с этого места. Возвращает True, если переписка изменилась.
+    """
+    if context_chars(messages, tool_specs) <= limit_chars:
+        return False
     tool_indexes = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-    for index in tool_indexes[:-keep_recent]:
+    old = tool_indexes[:-keep_recent] if keep_recent else tool_indexes
+    changed = False
+    for index in old:
         content = messages[index].get("content") or ""
-        if len(content) > 300:
-            try:
-                data = json.loads(content)
-                brief = {k: data[k] for k in ("id", "columns", "row_count", "error") if k in data}
-                messages[index]["content"] = json.dumps(brief, ensure_ascii=False) + " (подробности выше по ходу)"
-            except json.JSONDecodeError:
-                messages[index]["content"] = content[:300] + "…"
+        if len(content) <= 300 or content.endswith(BRIEF_MARK):
+            continue
+        brief = _brief(content)
+        if brief != content:
+            messages[index]["content"] = brief
+            changed = True
+    return changed
 
 
 def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None = None,
@@ -202,7 +250,8 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
         catalog: Catalog | None = None, semantic: Semantic | None = None,
         today: str | None = None, scope_label: str = "", data_range: dict | None = None,
         hits: dict | None = None, limits=None,
-        should_stop: Callable[[], bool] | None = None) -> AgentOutcome:
+        should_stop: Callable[[], bool] | None = None,
+        files: list[dict] | None = None) -> AgentOutcome:
     """Прогон агента в глубине analyze/deep. Режим fast обслуживает pipeline.
 
     `limits` — пределы роли (backend/ai/limits.py); у администратора их нет.
@@ -224,6 +273,9 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
         on_step=lambda step, state: _emit(on_stage, _stage_from_step(step, state)),
         python_timeout_s=limits.python_timeout_s if limits is not None else None,
     )
+    # ИИ-07 / ИИ-11: таблицы файлов — наборы fN, текст — части tN для find_in_files и read_file.
+    if files:
+        file_tools.register(ctx, files)
     if data_range is None:
         data_range = schema_tools.data_range(ctx)
     if hits is None:
@@ -234,7 +286,10 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
     # Рекомендации — только по просьбе или когда без них ответ неполон (решение владельца 23.09.2026).
     asked = recommend.requested(question, plan.standalone_question)
     started = time.monotonic()
-    tool_specs = [spec.as_ollama() for spec in tools.specs()] + [prompts.FINISH_TOOL]
+    # Инструменты файлов — только когда файлы есть: иначе лишние токены в каждом ходе.
+    tool_specs = [spec.as_ollama() for spec in tools.specs()
+                  if files or spec.name not in file_tools.TOOL_NAMES] + [prompts.FINISH_TOOL]
+    limit_chars = context_limit_chars(getattr(model, "max_tokens", None))
     messages = [
         {"role": "system", "content": prompts.agent_system(semantic, catalog.dialect)},
         {"role": "user", "content": prompts.agent_user(
@@ -289,7 +344,8 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
                 if finish_payload is not None:
                     stop_reason = "finish"
                     break
-                _trim(messages)
+                if _trim(messages, limit_chars=limit_chars, tool_specs=tool_specs):
+                    outcome.context_trims += 1
                 continue
             # Нет вызовов: модель либо уже отвечает текстом, либо застряла.
             parsed = salvage_json(reply.text)

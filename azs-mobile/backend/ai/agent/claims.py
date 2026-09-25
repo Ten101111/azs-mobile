@@ -64,7 +64,7 @@ class Context:
         self.entities: list[tuple[str, str]] = []
         self.stems: list[tuple[str, str]] = []
         for rs in workspace.results.values():
-            if rs.source == "python" or not rs.rows:
+            if rs.source in ("python", "file_text") or not rs.rows:
                 continue
             seen = 0
             for row in rs.rows:
@@ -83,7 +83,8 @@ class Context:
         rs = self.workspace.results.get((result_id or "").lower())
         if rs is None:
             return {"id": result_id, "title": "вычисление", "kind": "python"}
-        title = rs.purpose or ("вычисление" if rs.source == "python" else "запрос к витрине")
+        title = rs.purpose or ("вычисление" if rs.source == "python" else
+                               "файл" if rs.source in ("file", "file_text") else "запрос к витрине")
         return {"id": rs.id, "title": title, "kind": rs.source, "rows": rs.row_count}
 
     def sources_of(self, found) -> list[dict]:

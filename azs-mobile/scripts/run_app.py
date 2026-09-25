@@ -28,7 +28,7 @@ FRONTEND_PORT = 5174
 
 # Библиотеки, без которых бэкенд не поднимется.
 # reportlab — PDF справок (СП-05): без него `npm start` не доставит новую зависимость.
-REQUIRED_MODULES = ("fastapi", "uvicorn", "sqlglot", "reportlab")
+REQUIRED_MODULES = ("fastapi", "uvicorn", "sqlglot", "reportlab", "pypdf")
 # Версии Python, под которые есть готовые сборки pandas и psycopg2.
 SUPPORTED_PYTHONS = ("python3.13", "python3.12", "python3.11", "python3.10")
 

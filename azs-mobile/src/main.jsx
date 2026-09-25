@@ -14,6 +14,7 @@ import {
 } from "./aiAnalysis.jsx";
 import { ReportsScreen } from "./reports.jsx";
 import { Note, NoteAction } from "./note.jsx";
+import { FileCard } from "./fileCard.jsx";
 import {
   AlertTriangle,
   Archive,
@@ -50,6 +51,7 @@ import {
   PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
+  Paperclip,
   Pencil,
   Phone,
   Pin,
@@ -66,6 +68,7 @@ import {
   Sparkles,
   Square,
   Star,
+  StickyNote,
   Store,
   Toilet,
   Trash2,
@@ -2828,6 +2831,27 @@ function qualitySeconds(ms) {
   return `${(ms / 1000).toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} с`;
 }
 
+// «2 мин 5 с», «48 с» — для времени модели в «Нагрузке за неделю».
+function qualityDuration(ms) {
+  const seconds = Math.round((Number(ms) || 0) / 1000);
+  if (seconds < 60) return `${seconds} с`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes} мин ${rest} с` : `${minutes} мин`;
+}
+
+function ruWord(count, one, few, many) {
+  const n = Math.abs(Math.round(Number(count) || 0));
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
+}
+
+const QUALITY_DEPTH_NAMES = { fast: "«Лёгкий»", analyze: "«Средний»", deep: "«Высокий»" };
+
 function QualityTile({ label, value, note, tone }) {
   return (
     <div className={tone ? `quality-tile ${tone}` : "quality-tile"}>
@@ -3420,7 +3444,7 @@ function AiStorageReport({ storage }) {
         </table>
       </div>
       <p className="quality-load-line muted">
-        {`Папок: ${asInt(storage.folders)} · база истории и журнала: ${size}. ${cleaned}`}
+        {`Папок: ${asInt(storage.folders)} · файлов: ${asInt(storage.files || 0)}${storage.filesBytes ? ` (${aiFileSize(storage.filesBytes)})` : ""} · база истории и журнала: ${size}. ${cleaned}`}
       </p>
     </>
   );
@@ -3444,6 +3468,23 @@ function QualityLoad({ load }) {
           ? `Упирались в лимиты: ${hits.map((item) => `${item.title} — ${asInt(item.count)}`).join("; ")}.`
           : "В лимиты не упирались."}
       </p>
+      {(load.model || []).length > 0 && (
+        <div className="quality-load-model">
+          <p className="quality-load-line">Время модели на ответ — на что уходит (журнал пишет с 25.09.2026):</p>
+          <ul>
+            {load.model.map((item) => (
+              <li key={item.depth}>
+                <strong>{QUALITY_DEPTH_NAMES[item.depth] || item.depth}</strong>
+                {` — ${asInt(item.answers)} ${ruWord(item.answers, "ответ", "ответа", "ответов")}, в среднем ${qualityDuration(item.totalMs)}: `}
+                {`чтение контекста ${qualityDuration(item.promptMs)}, письмо ${qualityDuration(item.evalMs)}`}
+                {item.loadMs >= 1000 ? `, загрузка модели ${qualityDuration(item.loadMs)}` : ""}
+                {`. Вызовов модели — ${String(item.callsPerAnswer).replace(".", ",")}, `}
+                {`контекст в среднем ${asInt(item.tokensInPerCall)} ${ruWord(item.tokensInPerCall, "токен", "токена", "токенов")} на вызов.`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {alerts.length > 0 ? (
         <div className="quality-load-alerts">
           {alerts.map((alert) => (
@@ -3671,6 +3712,379 @@ function AiQualityPanel() {
 // Администрирование разложено на три вкладки: раньше это была одна длинная
 // страница, где качество ответов ИИ пряталось между таблицей пользователей
 // и журналом входов.
+// «Журнал ИИ» (25.09.2026): все обращения к ИИ-аналитику. Фильтры — период,
+// роль, уровень, исход, текст и пять тематических (backend/ai/topics.py):
+// внутри фильтра значения через «или», между фильтрами — через «и».
+// Тематики пополняются сами: правила — сразу, остальное — модель фоном.
+const JOURNAL_PERIODS = [...QUALITY_PERIODS, { days: 365, label: "Год" }, { days: 0, label: "Всё время" }];
+const JOURNAL_CHIPS_SHOWN = 8;
+const JOURNAL_STOP = {
+  finish: "модель завершила анализ",
+  "finish-text": "модель завершила анализ",
+  prose: "модель ответила текстом — итог по собранным данным",
+  "лимит ходов модели": "лимит шагов уровня — итог по собранным данным",
+  "лимит времени": "лимит времени — итог по собранным данным",
+  "сбой хода модели": "сбой хода модели — итог по собранным данным",
+  cancelled: "остановлен человеком",
+};
+
+function journalQuery({ days, role, depth, outcome, text, chosen }) {
+  const params = new URLSearchParams({ days: String(days) });
+  if (role) params.set("role", role);
+  if (depth) params.set("depth", depth);
+  if (outcome) params.set("outcome", outcome);
+  if (text.trim()) params.set("q", text.trim());
+  Object.entries(chosen).forEach(([facet, values]) => values.forEach((value) => params.append("topic", `${facet}:${value}`)));
+  return params.toString();
+}
+
+// Короткие шаги — с десятыми долями секунды: «0,2 с», а не «0 с».
+function journalMs(ms) {
+  const value = Number(ms) || 0;
+  if (!value) return "";
+  if (value < 1000) return `${Math.max(0.1, value / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} с`;
+  return qualityDuration(value);
+}
+
+function journalWhen(at) {
+  const date = new Date(at * 1000);
+  return {
+    day: date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "2-digit" }),
+    time: date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+  };
+}
+
+function AiJournalPanel() {
+  const [days, setDays] = useState(30);
+  const [role, setRole] = useState("");
+  const [depth, setDepth] = useState("");
+  const [outcome, setOutcome] = useState("");
+  const [text, setText] = useState("");
+  const [search, setSearch] = useState("");
+  const [chosen, setChosen] = useState({});
+  const [expanded, setExpanded] = useState({});
+  const [state, setState] = useState({ status: "loading", data: null, error: "" });
+  const [more, setMore] = useState({ entries: [], loading: false });
+  const [openId, setOpenId] = useState(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(text), 350);
+    return () => clearTimeout(timer);
+  }, [text]);
+
+  const query = useMemo(() => journalQuery({ days, role, depth, outcome, text: search, chosen }),
+    [days, role, depth, outcome, search, chosen]);
+
+  useEffect(() => {
+    let alive = true;
+    fetchJson(`/api/ai/admin/journal?${query}&limit=50`)
+      .then((data) => {
+        if (!alive) return;
+        setState({ status: "ready", data, error: "" });
+        setMore({ entries: [], loading: false });
+      })
+      .catch((error) => {
+        if (!alive || error.message === "AUTH_REQUIRED") return;
+        setState({
+          status: "error",
+          data: null,
+          error: error.message === "REQUEST_FAILED_403" ? "Журнал ИИ видит только администратор." : "Не удалось загрузить журнал ИИ.",
+        });
+      });
+    return () => { alive = false; };
+  }, [query]);
+
+  function toggle(facet, value) {
+    setOpenId(null);
+    setChosen((current) => {
+      const values = new Set(current[facet] || []);
+      if (values.has(value)) values.delete(value); else values.add(value);
+      const next = { ...current, [facet]: [...values] };
+      if (!next[facet].length) delete next[facet];
+      return next;
+    });
+  }
+
+  async function loadMore() {
+    const shown = (state.data?.entries.length || 0) + more.entries.length;
+    setMore((current) => ({ ...current, loading: true }));
+    try {
+      const data = await fetchJson(`/api/ai/admin/journal?${query}&limit=50&offset=${shown}`);
+      setMore((current) => ({ entries: [...current.entries, ...data.entries], loading: false }));
+    } catch {
+      setMore((current) => ({ ...current, loading: false }));
+    }
+  }
+
+  if (state.status === "loading") {
+    return <div className="admin-card"><h3>Журнал обращений к ИИ</h3><p className="admin-bar-caption">Загружаю…</p></div>;
+  }
+  if (state.status === "error") {
+    return <div className="admin-card"><h3>Журнал обращений к ИИ</h3><Note type="error" fill label="Ошибка">{state.error}</Note></div>;
+  }
+
+  const data = state.data;
+  const summary = data.summary;
+  const entries = [...data.entries, ...more.entries];
+  const selected = Object.values(chosen).reduce((sum, values) => sum + values.length, 0);
+
+  return (
+    <div className="admin-card journal-card">
+      <div className="quality-head">
+        <h3>Журнал обращений к ИИ</h3>
+        <span className="quality-head-gap" />
+        <label className="quality-period">
+          <span className="visually-hidden">Период</span>
+          <select className="ui-select" value={days} onChange={(event) => { setOpenId(null); setDays(Number(event.target.value)); }}>
+            {JOURNAL_PERIODS.map((item) => <option key={item.days} value={item.days}>{item.label}</option>)}
+          </select>
+        </label>
+        <a className="ai-action" href={`/api/ai/admin/journal/export?${query}`} download>
+          <Download size={15} /> В Excel
+        </a>
+      </div>
+
+      <div className="quality-tiles journal-tiles">
+        <QualityTile label="Обращений" value={asInt(summary.total)} />
+        <QualityTile label="Ответов" value={asInt(summary.ok)} note={qualityShare(summary.ok, summary.total)} />
+        <QualityTile label="Отказов" value={asInt(summary.refused)} note={qualityShare(summary.refused, summary.total)} />
+        <QualityTile label="Ошибок" value={asInt(summary.failed)} note={qualityShare(summary.failed, summary.total)} tone={summary.failed ? "warn" : ""} />
+        <QualityTile label="Время ответа" value={summary.medianMs ? qualityDuration(summary.medianMs) : "—"} note="медиана" />
+      </div>
+
+      <div className="journal-filters">
+        <label className="ai-search journal-search">
+          <Search size={15} />
+          <input
+            type="search"
+            value={text}
+            onChange={(event) => { setOpenId(null); setText(event.target.value); }}
+            placeholder="Поиск по тексту вопроса"
+            aria-label="Поиск по тексту вопроса"
+          />
+        </label>
+        <select className="ui-select" value={role} aria-label="Роль" onChange={(event) => { setOpenId(null); setRole(event.target.value); }}>
+          <option value="">Все роли</option>
+          {data.roles.map((item) => <option key={item.code} value={item.code}>{item.title}</option>)}
+        </select>
+        <select className="ui-select" value={depth} aria-label="Уровень" onChange={(event) => { setOpenId(null); setDepth(event.target.value); }}>
+          <option value="">Все уровни</option>
+          {data.depths.map((item) => <option key={item.code} value={item.code}>{item.title}</option>)}
+        </select>
+        <select className="ui-select" value={outcome} aria-label="Исход" onChange={(event) => { setOpenId(null); setOutcome(event.target.value); }}>
+          <option value="">Любой исход</option>
+          {data.outcomes.map((item) => <option key={item.code} value={item.code}>{item.title}</option>)}
+        </select>
+      </div>
+
+      <div className="journal-facets">
+        {data.facets.map((facet) => {
+          const picked = new Set(chosen[facet.code] || []);
+          const open = Boolean(expanded[facet.code]);
+          const shown = open ? facet.values : facet.values.filter((value, index) => index < JOURNAL_CHIPS_SHOWN || picked.has(value.value));
+          if (!facet.values.length) return null;
+          return (
+            <div key={facet.code} className="journal-facet">
+              <span className="journal-facet-name">{facet.title}</span>
+              <div className="journal-chips" role="group" aria-label={facet.title}>
+                {shown.map((value) => (
+                  <button
+                    key={value.value}
+                    type="button"
+                    className={picked.has(value.value) ? "journal-chip on" : "journal-chip"}
+                    aria-pressed={picked.has(value.value)}
+                    title={value.origin === "model" ? "Тему завела модель по вопросам, которые не узнали правила" : undefined}
+                    onClick={() => toggle(facet.code, value.value)}
+                  >
+                    <span className="journal-chip-name">{value.value}</span>
+                    <span className="journal-chip-count">{asInt(value.count)}</span>
+                    {value.isNew && <em className="journal-chip-new">новая</em>}
+                  </button>
+                ))}
+                {facet.values.length > shown.length && (
+                  <button type="button" className="journal-chip more" onClick={() => setExpanded((current) => ({ ...current, [facet.code]: true }))}>
+                    {`ещё ${asInt(facet.values.length - shown.length)}`}
+                  </button>
+                )}
+                {open && facet.values.length > JOURNAL_CHIPS_SHOWN && (
+                  <button type="button" className="journal-chip more" onClick={() => setExpanded((current) => ({ ...current, [facet.code]: false }))}>
+                    свернуть
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {selected > 0 && (
+          <button type="button" className="ui-button ghost journal-reset" onClick={() => { setOpenId(null); setChosen({}); }}>
+            {`Сбросить темы · ${asInt(selected)}`}
+          </button>
+        )}
+      </div>
+
+      {data.pendingThemes > 0 && (
+        <Note size="small" type="secondary" label="Темы">
+          {data.modelThemes
+            ? `${asInt(data.pendingThemes)} ${ruWord(data.pendingThemes, "вопрос ждёт", "вопроса ждут", "вопросов ждут")} тему от модели — она разбирает их, когда никто не ждёт ответа ИИ. До этого они в «Не определена».`
+            : `${asInt(data.pendingThemes)} ${ruWord(data.pendingThemes, "вопрос", "вопроса", "вопросов")} без темы: разбор моделью выключен (AI_TOPICS_MODEL=0).`}
+        </Note>
+      )}
+
+      {!entries.length ? (
+        <Note size="small" type="secondary" label={true}>По этим фильтрам обращений нет.</Note>
+      ) : (
+        <ul className="journal-list">
+          {entries.map((item) => {
+            const when = journalWhen(item.at);
+            const open = openId === item.id;
+            return (
+              <li key={item.id} className={open ? "journal-item open" : "journal-item"}>
+                <button type="button" className="journal-row" aria-expanded={open} onClick={() => setOpenId(open ? null : item.id)}>
+                  <span className="journal-when">{when.day}<small>{when.time}</small></span>
+                  <span className="journal-main">
+                    <span className="journal-question">{item.question || "—"}</span>
+                    <span className="journal-meta">
+                      <span>{item.actor || "—"}</span>
+                      {(item.topics.theme || []).map((theme) => <span key={theme} className="journal-tag">{theme}</span>)}
+                    </span>
+                  </span>
+                  <span className="journal-depth">{item.depthTitle}</span>
+                  <span className={`journal-outcome ${item.outcome}`}>{item.outcomeTitle}</span>
+                  <span className="journal-time">{item.totalMs ? qualityDuration(item.totalMs) : "—"}</span>
+                  <ChevronDown size={16} className="journal-caret" aria-hidden="true" />
+                </button>
+                {open && <AiJournalDetail id={item.id} />}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {entries.length < data.total && (
+        <button type="button" className="ui-button ghost journal-more" onClick={loadMore} disabled={more.loading}>
+          {more.loading ? "Загружаю…" : `Показать ещё · ${asInt(data.total - entries.length)}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AiJournalDetail({ id }) {
+  const [state, setState] = useState({ status: "loading", item: null });
+
+  useEffect(() => {
+    let alive = true;
+    fetchJson(`/api/ai/admin/journal/${id}`)
+      .then((item) => { if (alive) setState({ status: "ready", item }); })
+      .catch(() => { if (alive) setState({ status: "error", item: null }); });
+    return () => { alive = false; };
+  }, [id]);
+
+  if (state.status === "loading") return <div className="journal-detail"><p className="admin-bar-caption">Загружаю…</p></div>;
+  if (state.status === "error") {
+    return <div className="journal-detail"><Note size="small" type="error" fill label="Ошибка">Не удалось открыть запись журнала.</Note></div>;
+  }
+
+  const item = state.item;
+  const depthNote = item.depthRequested && item.depthRequested !== item.depth && item.depthRequested !== "auto"
+    ? ` (запрошен «${QUALITY_DEPTH_NAMES[item.depthRequested]?.replace(/[«»]/g, "") || item.depthRequested}»)`
+    : item.depthRequested === "auto" ? " (выбрал «Авто»)" : "";
+  const facts = [
+    ["Кто", `${item.actor || "—"} · ${item.roleTitle}`],
+    ["Область данных", item.scope || "—"],
+    ["Уровень", `${item.depthTitle}${depthNote}`],
+    ["Исход", `${item.outcomeTitle}${item.rule && item.rule !== "cancelled" ? ` · ${item.rule}` : ""}`],
+    ["Время", `всего ${qualityDuration(item.totalMs)} · модель ${qualityDuration(item.modelMs)} · витрина ${qualityDuration(item.sqlMs)}`],
+    item.promptMs !== null && item.promptMs !== undefined
+      ? ["Модель", `чтение контекста ${qualityDuration(item.promptMs)} · письмо ${qualityDuration(item.evalMs)}`
+        + `${item.loadMs >= 1000 ? ` · загрузка ${qualityDuration(item.loadMs)}` : ""} · вызовов ${asInt(item.modelCalls)}`]
+      : null,
+    item.toolCalls ? ["Шагов", asInt(item.toolCalls)] : null,
+    item.stopReason ? ["Остановка", JOURNAL_STOP[item.stopReason] || item.stopReason] : null,
+    item.rows !== null && item.rows !== undefined ? ["Строк в ответе", asInt(item.rows)] : null,
+    item.memoryFolder ? ["Память папки", `учтена — «${item.memoryFolder}»`] : null,
+  ].filter(Boolean);
+  const files = item.files || [];
+
+  return (
+    <div className="journal-detail">
+      <p className="journal-detail-question">{item.question}</p>
+      {item.standalone && item.standalone !== item.question && (
+        <p className="journal-detail-standalone">{`ИИ понял вопрос так: «${item.standalone}»`}</p>
+      )}
+      {item.message && item.outcome !== "ok" && <Note size="small" type="warning" fill label="Причина">{item.message}</Note>}
+
+      <dl className="journal-facts">
+        {facts.map(([name, value]) => (
+          <div key={name}><dt>{name}</dt><dd>{value}</dd></div>
+        ))}
+      </dl>
+
+      {files.length > 0 && (
+        <div className="journal-files" aria-label="Файлы вопроса">
+          {files.map((file) => (
+            <span key={`${file.sha256}-${file.name}`} className="ai-file" title={`SHA-256: ${file.sha256}`}>
+              <FileCard kind={file.kind || file.name} size="sm" />
+              <span className="ai-file-text">
+                <span className="ai-file-name">{file.name}</span>
+                <span className="ai-file-meta">{[file.place === "folder" ? "файл папки" : "файл диалога", aiFileSize(file.size), `SHA-256 ${String(file.sha256 || "").slice(0, 10)}…`].filter(Boolean).join(" · ")}</span>
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="journal-detail-topics">
+        {FACET_ORDER.map(([code, title]) => (item.topics[code] || []).length > 0 && (
+          <div key={code}>
+            <span>{title}</span>
+            {(item.topics[code] || []).map((value) => <span key={value} className="journal-tag">{value}</span>)}
+            {code === "theme" && item.themeBy === "model" && <small>тему определила модель</small>}
+          </div>
+        ))}
+      </div>
+
+      {item.steps.length > 0 && (
+        <div className="journal-steps">
+          <h5>Шаги</h5>
+          <ol>
+            {item.steps.map((step, index) => (
+              <li key={`${step.kind}-${index}`} className={step.ok === false ? "failed" : ""}>
+                <span className="journal-step-kind">{step.kindTitle}</span>
+                <span className="journal-step-label">{step.label || "—"}{step.error ? ` — ${step.error}` : ""}</span>
+                <span className="journal-step-ms">{journalMs(step.ms)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {item.modelSteps.length > 0 && (
+        <details className="journal-sql">
+          <summary>{`Вызовы модели · ${asInt(item.modelSteps.length)}`}</summary>
+          <ol className="journal-calls">
+            {item.modelSteps.map((call, index) => (
+              <li key={index}>
+                {`контекст ${asInt(call.in)} ток. — чтение ${journalMs(call.promptMs) || "0 с"}, письмо ${journalMs(call.evalMs) || "0 с"} (${asInt(call.out)} ток.)`}
+                {call.loadMs >= 1000 ? `, загрузка ${qualityDuration(call.loadMs)}` : ""}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+
+      {item.sql && (
+        <details className="journal-sql">
+          <summary>SQL итогового запроса</summary>
+          <pre>{item.sql}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+const FACET_ORDER = [["theme", "Тематика"], ["metric", "Показатель"], ["slice", "Разрез"], ["task", "Тип задачи"], ["period", "Период"]];
+
 const ADMIN_TABS = [
   { code: "usage", tab: "Аналитика", title: "Пользовательская аналитика",
     note: "Регистрации, входы, длительность визитов и востребованность разделов." },
@@ -3678,6 +4092,8 @@ const ADMIN_TABS = [
     note: "Учётные записи, роли и область данных. Здесь же удаление аккаунта." },
   { code: "quality", tab: "Качество ИИ", title: "Качество ответов ИИ",
     note: "Оценки, разбор низких оценок и срез по версиям инструкции." },
+  { code: "journal", tab: "Журнал ИИ", title: "Журнал обращений к ИИ",
+    note: "Все вопросы к ИИ-аналитику: кто, о чём, чем закончилось и сколько заняло. Тематики пополняются сами по новым вопросам." },
   { code: "feedback", tab: "Обратная связь", title: "Обратная связь по данным",
     note: "Замечания пользователей из «Контроля»: кто, по какой АЗС, что не так — и разбор по статусам." },
   { code: "limits", tab: "Лимиты ИИ", title: "Лимиты ИИ",
@@ -3759,8 +4175,8 @@ function AdminDashboard({ onBack, currentUserId }) {
 
   // Вкладки ИИ появляются только при включённом контуре ИИ.
   // Вкладки со своей загрузкой: статистика использования для них не нужна.
-  const aiTab = tab === "quality" || tab === "limits" || tab === "feedback";
-  const tabs = ADMIN_TABS.filter((item) => (item.code !== "quality" && item.code !== "limits") || aiStatus?.enabled);
+  const aiTab = tab === "quality" || tab === "journal" || tab === "limits" || tab === "feedback";
+  const tabs = ADMIN_TABS.filter((item) => !["quality", "journal", "limits"].includes(item.code) || aiStatus?.enabled);
   const current = tabs.find((item) => item.code === tab) || tabs[0];
 
   const users = usersState.data?.users || [];
@@ -3855,6 +4271,7 @@ function AdminDashboard({ onBack, currentUserId }) {
       </div>
 
       {tab === "quality" && <AiQualityPanel />}
+      {tab === "journal" && <AiJournalPanel />}
       {tab === "limits" && <AiLimitsPanel />}
       {tab === "feedback" && <FeedbackPanel />}
 
@@ -5526,7 +5943,7 @@ function aiDropProps(onDropDialog, setOver) {
   };
 }
 
-function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, onDelete, onDropDialog }) {
+function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, onDelete, onDropDialog, onContext }) {
   const moreRef = useRef(null);
   const [menu, setMenu] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -5560,6 +5977,12 @@ function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, on
             <ChevronRight size={14} className={open ? "ai-folder-caret open" : "ai-folder-caret"} aria-hidden="true" />
             <Folder size={15} aria-hidden="true" />
             <span className="ai-dialog-name">{folder.title}</span>
+            {(folder.memory || folder.files > 0) && (
+              <span className="ai-folder-marks" title={[folder.memory ? "есть память папки" : "", folder.files ? `файлов: ${folder.files}` : ""].filter(Boolean).join(", ")}>
+                {folder.memory ? <StickyNote size={12} aria-label="Память папки" /> : null}
+                {folder.files > 0 ? <Paperclip size={12} aria-label={`Файлов: ${folder.files}`} /> : null}
+              </span>
+            )}
             <span className="ai-folder-count">{dialogs.length}</span>
           </button>
           <button
@@ -5575,6 +5998,9 @@ function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, on
           </button>
           {menu && (
             <AiPopMenu anchorRef={moreRef} onClose={() => setMenu(false)} label={`Действия с папкой «${folder.title}»`}>
+              <button type="button" role="menuitem" onClick={() => { setMenu(false); onContext(); }}>
+                <StickyNote size={14} /> Память и файлы
+              </button>
               <button type="button" role="menuitem" onClick={() => { setMenu(false); setEditing(true); }}>
                 <Pencil size={14} /> Переименовать
               </button>
@@ -5616,7 +6042,7 @@ function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, on
 function AiSidebar({
   dialogs, folders = [], limits = null, notice = null, onNotice = () => {}, activeId, loading,
   onNew, onOpen, onRename, onPin, onDelete, onMove, onArchive, onArchiveOldest,
-  onCreateFolder, onRenameFolder, onDeleteFolder, whoLabel, whoName, onClose, onCollapse, searchRef,
+  onCreateFolder, onRenameFolder, onDeleteFolder, onFolderContext = () => {}, whoLabel, whoName, onClose, onCollapse, searchRef,
 }) {
   const [query, setQuery] = useState("");
   const [openFolders, setOpenFolders] = useState(() => new Set());
@@ -5802,6 +6228,7 @@ function AiSidebar({
                     onRename={(title) => onRenameFolder(folder.id, title)}
                     onDelete={(mode) => onDeleteFolder(folder.id, mode)}
                     onDropDialog={(id) => onMove(id, folder.id)}
+                    onContext={() => onFolderContext(folder)}
                   />
                 ))}
               </div>
@@ -6212,9 +6639,10 @@ function AiAnswerBody({ answer, maySeeSql, messageId = null }) {
           download={messageId ? { messageId, part: "main" } : null} />
       )}
 
-      {(answer.notes || []).length > 0 && (
+      {/* «Учтены файлы / память» показывает строка AiContextLine над ответом. */}
+      {(answer.notes || []).filter((note) => !note.startsWith("Учтен")).length > 0 && (
         <ul className="ai-notes">
-          {answer.notes.map((note) => <li key={note}>{note}</li>)}
+          {answer.notes.filter((note) => !note.startsWith("Учтен")).map((note) => <li key={note}>{note}</li>)}
         </ul>
       )}
 
@@ -6281,6 +6709,236 @@ function AiSettleOrb({ outcome, onSettled }) {
   );
 }
 
+// --- ИИ-07 / ИИ-11: файлы и память папки --------------------------------------------
+const AI_FILE_EXT = ["pdf", "docx", "xlsx", "csv", "txt", "pptx"];
+const AI_FILE_MAX_MB = 20;
+const AI_FILE_ACCEPT = AI_FILE_EXT.map((ext) => `.${ext}`).join(",");
+
+function aiFileSize(bytes) {
+  const value = Number(bytes) || 0;
+  if (!value) return "";
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024)).toLocaleString("ru-RU")} КБ`;
+  return `${(value / (1024 * 1024)).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} МБ`;
+}
+
+// Проверка до загрузки — те же правила, что на сервере (Р-5); сервер всё равно проверит сам.
+function aiFileProblem(file) {
+  const ext = String(file.name || "").toLowerCase().split(".").pop();
+  if (!AI_FILE_EXT.includes(ext)) return "Поддерживаются PDF, DOCX, XLSX, CSV, TXT и PPTX";
+  if (file.size > AI_FILE_MAX_MB * 1024 * 1024) return `Файл больше ${AI_FILE_MAX_MB} МБ`;
+  if (!file.size) return "Файл пустой";
+  return "";
+}
+
+// Файл уходит телом запроса: сервер разбирает его в отдельном процессе и хранит только содержимое.
+async function aiUploadFile(file, { dialogId = null, folderId = null } = {}) {
+  const params = new URLSearchParams({ name: file.name });
+  if (dialogId) params.set("dialogId", String(dialogId));
+  if (folderId) params.set("folderId", String(folderId));
+  const response = await fetch(`/api/ai/files?${params}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/octet-stream", Accept: "application/json" },
+    body: file,
+  });
+  if (response.status === 401) {
+    emitAuthRequired();
+    throw new Error("Сессия истекла — войдите заново");
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    const error = new Error(detail.detail || `Файл не принят (${response.status})`);
+    error.limit = response.headers.get("X-AI-Limit") || "";
+    throw error;
+  }
+  return response.json();
+}
+
+function AiFileChip({ file, busy = false, error = "", onRemove = null }) {
+  const meta = busy ? "Разбираю…" : error || [file.summary, aiFileSize(file.size)].filter(Boolean).join(" · ");
+  return (
+    <span className={`ai-file${busy ? " busy" : ""}${error ? " failed" : ""}`} title={error || file.name}>
+      <FileCard kind={file.kind || file.name} size="sm" />
+      <span className="ai-file-text">
+        <span className="ai-file-name">{file.name}</span>
+        <span className="ai-file-meta">{meta}</span>
+      </span>
+      {onRemove && (
+        <button type="button" className="ai-file-remove" onClick={onRemove} aria-label={`Убрать «${file.name}»`}>
+          <X size={13} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+// Под вопросом: что учёл ответ — память папки и файлы (ИИ-11: «Учтена память папки»).
+function AiContextLine({ context }) {
+  const files = context?.files || [];
+  if (!context?.memory && !files.length) return null;
+  return (
+    <div className="ai-context-line">
+      <span className="ai-context-label">Учтены:</span>
+      {context.memory && (
+        <span className="ai-context-item"><StickyNote size={13} aria-hidden="true" /><span className="ai-context-name">{`память папки «${context.memory}»`}</span></span>
+      )}
+      {files.map((file) => (
+        <span key={file.id || file.name} className="ai-context-item" title={file.summary || file.name}>
+          <FileCard kind={file.kind || file.name} size="sm" /><span className="ai-context-name">{file.name}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// «Память и файлы папки» (ИИ-11): правила для всех диалогов папки и до пяти файлов.
+function AiFolderContextDialog({ folder, onClose, onChanged }) {
+  const [state, setState] = useState({ status: "loading", data: null, error: "" });
+  const [text, setText] = useState("");
+  const [notice, setNotice] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [uploads, setUploads] = useState([]);
+  const fileInput = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    aiSend(`/api/ai/folders/${folder.id}/memory`)
+      .then((data) => { if (alive) { setState({ status: "ready", data, error: "" }); setText(data.text || ""); } })
+      .catch((error) => { if (alive) setState({ status: "error", data: null, error: error.message || "Не удалось открыть память папки" }); });
+    return () => { alive = false; };
+  }, [folder.id]);
+
+  useEffect(() => {
+    const onKey = (event) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const data = state.data;
+  const limit = data?.limit || 2000;
+  const changed = data && text.trim() !== (data.text || "");
+
+  async function save() {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const next = await aiSend(`/api/ai/folders/${folder.id}/memory`, { method: "PUT", body: JSON.stringify({ text }) });
+      setState({ status: "ready", data: next, error: "" });
+      setText(next.text || "");
+      setNotice({ type: "success", label: "Сохранено", text: next.text ? "Память учитывается в новых вопросах всех диалогов папки." : "Память папки очищена." });
+      onChanged();
+    } catch (error) {
+      setNotice({ type: "error", label: error.limit ? "Лимит" : "Ошибка", text: error.message || "Не удалось сохранить" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function upload(list) {
+    for (const file of Array.from(list || [])) {
+      const key = `${file.name}-${Date.now()}-${Math.random()}`;
+      const problem = aiFileProblem(file);
+      if (problem) { setUploads((items) => [...items, { key, name: file.name, error: problem }]); continue; }
+      setUploads((items) => [...items, { key, name: file.name, busy: true }]);
+      try {
+        const saved = await aiUploadFile(file, { folderId: folder.id });
+        setUploads((items) => items.filter((item) => item.key !== key));
+        setState((current) => ({ ...current, data: { ...current.data, files: [...(current.data.files || []).filter((f) => f.id !== saved.id), saved] } }));
+        onChanged();
+      } catch (error) {
+        setUploads((items) => items.map((item) => (item.key === key ? { ...item, busy: false, error: error.message } : item)));
+      }
+    }
+  }
+
+  async function remove(file) {
+    try {
+      await aiSend(`/api/ai/files/${file.id}`, { method: "DELETE" });
+      setState((current) => ({ ...current, data: { ...current.data, files: current.data.files.filter((f) => f.id !== file.id) } }));
+      onChanged();
+    } catch (error) {
+      setNotice({ type: "error", label: "Ошибка", text: error.message || "Файл не удалён" });
+    }
+  }
+
+  return createPortal(
+    <div className="ai-modal-scrim" role="presentation" onClick={onClose}>
+      <div className="ai-modal ai-folder-context-modal" role="dialog" aria-modal="true" aria-label={`Память и файлы папки «${folder.title}»`}
+        onClick={(event) => event.stopPropagation()}>
+        <div className="ai-modal-head">
+          <div>
+            <p className="ai-modal-title">{`Папка «${folder.title}»`}</p>
+            <p className="ai-modal-sub">Память и файлы учитываются во всех диалогах папки. Они уточняют ответ, но не расширяют область данных.</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Закрыть"><X size={18} /></button>
+        </div>
+
+        {state.status === "loading" && <p className="admin-bar-caption">Загружаю…</p>}
+        {state.status === "error" && <Note type="error" fill label="Ошибка">{state.error}</Note>}
+        {data && (
+          <>
+            <label className="ui-field">
+              <span>Память папки</span>
+              <textarea
+                className={`ui-textarea${text.length > limit ? " invalid" : ""}`}
+                rows={5}
+                value={text}
+                placeholder="Например: моё управление; сравнивай с тем же месяцем прошлого года; фокус на НТУ; итоги — списком"
+                onChange={(event) => { setNotice(null); setText(event.target.value); }}
+              />
+              <small className={text.length > limit ? "ai-memory-count over" : "ai-memory-count"}>{`${asInt(text.length)} из ${asInt(limit)} знаков`}</small>
+            </label>
+            <div className="ai-modal-actions">
+              <button type="button" className="ui-button" disabled={!changed || saving || text.length > limit} onClick={save}>
+                {saving ? "Сохраняю…" : "Сохранить память"}
+              </button>
+              {changed && <button type="button" className="ui-button ghost" onClick={() => setText(data.text || "")}>Отменить правку</button>}
+            </div>
+            {notice && <Note size="small" type={notice.type} fill label={notice.label}>{notice.text}</Note>}
+
+            {data.history?.length > 1 && (
+              <details className="ai-memory-history">
+                <summary>{`История правок · ${asInt(data.history.length)}`}</summary>
+                <ul>
+                  {data.history.map((item) => (
+                    <li key={item.id}>
+                      <time>{new Date(item.at * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</time>
+                      <span>{item.text ? (item.text.length > 90 ? `${item.text.slice(0, 89)}…` : item.text) : "— память очищена —"}</span>
+                      <button type="button" className="ai-action" onClick={() => setText(item.text)}>Вернуть</button>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+
+            <div className="ai-folder-files">
+              <div className="ai-folder-files-head">
+                <span>{`Файлы папки · ${asInt((data.files || []).length)}`}</span>
+                <button type="button" className="ai-action" onClick={() => fileInput.current?.click()}>
+                  <Paperclip size={15} /> Добавить файл
+                </button>
+                <input ref={fileInput} type="file" hidden multiple accept={AI_FILE_ACCEPT}
+                  onChange={(event) => { upload(event.target.files); event.target.value = ""; }} />
+              </div>
+              {(data.files || []).length === 0 && uploads.length === 0 && (
+                <p className="ai-folder-files-empty">PDF, DOCX, XLSX, CSV, TXT или PPTX до 20 МБ — например, план мероприятий или протокол совещания.</p>
+              )}
+              <div className="ai-attachments">
+                {(data.files || []).map((file) => <AiFileChip key={file.id} file={file} onRemove={() => remove(file)} />)}
+                {uploads.map((item) => (
+                  <AiFileChip key={item.key} file={{ name: item.name }} busy={item.busy} error={item.error}
+                    onRemove={item.busy ? null : () => setUploads((items) => items.filter((x) => x.key !== item.key))} />
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen, onCopy, onSettled, depthTitles = AI_DEPTH_TITLES, deepBlocked = false }) {
   const answer = item.answer || {};
   // «Углубить» до «Высокого» не предлагаем, когда его квота на сегодня исчерпана (ИИ-03).
@@ -6302,6 +6960,7 @@ function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen,
       <div className="ai-reply">
         {fresh && <AiSettleOrb outcome={aiOutcome(answer)} onSettled={onSettled} />}
         <AiThinking answer={answer} />
+        <AiContextLine context={answer.context} />
         <AiAnswerBody answer={answer} maySeeSql={maySeeSql} messageId={item.id} />
         <div className="ai-actions">
           <button type="button" className="ai-action rate" onClick={() => onRate(item)}>
@@ -6559,6 +7218,15 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   const [activeId, setActiveId] = useState(null);
   const [items, setItems] = useState([]);
   const [question, setQuestion] = useState("");
+  // ИИ-07 / ИИ-11: файлы диалога, черновики нового диалога, загрузки и что даёт папка.
+  const [dialogFiles, setDialogFiles] = useState([]);
+  const [drafts, setDrafts] = useState([]);
+  const [uploads, setUploads] = useState([]);
+  const [folderInfo, setFolderInfo] = useState(null);
+  const [useMemory, setUseMemory] = useState(true);
+  const [dragOver, setDragOver] = useState(false);
+  const [folderDialog, setFolderDialog] = useState(null);
+  const fileInput = useRef(null);
   const [pending, setPending] = useState("");
   const [liveStages, setLiveStages] = useState([]);
   // Орб пустого экрана слушает, пока курсор в поле или набран текст.
@@ -6650,13 +7318,62 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   useLayoutEffect(() => { aiFitComposer(composer.current); }, [question]);
 
   useEffect(() => {
-    if (!activeId) { setItems([]); return; }
+    setUseMemory(true);
+    setUploads([]);
+    if (!activeId) { setItems([]); setDialogFiles([]); setFolderInfo(null); return; }
     let alive = true;
     aiSend(`/api/ai/dialogs/${activeId}/messages`)
-      .then((data) => { if (alive) setItems(data?.messages || []); })
+      .then((data) => {
+        if (!alive) return;
+        setItems(data?.messages || []);
+        setDialogFiles(data?.files || []);
+        setFolderInfo(data?.folder || null);
+      })
       .catch((err) => { if (alive) setError(err.message || "Диалог не открылся"); });
     return () => { alive = false; };
   }, [activeId]);
+
+  // Черновики (файлы до первого вопроса) относятся только к новому диалогу.
+  const shownFiles = activeId ? dialogFiles : drafts;
+
+  // Память и файлы папки поменялись в окне папки — обновить строку над полем ввода.
+  const refreshFolderInfo = useCallback(() => {
+    if (!activeId) return;
+    aiSend(`/api/ai/dialogs/${activeId}/messages`)
+      .then((data) => { setDialogFiles(data?.files || []); setFolderInfo(data?.folder || null); })
+      .catch(() => {});
+  }, [activeId]);
+
+  async function uploadFiles(list) {
+    const target = activeId;
+    for (const file of Array.from(list || [])) {
+      const key = `${file.name}-${file.size}-${Date.now()}-${Math.random()}`;
+      const problem = aiFileProblem(file);
+      if (problem) {
+        setUploads((items) => [...items, { key, name: file.name, error: problem }]);
+        continue;
+      }
+      setUploads((items) => [...items, { key, name: file.name, busy: true }]);
+      try {
+        const saved = await aiUploadFile(file, { dialogId: target });
+        setUploads((items) => items.filter((item) => item.key !== key));
+        if (saved.dialogId) setDialogFiles((files) => (files.some((f) => f.id === saved.id) ? files : [...files, saved]));
+        else setDrafts((files) => (files.some((f) => f.id === saved.id) ? files : [...files, saved]));
+      } catch (err) {
+        setUploads((items) => items.map((item) => (item.key === key ? { ...item, busy: false, error: err.message || "Файл не принят" } : item)));
+      }
+    }
+  }
+
+  async function removeFile(file) {
+    try {
+      await aiSend(`/api/ai/files/${file.id}`, { method: "DELETE" });
+    } catch (err) {
+      if (err.status !== 404) { setError(err.message || "Файл не удалён"); return; }
+    }
+    setDialogFiles((files) => files.filter((f) => f.id !== file.id));
+    setDrafts((files) => files.filter((f) => f.id !== file.id));
+  }
 
   useEffect(() => {
     if (!items.length && !pending) return;
@@ -6719,6 +7436,9 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       model: model || undefined,
       depth: overrides.depth || depth,
       dialogId: activeId ?? undefined,
+      // ИИ-07: черновики — только у первого вопроса нового диалога; файлы диалога и папки сервер берёт сам.
+      fileIds: activeId ? [] : drafts.map((file) => file.id),
+      useMemory,
     };
     try {
       let data;
@@ -6745,7 +7465,10 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
         rating: null,
         comment: "",
       }]);
-      if (data.dialogId && data.dialogId !== activeId) setActiveId(data.dialogId);
+      if (data.dialogId && data.dialogId !== activeId) {
+        if (drafts.length) setDrafts([]);        // черновики перешли в новый диалог
+        setActiveId(data.dialogId);
+      }
       loadDialogs();
       refreshLimits();
     } catch (err) {
@@ -6768,6 +7491,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   async function newDialog() {
     setActiveId(null);
     setItems([]);
+    setDrafts([]);
     setError("");
     onDrawer(false);
   }
@@ -6917,6 +7641,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       onCreateFolder={createFolder}
       onRenameFolder={renameFolder}
       onDeleteFolder={deleteFolder}
+      onFolderContext={(folder) => { onDrawer(false); setFolderDialog(folder); }}
       whoLabel={whoLabel}
       whoName={status?.ownName || status?.ownEmail || ""}
       onClose={drawer ? () => onDrawer(false) : undefined}
@@ -7137,7 +7862,21 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
           </div>
         )}
 
-        <div className="ai-composer-wrap">
+        <div
+          className={dragOver ? "ai-composer-wrap drag" : "ai-composer-wrap"}
+          onDragOver={(event) => {
+            if (pending || !Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+            event.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragOver(false); }}
+          onDrop={(event) => {
+            if (!event.dataTransfer?.files?.length) return;
+            event.preventDefault();
+            setDragOver(false);
+            uploadFiles(event.dataTransfer.files);
+          }}
+        >
           {items.length > 0 && !pending && (
             <div className="ai-chips">
               {examples.map((example) => (
@@ -7171,6 +7910,48 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
               )}
             </div>
           )}
+          {(shownFiles.length > 0 || uploads.length > 0
+            || (folderInfo && (folderInfo.memory || folderInfo.files?.length))) && (
+            <div className="ai-attachments composer">
+              {folderInfo && (folderInfo.memory || folderInfo.files?.length > 0) && (
+                <div className="ai-folder-context">
+                  <span className="ai-folder-context-name">{`Папка «${folderInfo.title}»`}</span>
+                  {folderInfo.memory && (
+                    <button
+                      type="button"
+                      className={useMemory ? "ai-memory-toggle on" : "ai-memory-toggle"}
+                      aria-pressed={useMemory}
+                      title="Учитывать память папки в этом вопросе"
+                      onClick={() => setUseMemory((value) => !value)}
+                    >
+                      <StickyNote size={13} aria-hidden="true" />
+                      {useMemory ? "память учитывается" : "память выключена"}
+                    </button>
+                  )}
+                  {folderInfo.files?.length > 0 && (
+                    <span className="ai-folder-files-count"><Paperclip size={12} aria-hidden="true" />{`файлов папки: ${folderInfo.files.length}`}</span>
+                  )}
+                  {(folderInfo.files || []).map((file) => (
+                    <span key={file.id} className="ai-folder-file" title={`${file.name} — файл папки`}>
+                      <FileCard kind={file.kind || file.name} size="sm" /><span className="ai-context-name">{file.name}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {(shownFiles.length > 0 || uploads.length > 0) && (
+                <div className="ai-attachments-files">
+                  {shownFiles.map((file) => (
+                    <AiFileChip key={file.id} file={file} onRemove={pending ? null : () => removeFile(file)} />
+                  ))}
+                  {uploads.map((item) => (
+                    <AiFileChip key={item.key} file={{ name: item.name }} busy={item.busy} error={item.error}
+                      onRemove={item.busy ? null : () => setUploads((list) => list.filter((x) => x.key !== item.key))} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {dragOver && <div className="ai-drop-hint">Отпустите файл — PDF, DOCX, XLSX, CSV, TXT или PPTX до 20 МБ</div>}
           <div className="ai-composer">
             <label>
               <span className="visually-hidden">Вопрос к витрине данных</span>
@@ -7179,7 +7960,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                 rows={1}
                 maxLength={questionMax}
                 value={question}
-                placeholder="Спросите о показателях ваших объектов"
+                placeholder={shownFiles.length ? "Спросите о файле или о показателях" : "Спросите о показателях ваших объектов"}
                 onChange={(event) => setQuestion(event.target.value)}
                 onFocus={() => setComposing(true)}
                 onBlur={() => setComposing(false)}
@@ -7195,6 +7976,18 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                 }}
               />
             </label>
+            <input ref={fileInput} type="file" hidden multiple accept={AI_FILE_ACCEPT}
+              onChange={(event) => { uploadFiles(event.target.files); event.target.value = ""; }} />
+            <button
+              type="button"
+              className="ai-attach"
+              onClick={() => fileInput.current?.click()}
+              disabled={Boolean(pending)}
+              aria-label="Приложить файл"
+              title="Приложить файл: PDF, DOCX, XLSX, CSV, TXT или PPTX до 20 МБ"
+            >
+              <Paperclip size={17} />
+            </button>
             <AiDepthPicker value={depth} options={depthOptions} onChange={setDepth} disabled={Boolean(pending)} />
             {pending ? (
               <button
@@ -7230,6 +8023,14 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       </div>
 
       <AiResizeHandle extra={shellExtra} onChange={changeShellExtra} />
+
+      {folderDialog && (
+        <AiFolderContextDialog
+          folder={folderDialog}
+          onClose={() => setFolderDialog(null)}
+          onChanged={() => { loadDialogs(); refreshFolderInfo(); }}
+        />
+      )}
 
       {ratingFor && (
         <AiRatingDialog

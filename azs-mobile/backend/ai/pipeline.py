@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 from . import contract, executor, generator, journal, people as people_resolver, scope as scope_builder, textstyle
 from . import limits as ai_limits
+from . import files as file_store
 from .validator import Rejected, Scope, validate
 
 MAX_ATTEMPTS = 2
@@ -116,40 +117,75 @@ class Answer:
     model_calls: int = 0
     tokens_in: int = 0
     tokens_out: int = 0
+    # Время модели (25.09.2026): чтение контекста, письмо, загрузка; сжатия переписки.
+    prompt_ms: int = 0
+    eval_ms: int = 0
+    load_ms: int = 0
+    context_trims: int = 0
+    # ИИ-07 / ИИ-11: что учёл ответ — файлы (без содержимого) и память папки.
+    context: dict = field(default_factory=dict)
 
 
 def ask(question: str, role: str, binding: str | None, actor: str | None = None,
         model: str | None = None,
         on_stage: Callable[[dict], None] | None = None,
-        depth: str = "auto", history: list[dict] | None = None, control=None) -> Answer:
+        depth: str = "auto", history: list[dict] | None = None, control=None,
+        files: list[dict] | None = None, memory: dict | None = None) -> Answer:
     """Ответ на вопрос с полным временем ожидания — для ориентира на уровнях.
 
     `control` — запуск из backend/ai/quotas.py: отмена человеком и место в
     очереди «Высокого»; без него (тесты, скрипты) лимитов очереди нет.
+    `files` — файлы вопроса с содержимым (files.for_question), `memory` —
+    {"folder", "text"} памяти папки (ИИ-07, ИИ-11).
     """
     started = time.monotonic()
     requested = (depth or "auto").strip().lower()
-    usage = {"calls": 0, "tokens_in": 0, "tokens_out": 0}
+    usage = {"calls": 0, "tokens_in": 0, "tokens_out": 0, "prompt_ms": 0, "eval_ms": 0, "load_ms": 0, "trace": []}
     token = generator.USAGE.set(usage)
     try:
-        answer = _ask(question, role, binding, actor, model, on_stage, depth, history, control)
+        answer = _ask(question, role, binding, actor, model, on_stage, depth, history, control,
+                      files=files or [], memory=memory)
     finally:
         generator.USAGE.reset(token)
+    _mark_context(answer, files or [], memory)
     answer.depth_requested = requested if requested in DEPTHS else "auto"
     answer.total_ms = int((time.monotonic() - started) * 1000)
     answer.model_calls = usage["calls"]
     answer.tokens_in = usage["tokens_in"]
     answer.tokens_out = usage["tokens_out"]
+    answer.prompt_ms, answer.eval_ms, answer.load_ms = usage["prompt_ms"], usage["eval_ms"], usage["load_ms"]
     try:
         journal.set_run_stats(
             answer.journal_id, total_ms=answer.total_ms, tokens_in=answer.tokens_in,
             tokens_out=answer.tokens_out, model_calls=answer.model_calls, tool_calls=answer.tool_calls,
             stop_reason=answer.stop_reason or None, depth_requested=answer.depth_requested,
             truncated=1 if answer.truncated else 0,
+            model_prompt_ms=answer.prompt_ms, model_eval_ms=answer.eval_ms, model_load_ms=answer.load_ms,
+            model_trace=json.dumps({"calls": usage["trace"], "trims": answer.context_trims}, ensure_ascii=False),
+            # ИИ-07: в журнал — имя, вид, размер и контрольная сумма файлов, не содержимое.
+            files_json=json.dumps(file_store.for_journal(files), ensure_ascii=False) if files else None,
+            memory_folder=(memory or {}).get("folder") or None,
         )
     except Exception:  # noqa: BLE001 - журнал не должен ронять ответ
         pass
     return answer
+
+
+def _mark_context(answer: Answer, files: list[dict], memory: dict | None) -> None:
+    """Пометка в ответе: что из папки и файлов учтено (ИИ-11: «Учтена память папки»)."""
+    context = {
+        "files": [{"id": f["id"], "name": f["name"], "kind": f["kind"], "summary": f.get("summary", ""),
+                   "place": f.get("place", "dialog")} for f in files],
+        "memory": (memory or {}).get("folder") or None,
+    }
+    answer.context = context if (files or memory) else {}
+    notes = []
+    if memory:
+        notes.append(f"Учтена память папки «{memory.get('folder') or ''}»")
+    if files:
+        notes.append("Учтены файлы: " + ", ".join(f["name"] for f in files))
+    if notes and answer.ok:
+        answer.notes = notes + [n for n in answer.notes if n not in notes]
 
 
 def _cancelled(question: str, scope: Scope, depth: str) -> Answer:
@@ -160,7 +196,8 @@ def _cancelled(question: str, scope: Scope, depth: str) -> Answer:
 def _ask(question: str, role: str, binding: str | None, actor: str | None = None,
          model: str | None = None,
          on_stage: Callable[[dict], None] | None = None,
-         depth: str = "auto", history: list[dict] | None = None, control=None) -> Answer:
+         depth: str = "auto", history: list[dict] | None = None, control=None,
+         files: list[dict] | None = None, memory: dict | None = None) -> Answer:
     question = (question or "").strip()
     if not question:
         return Answer(ok=False, question="", scope_label="", error="Пустой вопрос")
@@ -178,7 +215,20 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
     context = people.prompt_block() if people else ""
     person_note = people.note() if people else ""
 
-    if not AGENT_ENABLED or (depth == "fast" and not history):
+    # ИИ-07 / ИИ-11: файлы и память папки — данные в явной границе (agent/file_tools.py).
+    from .agent import file_tools
+
+    files = files or []
+    user_context = file_tools.brief(files, memory)
+    if memory and not files:
+        # Быстрый путь видит память папки в подсказке генератора SQL.
+        context = "\n".join(part for part in (context, user_context) if part)
+    file_note = ""
+    if files and depth == "fast":
+        depth = "analyze"
+        file_note = "С файлами ответ идёт на уровне «Средний»: «Лёгкий» читает только витрину"
+
+    if not AGENT_ENABLED or (depth == "fast" and not history and not files):
         return _ask_fast(question, question, scope, role, binding, actor, model, on_stage,
                          context=context, person_note=person_note,
                          limits=ai_limits.for_run(role, "fast"), control=control)
@@ -197,6 +247,8 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
     hits = probe.semantic.find(question)
     if context:
         hits = {**hits, "people": context}
+    if user_context:
+        hits = {**hits, "userContext": user_context}
     today = date.today().isoformat()
 
     _notify(on_stage, "plan", "active", kind="plan")
@@ -220,6 +272,9 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
         _log(answer, scope, role, binding, actor, "cancelled")
         return answer
 
+    if plan.depth == "fast" and files:
+        plan.depth = "analyze"
+        file_note = file_note or "С файлами ответ идёт на уровне «Средний»: «Лёгкий» читает только витрину"
     if plan.depth == "fast":
         answer = _ask_fast(question, plan.standalone_question or question, scope, role, binding,
                            actor, model, on_stage, plan_ms=plan.elapsed_ms,
@@ -264,13 +319,13 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
             run_query=((lambda sql, n: executor.run(sql, n, timeout_s=run_limits.sql_timeout_s))
                        if run_limits.sql_timeout_s else None),
             scope_label=scope.label, today=today, data_range=data_range, hits=hits, limits=run_limits,
-            should_stop=control.cancelled if control is not None else None,
+            should_stop=control.cancelled if control is not None else None, files=files,
         )
     finally:
         if entered:
             control.leave_deep()
     answer = _from_outcome(question, scope, outcome, plan)
-    front = [note for note in (person_note, level_note) if note]
+    front = [note for note in (person_note, level_note, file_note) if note]
     if front:
         answer.notes = front + list(answer.notes)
         if answer.analysis is not None:
@@ -433,6 +488,7 @@ def _from_outcome(question: str, scope: Scope, outcome, plan) -> Answer:
     answer.summary = analysis.text()
     answer.stop_reason = getattr(outcome, "stop_reason", "") or ""
     answer.tool_calls = int(getattr(outcome, "tool_calls", 0) or 0)
+    answer.context_trims = int(getattr(outcome, "context_trims", 0) or 0)
     workspace = outcome.workspace
     answer.charts = list(workspace.charts)
     answer.steps = [step.public(with_code=True) for step in workspace.steps]
@@ -449,6 +505,9 @@ def _from_outcome(question: str, scope: Scope, outcome, plan) -> Answer:
         answer.truncated = main.truncated
         answer.row_count = len(answer.rows)
     for rs in workspace.results.values():
+        # Файлы пользователя в ответ как таблицы не повторяются: он их и так знает (ИИ-07).
+        if rs.source in ("file", "file_text"):
+            continue
         if rs.rows and (main is None or rs.id != main.id):
             answer.tables.append(rs.as_table())
     charted = {c.get("source") for c in answer.charts}

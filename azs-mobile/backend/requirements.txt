@@ -7,3 +7,5 @@ openpyxl==3.1.5
 python-dotenv==1.0.1
 sqlglot==30.18.0
 reportlab==4.2.5
+# ИИ-07: текст PDF из файлов пользователя (чистый Python, без сети)
+pypdf>=5.1,<7

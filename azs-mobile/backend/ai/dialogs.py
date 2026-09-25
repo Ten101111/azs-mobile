@@ -88,6 +88,51 @@ CREATE TABLE IF NOT EXISTS ai_folders (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_folders_user ON ai_folders(user_id);
+
+-- ИИ-07: файлы пользователя — только разобранное содержимое, без исходного файла.
+-- dialog_id и folder_id пусты — черновик: файл приложен к вопросу нового диалога.
+CREATE TABLE IF NOT EXISTS ai_files (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    dialog_id  INTEGER,
+    folder_id  INTEGER,
+    name       TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,
+    size       INTEGER NOT NULL,
+    sha256     TEXT    NOT NULL,
+    meta_json  TEXT,
+    notes_json TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_files_owner ON ai_files(user_id, dialog_id, folder_id);
+CREATE TABLE IF NOT EXISTS ai_file_parts (
+    file_id      INTEGER NOT NULL,
+    seq          INTEGER NOT NULL,
+    kind         TEXT    NOT NULL,
+    label        TEXT    NOT NULL,
+    columns_json TEXT,
+    rows_json    TEXT,
+    text         TEXT,
+    first_row    INTEGER,
+    truncated    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (file_id, seq)
+);
+
+-- ИИ-11: память папки и история её правок.
+CREATE TABLE IF NOT EXISTS ai_folder_memory (
+    folder_id  INTEGER PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    text       TEXT    NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_folder_memory_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id  INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    text       TEXT    NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_folder_memory_log ON ai_folder_memory_log(folder_id, id);
 """
 
 # Колонки диалога, появившиеся после первых запусков (ИИ-02, ИИ-10).
@@ -302,7 +347,10 @@ def list_folders(user_id: int) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT f.id, f.title, f.created_at, f.updated_at,"
-            "       (SELECT COUNT(*) FROM ai_dialogs d WHERE d.folder_id = f.id AND d.archived_at IS NULL) AS dialogs "
+            "       (SELECT COUNT(*) FROM ai_dialogs d WHERE d.folder_id = f.id AND d.archived_at IS NULL) AS dialogs,"
+            # ИИ-11: есть ли память папки и сколько в ней файлов — для пометок в истории.
+            "       (SELECT COUNT(*) FROM ai_files x WHERE x.folder_id = f.id) AS files,"
+            "       (SELECT LENGTH(m.text) > 0 FROM ai_folder_memory m WHERE m.folder_id = f.id) AS memory "
             "FROM ai_folders f WHERE f.user_id = ?",
             (user_id,)).fetchall()
     finally:
@@ -361,6 +409,12 @@ def delete_folder(folder_id: int, user_id: int, dialogs: str = "move") -> dict:
         else:
             conn.execute("UPDATE ai_dialogs SET folder_id = NULL WHERE folder_id = ? AND user_id = ?",
                          (folder_id, user_id))
+        # ИИ-11: память и файлы папки уходят вместе с папкой.
+        conn.execute("DELETE FROM ai_file_parts WHERE file_id IN (SELECT id FROM ai_files WHERE folder_id = ?)",
+                     (folder_id,))
+        conn.execute("DELETE FROM ai_files WHERE folder_id = ?", (folder_id,))
+        conn.execute("DELETE FROM ai_folder_memory WHERE folder_id = ?", (folder_id,))
+        conn.execute("DELETE FROM ai_folder_memory_log WHERE folder_id = ?", (folder_id,))
         conn.execute("DELETE FROM ai_folders WHERE id = ?", (folder_id,))
         conn.commit()
     finally:
@@ -422,6 +476,9 @@ def _delete(conn: sqlite3.Connection, dialog_id: int) -> None:
         marks = ",".join("?" * len(ids))
         conn.execute(f"DELETE FROM ai_feedback WHERE message_id IN ({marks})", ids)
     conn.execute("DELETE FROM ai_messages WHERE dialog_id = ?", (dialog_id,))
+    # ИИ-07: файлы диалога удаляются вместе с ним.
+    conn.execute("DELETE FROM ai_file_parts WHERE file_id IN (SELECT id FROM ai_files WHERE dialog_id = ?)", (dialog_id,))
+    conn.execute("DELETE FROM ai_files WHERE dialog_id = ?", (dialog_id,))
     conn.execute("DELETE FROM ai_dialogs WHERE id = ?", (dialog_id,))
 
 
@@ -562,3 +619,68 @@ def save_feedback(message_id: int, user_id: int, rating: int, comment: str) -> d
     finally:
         conn.close()
     return {"messageId": message_id, "rating": rating, "comment": text}
+
+
+# --- ИИ-11: память папки -----------------------------------------------------------
+
+MEMORY_HISTORY = 10
+
+
+def _memory_limit(role: str | None) -> int:
+    return int(quotas.value(role, "folder_memory_chars"))
+
+
+def folder_memory(folder_id: int, user_id: int, role: str | None = None) -> dict:
+    """Память папки, предел знаков и последние правки (новые сверху)."""
+    conn = _connect()
+    try:
+        folder = _folder(conn, folder_id, user_id)
+        row = conn.execute("SELECT text, updated_at FROM ai_folder_memory WHERE folder_id = ?", (folder_id,)).fetchone()
+        history = [dict(r) for r in conn.execute(
+            "SELECT id, text, created_at FROM ai_folder_memory_log WHERE folder_id = ? ORDER BY id DESC LIMIT ?",
+            (folder_id, MEMORY_HISTORY))]
+    finally:
+        conn.close()
+    return {"folderId": folder_id, "folder": folder["title"], "text": row["text"] if row else "",
+            "updatedAt": row["updated_at"] if row else None, "limit": _memory_limit(role),
+            "history": [{"id": h["id"], "text": h["text"], "at": h["created_at"]} for h in history]}
+
+
+def set_folder_memory(folder_id: int, user_id: int, text: str, role: str | None = None) -> dict:
+    """Сохранить память папки. Пустой текст — память выключена. Каждая правка — в историю."""
+    text = (text or "").replace("\r\n", "\n").strip()
+    limit = _memory_limit(role)
+    if len(text) > limit:
+        raise Limit("folder_memory_chars", f"Память папки — до {limit} знаков, сейчас {len(text)}.")
+    conn = _connect()
+    try:
+        _folder(conn, folder_id, user_id)
+        current = conn.execute("SELECT text FROM ai_folder_memory WHERE folder_id = ?", (folder_id,)).fetchone()
+        if not current or current["text"] != text:
+            now = _now()
+            conn.execute("INSERT INTO ai_folder_memory (folder_id, user_id, text, updated_at) VALUES (?, ?, ?, ?) "
+                         "ON CONFLICT(folder_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
+                         (folder_id, user_id, text, now))
+            conn.execute("INSERT INTO ai_folder_memory_log (folder_id, user_id, text, created_at) VALUES (?, ?, ?, ?)",
+                         (folder_id, user_id, text, now))
+            conn.execute("DELETE FROM ai_folder_memory_log WHERE folder_id = ? AND id NOT IN (SELECT id FROM "
+                         "ai_folder_memory_log WHERE folder_id = ? ORDER BY id DESC LIMIT 50)", (folder_id, folder_id))
+            conn.commit()
+    finally:
+        conn.close()
+    return folder_memory(folder_id, user_id, role)
+
+
+def dialog_folder(dialog_id: int | None, user_id: int) -> dict | None:
+    """Папка диалога и её память: {"id", "title", "memory"} или None."""
+    if not dialog_id:
+        return None
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT f.id, f.title, m.text AS memory FROM ai_dialogs d JOIN ai_folders f ON f.id = d.folder_id "
+            "LEFT JOIN ai_folder_memory m ON m.folder_id = f.id WHERE d.id = ? AND d.user_id = ? AND f.user_id = ?",
+            (int(dialog_id), user_id, user_id)).fetchone()
+    finally:
+        conn.close()
+    return {"id": int(row["id"]), "title": row["title"], "memory": row["memory"] or ""} if row else None

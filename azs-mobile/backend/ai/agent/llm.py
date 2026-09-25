@@ -136,14 +136,18 @@ class OllamaChat:
         self.timeout_s = timeout_s
 
     def _prepare(self, messages: list[dict]) -> list[dict]:
+        """Qwen3 без хода мысли: «/no_think» — в каждом сообщении человека.
+
+        Раньше метка ставилась только в последнее сообщение: когда в переписке
+        появлялось новое, метка «переезжала», начало переписки менялось, и Ollama
+        перечитывала весь контекст заново вместо того, чтобы взять его из кэша.
+        """
         if generator.THINKING or not self.model.lower().startswith("qwen3"):
             return messages
         prepared = [dict(m) for m in messages]
-        for message in reversed(prepared):
-            if message.get("role") == "user":
-                if "/no_think" not in (message.get("content") or ""):
-                    message["content"] = f"{message.get('content', '')}\n/no_think"
-                break
+        for message in prepared:
+            if message.get("role") == "user" and "/no_think" not in (message.get("content") or ""):
+                message["content"] = f"{message.get('content', '')}\n/no_think"
         return prepared
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
@@ -155,6 +159,7 @@ class OllamaChat:
             "stream": False,
             "think": generator.THINKING,
             "options": {"temperature": 0, "num_predict": max_tokens, "num_ctx": NUM_CTX},
+            "keep_alive": generator.KEEP_ALIVE,
         }
         if tools:
             payload["tools"] = tools

@@ -64,6 +64,8 @@ def triage_user(question: str, today: str, semantic: Semantic, history_block: st
                      + (f", отсутствует: {hits['absent']}" if hits.get("absent") else "") + ".")
     if hits and hits.get("people"):
         parts.append(hits["people"])
+    if hits and hits.get("userContext"):
+        parts.append(hits["userContext"])
     if history_block:
         parts.append("История диалога (от старых к новым):\n" + history_block)
     parts.append(f"Вопрос: {question}\nJSON:")
@@ -172,6 +174,8 @@ def agent_user(question: str, plan_dict: dict, scope_label: str, today: str,
             parts.append("В витрине нет: " + "; ".join(hits["absent"]) + " — учти в limitations.")
         if hits.get("people"):
             parts.append(hits["people"])
+        if hits.get("userContext"):
+            parts.append(hits["userContext"])
     parts.append(
         f"Задача: {question}\nТип: {plan_dict.get('taskType')}, глубина: {plan_dict.get('depth')}."
     )

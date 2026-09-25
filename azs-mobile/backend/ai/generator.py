@@ -26,7 +26,15 @@ TIMEOUT_S = float(os.environ.get("AI_MODEL_TIMEOUT", "120"))
 # Один размер контекста для всех вызовов модели. При разном num_ctx Ollama
 # перезагружает модель на каждом переключении «Лёгкий» ↔ агент: это лишние
 # секунды и пик памяти, при нехватке которой Ollama отвечает ошибкой 500.
-NUM_CTX = int(os.environ.get("AI_NUM_CTX") or os.environ.get("AI_AGENT_NUM_CTX") or "16384")
+# 25.09.2026: 16 384 → 32 768. Агенту на «Среднем» и «Высоком» 16 тыс. токенов
+# не хватало — старые результаты приходилось сжимать почти на каждом шаге, и
+# модель перечитывала контекст заново. Цена — несколько ГБ памяти под контекст.
+NUM_CTX = int(os.environ.get("AI_NUM_CTX") or os.environ.get("AI_AGENT_NUM_CTX") or "32768")
+# Сколько Ollama держит модель в памяти после последнего вопроса (по умолчанию у
+# Ollama — 5 мин, потом крупная модель грузится заново десятки секунд).
+# «24h», «30m», число секунд; «-1» — не выгружать, пока Ollama работает.
+KEEP_ALIVE_RAW = (os.environ.get("AI_KEEP_ALIVE") or "24h").strip()
+KEEP_ALIVE: str | int = int(KEEP_ALIVE_RAW) if KEEP_ALIVE_RAW.lstrip("-").isdigit() else KEEP_ALIVE_RAW
 # Пояснение текстом можно отключить, если нужен только голый результат.
 NARRATE = (os.environ.get("AI_NARRATE") or "1").strip().lower() in {"1", "true", "yes", "on"}
 # Сколько строк результата показывать модели при составлении пояснения.
@@ -55,13 +63,41 @@ class Generated:
 USAGE: ContextVar[dict | None] = ContextVar("ai_model_usage", default=None)
 
 
+MAX_TRACE_CALLS = 100
+
+
+def _ms(nanoseconds) -> int:
+    try:
+        return int(nanoseconds or 0) // 1_000_000
+    except (TypeError, ValueError):
+        return 0
+
+
 def _count_usage(data: dict) -> None:
+    """Токены и время модели по каждому вызову (25.09.2026 — чтение, письмо, загрузка).
+
+    Ollama отдаёт: prompt_eval_count — размер контекста вызова в токенах (вместе с
+    частью, взятой из кэша); prompt_eval_duration — время чтения новой части (при
+    попадании в кэш — доли секунды); eval_count/duration — сколько модель написала
+    и за сколько; load_duration — загрузка модели в память. Замер 25.09.2026:
+    контекст 7,5 тыс. токенов из кэша читается за ~0,5 с, без кэша — ~13 с.
+    """
     usage = USAGE.get()
     if usage is None or not isinstance(data, dict):
         return
+    tokens_in = int(data.get("prompt_eval_count") or 0)
+    tokens_out = int(data.get("eval_count") or 0)
+    prompt_ms, eval_ms, load_ms = (_ms(data.get("prompt_eval_duration")), _ms(data.get("eval_duration")),
+                                   _ms(data.get("load_duration")))
     usage["calls"] = usage.get("calls", 0) + 1
-    usage["tokens_in"] = usage.get("tokens_in", 0) + int(data.get("prompt_eval_count") or 0)
-    usage["tokens_out"] = usage.get("tokens_out", 0) + int(data.get("eval_count") or 0)
+    usage["tokens_in"] = usage.get("tokens_in", 0) + tokens_in
+    usage["tokens_out"] = usage.get("tokens_out", 0) + tokens_out
+    usage["prompt_ms"] = usage.get("prompt_ms", 0) + prompt_ms
+    usage["eval_ms"] = usage.get("eval_ms", 0) + eval_ms
+    usage["load_ms"] = usage.get("load_ms", 0) + load_ms
+    trace = usage.setdefault("trace", [])
+    if len(trace) < MAX_TRACE_CALLS:
+        trace.append({"in": tokens_in, "out": tokens_out, "promptMs": prompt_ms, "evalMs": eval_ms, "loadMs": load_ms})
 
 
 def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
@@ -192,6 +228,7 @@ def generate(question: str, feedback: str | None = None, model: str | None = Non
             "stream": False,
             "think": THINKING,
             "options": {"temperature": 0, "num_predict": 1024, "num_ctx": NUM_CTX},
+            "keep_alive": KEEP_ALIVE,
         },
         timeout=timeout,
     )
@@ -214,6 +251,7 @@ def _chat(messages: list[dict], model: str, max_tokens: int, timeout: float | No
             "stream": False,
             "think": THINKING,
             "options": {"temperature": 0, "num_predict": max_tokens, "num_ctx": NUM_CTX},
+            "keep_alive": KEEP_ALIVE,
         },
         timeout=timeout,
     )

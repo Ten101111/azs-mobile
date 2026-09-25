@@ -72,7 +72,7 @@ class SettingsCase(unittest.TestCase):
         quotas.refresh()
 
         def fake_ask(question, role, binding, actor, model=None, on_stage=None, depth="auto", history=None,
-                     control=None):
+                     control=None, files=None, memory=None):
             if control is not None and depth == "deep":
                 control.enter_deep()
                 control.leave_deep()

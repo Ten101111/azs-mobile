@@ -75,7 +75,7 @@ shutil.copytree(source / "backend", target, ignore=shutil.ignore_patterns("tests
 shutil.copy2(source / "data" / "ai_catalog.dwh.json", runtime / "data" / "ai_catalog.dwh.json")
 
 allowed = ("DWH_DB_HOST", "DWH_DB_PORT", "DWH_DB_NAME", "DWH_DB_USER", "DWH_DB_PASSWORD",
-           "DWH_CONNECT_TIMEOUT_SECONDS", "AI_MODEL", "AI_OLLAMA_HOST", "AI_NUM_CTX", "AI_AGENT_NUM_CTX",
+           "DWH_CONNECT_TIMEOUT_SECONDS", "AI_MODEL", "AI_OLLAMA_HOST", "AI_NUM_CTX", "AI_AGENT_NUM_CTX", "AI_KEEP_ALIVE",
            "AI_MODEL_TIMEOUT", "REPORTS_IMPORT_TOKEN", "REPORTS_IMPORT_URL", "KPI_IMPORT_URL", "REPORTS_SQL_TIMEOUT",
            "REPORT_FUEL_DROP_PCT", "REPORT_NO_SALES_DAYS", "REPORT_TOP_DROPS", "REPORT_TOP_LEADERS",
            "REPORT_COMPLETE_SHARE_PCT", "REPORT_MIN_BASE_SHARE", "REPORT_NEGATIVE_MIN", "REPORT_TOP_NEGATIVE",
