@@ -24,6 +24,7 @@ OUTCOMES = {
     "ok": ("Ответ", ("ok",)),
     "refused": ("Отказ", ("rejected",)),
     "failed": ("Ошибка", ("execution_error", "model_unavailable")),
+    "plan": ("План", ("plan",)),
     "nodata": ("Нет данных", ("agent_no_data",)),
 }
 KNOWN_VERDICTS = tuple(v for _title, codes in OUTCOMES.values() for v in codes)
@@ -252,6 +253,8 @@ def detail(query_id: int) -> dict | None:
         # ИИ-07 / ИИ-11: файлы вопроса (без содержимого) и память папки.
         "files": json.loads(row.get("files_json") or "[]"),
         "memoryFolder": row.get("memory_folder") or "",
+        # ИИ-23: план — предложенный, утверждённый, правки человека и итог по пунктам.
+        "plan": json.loads(row.get("plan_json") or "null"),
         "themeBy": "model" if origins.get(("theme", (tags.get("theme") or [""])[0])) == "model" else "rules",
         "themeState": state["model_state"] if state else "",
     })

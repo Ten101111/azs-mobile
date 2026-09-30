@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
@@ -61,7 +62,9 @@ LATE_COLUMNS = (("prompt_version", "TEXT"), ("depth", "TEXT"), ("task_type", "TE
                 ("model_prompt_ms", "INTEGER"), ("model_eval_ms", "INTEGER"), ("model_load_ms", "INTEGER"),
                 ("model_trace", "TEXT"),
                 # ИИ-07 / ИИ-11: файлы вопроса (имя, вид, размер, хэш — без содержимого) и память папки.
-                ("files_json", "TEXT"), ("memory_folder", "TEXT"))
+                ("files_json", "TEXT"), ("memory_folder", "TEXT"),
+                # ИИ-23: план — предложенный, утверждённый, правки человека и итог по пунктам (JSON).
+                ("plan_json", "TEXT"))
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -94,7 +97,7 @@ def write(entry: dict) -> int:
 
 RUN_STATS = ("total_ms", "tokens_in", "tokens_out", "model_calls", "tool_calls", "stop_reason", "depth_requested",
              "truncated", "model_prompt_ms", "model_eval_ms", "model_load_ms", "model_trace",
-             "files_json", "memory_folder")
+             "files_json", "memory_folder", "plan_json")
 
 
 def set_run_stats(entry_id: int | None, **stats) -> None:
@@ -198,3 +201,16 @@ def recent(limit: int = 50) -> list[dict]:
     finally:
         conn.close()
     return [dict(row) for row in rows]
+
+
+def set_plan(entry_id: int | None, plan: dict) -> None:
+    """ИИ-23: судьба предложенного плана (например, человек его отменил)."""
+    if not entry_id:
+        return
+    conn = _connect()
+    try:
+        conn.execute("UPDATE ai_queries SET plan_json = ? WHERE id = ?",
+                     (json.dumps(plan, ensure_ascii=False), int(entry_id)))
+        conn.commit()
+    finally:
+        conn.close()

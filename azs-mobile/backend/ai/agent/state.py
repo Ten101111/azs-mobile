@@ -161,6 +161,8 @@ class Step:
     output: str | None = None
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
+    # ИИ-23: пункт утверждённого плана, к которому относится шаг.
+    subtask: str = ""
 
     def public(self, with_code: bool) -> dict:
         item = {
@@ -168,6 +170,8 @@ class Step:
             "ok": self.ok, "purpose": self.purpose, "rows": self.rows,
             "resultId": self.result_id, "warnings": self.warnings, "error": self.error,
         }
+        if self.subtask:
+            item["subtask"] = self.subtask
         if with_code:
             item["sql"] = self.sql
             item["code"] = self.code
@@ -226,8 +230,10 @@ class Plan:
     filters: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     reason: str = ""
-    source: str = "model"      # model | heuristic | forced
+    source: str = "model"      # model | heuristic | forced | approved
     elapsed_ms: int = 0
+    # ИИ-23: поля карточки плана от модели (цель, результат, подзадачи, риски, критерии).
+    extra: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -313,6 +319,10 @@ class AgentOutcome:
     tool_calls: int = 0
     # Сколько раз старые результаты сжимались, чтобы уложиться в контекст модели.
     context_trims: int = 0
+    # 28.09.2026: сколько повторных вызовов не выполнено (тот же инструмент с теми же аргументами).
+    repeats: int = 0
+    # ИИ-23: пункты плана, которые агент не выполнил, с причиной (finish.deviations).
+    deviations: list = field(default_factory=list)
 
     @property
     def main_result(self) -> ResultSet | None:

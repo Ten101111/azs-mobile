@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 import os
@@ -17,7 +18,7 @@ from .. import executor
 from ..catalog import CATALOG, Catalog
 from ..semantic import SEMANTIC, Semantic
 from ..validator import Scope
-from . import claims, file_tools, grounding, memory, prompts, recommend, schema_tools, tools
+from . import claims, file_tools, grounding, memory, planning, prompts, recommend, schema_tools, tools
 from .. import textstyle
 from .llm import MAX_TOKENS, NUM_CTX, ModelUnavailable, OllamaChat, Reply, extract_json, salvage_json
 from .state import DEPTHS, TASK_TYPES, AgentOutcome, Analysis, Budget, Plan, Step, Workspace
@@ -40,6 +41,17 @@ CHARS_PER_TOKEN = float(os.environ.get("AI_CHARS_PER_TOKEN", "2.5"))   # с за
 TRIM_SHARE = float(os.environ.get("AI_CONTEXT_TRIM_SHARE", "0.75"))    # доля контекста до сжатия
 KEEP_RECENT_RESULTS = 2
 BRIEF_MARK = " (подробности выше по ходу)"
+# 28.09.2026: каждое сжатие заставляет Ollama перечитать переписку (в журнале — 16–36 с на
+# 15–17 тыс. токенов). Раньше после сжатия переписка оставалась у самого предела и сжималась
+# почти на каждом ходе (6 раз за ответ). Теперь сжимается до TRIM_TARGET_SHARE контекста —
+# следующее сжатие нескоро; знаков в токене — по факту прошлого хода (prompt_eval_count).
+TRIM_TARGET_SHARE = float(os.environ.get("AI_CONTEXT_TRIM_TARGET", "0.5"))
+ARG_KEEP_CHARS = 200
+# Повторы (28.09.2026): модель повторяла один и тот же расчёт до 11 раз подряд (≈4 мин).
+# Тот же вызов с теми же аргументами не выполняется; после MAX_REPEATS повторов сбор
+# заканчивается и итог пишется по собранным данным. Ошибку можно повторить один раз.
+MAX_REPEATS = int(os.environ.get("AI_AGENT_MAX_REPEATS", "2"))
+REPEAT_IGNORED_ARGS = ("subtask", "purpose")
 
 StageListener = Callable[[dict], None] | None
 
@@ -64,7 +76,7 @@ def _stage_from_step(step: Step, state: str) -> dict:
 
 def triage(question: str, *, history: list[dict] | None, semantic: Semantic, model,
            today: str, data_range: dict | None, hits: dict | None,
-           depth: str = "auto") -> Plan:
+           depth: str = "auto", plan_fields: bool = False) -> Plan:
     """План анализа: эвристика для очевидных фактов, иначе одна модель-подсказка."""
     question = " ".join((question or "").split())
     followup = bool(history) and memory.is_followup(question)
@@ -75,14 +87,16 @@ def triage(question: str, *, history: list[dict] | None, semantic: Semantic, mod
                     reason="простой факт-вопрос без контекста")
 
     started = time.monotonic()
+    # ИИ-23: в режиме планирования тот же разбор даёт и поля карточки плана.
+    system = prompts.TRIAGE_SYSTEM + (planning.PLAN_FIELDS if plan_fields else "")
     messages = [
-        {"role": "system", "content": prompts.TRIAGE_SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompts.triage_user(
             question, today, semantic, memory.history_block(history or []), data_range, hits)},
     ]
     plan = Plan(standalone_question=question, task_type="other", depth="analyze", source="fallback")
     try:
-        reply: Reply = model.chat(messages, json_mode=True, max_tokens=700)
+        reply: Reply = model.chat(messages, json_mode=True, max_tokens=1200 if plan_fields else 700)
         parsed = extract_json(reply.text) or {}
         plan.elapsed_ms = reply.elapsed_ms
     except ModelUnavailable:
@@ -102,6 +116,9 @@ def triage(question: str, *, history: list[dict] | None, semantic: Semantic, mod
         plan.filters = [str(f) for f in (parsed.get("filters") or []) if str(f).strip()][:8]
         plan.missing = [str(m) for m in (parsed.get("missing") or []) if str(m).strip()][:6]
         plan.reason = str(parsed.get("reason") or "")
+        if plan_fields:
+            plan.extra = {key: parsed.get(key) for key in
+                          ("goal", "expected_result", "subtasks", "risks", "success_criteria") if parsed.get(key)}
     if plan.task_type == "lookup" and plan.depth != "fast" and depth == "auto":
         plan.depth = "fast"
     if plan.task_type in {"diagnose", "anomaly", "opportunity", "whatif"} and plan.depth == "fast":
@@ -202,10 +219,28 @@ def context_chars(messages: list[dict], tool_specs: list[dict] | None = None) ->
     return size
 
 
-def context_limit_chars(reply_tokens: int | None = None) -> int:
-    """Сколько знаков переписки помещается в контекст с запасом на ответ хода."""
+def context_limit_chars(reply_tokens: int | None = None, chars_per_token: float | None = None) -> int:
+    """Сколько знаков переписки помещается в контекст с запасом на ответ хода.
+
+    `chars_per_token` — сколько знаков в токене у этой переписки по факту прошлого хода;
+    без замера — CHARS_PER_TOKEN с запасом (цифры и JSON — почти по токену на знак).
+    """
     reply = reply_tokens or MAX_TOKENS
-    return max(4000, int((NUM_CTX * TRIM_SHARE - reply) * CHARS_PER_TOKEN))
+    ratio = chars_per_token or CHARS_PER_TOKEN
+    return max(4000, int((NUM_CTX * TRIM_SHARE - reply) * ratio))
+
+
+def context_target_chars(limit_chars: int) -> int:
+    """До скольких знаков сжимать переписку: с запасом, чтобы следующее сжатие было нескоро."""
+    return int(limit_chars * TRIM_TARGET_SHARE / TRIM_SHARE)
+
+
+def _prompt_tokens(reply: Reply) -> int:
+    """Размер контекста хода в токенах, как его посчитала Ollama (0 — неизвестно)."""
+    try:
+        return int(((reply.raw or {}).get("prompt_eval_count")) or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
 
 
 def _brief(content: str) -> str:
@@ -219,16 +254,7 @@ def _brief(content: str) -> str:
     return json.dumps(brief, ensure_ascii=False) + BRIEF_MARK
 
 
-def _trim(messages: list[dict], *, limit_chars: int, tool_specs: list[dict] | None = None,
-          keep_recent: int = KEEP_RECENT_RESULTS) -> bool:
-    """Сжать старые результаты инструментов — только когда переписка подходит к пределу.
-
-    Сжимаются все старые результаты разом (кроме `keep_recent` последних), чтобы
-    начало переписки менялось как можно реже: каждое изменение заставляет Ollama
-    перечитать контекст с этого места. Возвращает True, если переписка изменилась.
-    """
-    if context_chars(messages, tool_specs) <= limit_chars:
-        return False
+def _brief_results(messages: list[dict], keep_recent: int) -> bool:
     tool_indexes = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
     old = tool_indexes[:-keep_recent] if keep_recent else tool_indexes
     changed = False
@@ -243,6 +269,72 @@ def _trim(messages: list[dict], *, limit_chars: int, tool_specs: list[dict] | No
     return changed
 
 
+def _brief_arguments(messages: list[dict], keep_recent: int = 2) -> bool:
+    """Длинные аргументы старых вызовов (код Python, SQL) — укоротить: результат уже в переписке."""
+    assistant = [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
+    changed = False
+    for message in assistant[:-keep_recent] if keep_recent else assistant:
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") if isinstance(call, dict) else None
+            args = function.get("arguments") if isinstance(function, dict) else None
+            if not isinstance(args, dict):
+                continue
+            for name, value in list(args.items()):
+                if isinstance(value, str) and len(value) > ARG_KEEP_CHARS * 2 and not value.endswith(BRIEF_MARK):
+                    args[name] = value[:ARG_KEEP_CHARS] + "…" + BRIEF_MARK
+                    changed = True
+    return changed
+
+
+def _trim(messages: list[dict], *, limit_chars: int, tool_specs: list[dict] | None = None,
+          keep_recent: int = KEEP_RECENT_RESULTS, target_chars: int | None = None) -> bool:
+    """Сжать переписку — только когда она подходит к пределу, и сразу с запасом.
+
+    Сначала старые результаты инструментов (кроме `keep_recent` последних); если переписка
+    всё ещё больше `target_chars` — все результаты, кроме последнего, затем длинные
+    аргументы старых вызовов. Начало переписки меняется одним разом: каждое изменение
+    заставляет Ollama перечитать контекст с этого места. True — переписка изменилась.
+    """
+    if context_chars(messages, tool_specs) <= limit_chars:
+        return False
+    target = limit_chars if target_chars is None else min(target_chars, limit_chars)
+    changed = _brief_results(messages, keep_recent)
+    if keep_recent > 1 and context_chars(messages, tool_specs) > target:
+        changed = _brief_results(messages, 1) or changed
+    if context_chars(messages, tool_specs) > target:
+        changed = _brief_arguments(messages) or changed
+    return changed
+
+
+def _call_key(name: str, arguments) -> str | None:
+    """Отпечаток вызова инструмента: тот же инструмент с теми же аргументами — тот же результат."""
+    if name == "finish":
+        return None
+    args = arguments
+    if isinstance(args, str):
+        args = salvage_json(args) or {"_": args}
+    if not isinstance(args, dict):
+        args = {"_": args}
+    clean = {}
+    for key, value in args.items():
+        if key in REPEAT_IGNORED_ARGS:
+            continue
+        clean[key] = " ".join(value.split()).rstrip(";").strip() if isinstance(value, str) else value
+    return name + json.dumps(clean, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _repeat_reply(seen: dict) -> dict:
+    """Ответ модели на повтор: результат уже есть — чем воспользоваться и что делать дальше."""
+    what = "Этот вызов с теми же аргументами уже выполнен"
+    if seen.get("error"):
+        what += f" и дважды вернул ошибку: {str(seen['error'])[:300]}. Исправь запрос или выбери другой шаг"
+    else:
+        ids = ", ".join(seen.get("ids") or [])
+        what += (f": результат {ids} уже в переписке" if ids else ": его вывод уже в переписке выше")
+        what += ". Повтор даст то же самое — используй готовый результат, сделай следующий шаг плана"
+    return {"error": "повтор", "message": what + " или вызови finish, если данных достаточно."}
+
+
 def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None = None,
         model=None, on_stage: StageListener = None,
         generate_sql: Callable[[str], str] | None = None,
@@ -251,7 +343,7 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
         today: str | None = None, scope_label: str = "", data_range: dict | None = None,
         hits: dict | None = None, limits=None,
         should_stop: Callable[[], bool] | None = None,
-        files: list[dict] | None = None) -> AgentOutcome:
+        files: list[dict] | None = None, plan_card: dict | None = None) -> AgentOutcome:
     """Прогон агента в глубине analyze/deep. Режим fast обслуживает pipeline.
 
     `limits` — пределы роли (backend/ai/limits.py); у администратора их нет.
@@ -289,12 +381,19 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
     # Инструменты файлов — только когда файлы есть: иначе лишние токены в каждом ходе.
     tool_specs = [spec.as_ollama() for spec in tools.specs()
                   if files or spec.name not in file_tools.TOOL_NAMES] + [prompts.FINISH_TOOL]
-    limit_chars = context_limit_chars(getattr(model, "max_tokens", None))
+    live = copy.deepcopy(plan_card) if plan_card else None
+    if live:
+        tool_specs = _plan_specs(tool_specs)
+    reply_tokens = getattr(model, "max_tokens", None)
+    chars_per_token: float | None = None      # по факту хода: знаков переписки на токен Ollama
+    done_calls: dict[str, dict] = {}          # отпечаток вызова → результат (id, ошибка, сколько раз)
+    repeats = 0
     messages = [
         {"role": "system", "content": prompts.agent_system(semantic, catalog.dialect)},
         {"role": "user", "content": prompts.agent_user(
             plan.standalone_question or question, plan.as_dict(), scope_label or scope.label, today,
-            data_range, hits, budget.remaining(), asked=asked)},
+            data_range, hits, budget.remaining(), asked=asked,
+            plan_block=planning.prompt_block(live) if live else "")},
     ]
 
     finish_payload: dict | None = None
@@ -314,6 +413,7 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
                 stop_reason = "лимит времени"
                 break
             _emit(on_stage, {"key": "model", "state": "active", "label": think_step.label, "kind": "plan"})
+            sent_chars = context_chars(messages, tool_specs)
             try:
                 reply = model.chat(messages, tools=tool_specs)
             except ModelUnavailable:
@@ -327,6 +427,9 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
             budget.used_turns += 1
             outcome.model_ms += reply.elapsed_ms
             outcome.turns += 1
+            prompt_tokens = _prompt_tokens(reply)
+            if prompt_tokens > 0 and sent_chars > 0:
+                chars_per_token = min(6.0, max(1.5, sent_chars / prompt_tokens))
             if reply.tool_calls:
                 messages.append(_assistant_message(reply))
                 for call in reply.tool_calls[:MAX_CALLS_PER_TURN]:
@@ -336,7 +439,31 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
                             args = salvage_json(args) or {}
                         finish_payload = args if isinstance(args, dict) else {}
                         break
+                    key = _call_key(call.name, call.arguments)
+                    seen = done_calls.get(key) if key else None
+                    if seen is not None and not (seen.get("error") and seen["count"] < 2):
+                        # Повтор: не выполняем — отвечаем, где готовый результат (28.09.2026).
+                        repeats += 1
+                        outcome.repeats += 1
+                        messages.append({"role": "tool", "tool_name": call.name,
+                                         "content": json.dumps(_repeat_reply(seen), ensure_ascii=False)})
+                        if repeats >= MAX_REPEATS:
+                            break
+                        continue
+                    explicit = None
+                    if live and isinstance(call.arguments, dict):
+                        explicit = planning.resolve(live, call.arguments.get("subtask"))
+                        if explicit:
+                            _plan_event(on_stage, live, explicit, "active")
+                    before = len(workspace.steps)
                     result = tools.call(ctx, call.name, call.arguments)
+                    if key:
+                        new_ids = [s.result_id for s in workspace.steps[before:] if s.result_id]
+                        error = result.get("error") if isinstance(result, dict) else None
+                        done_calls[key] = {"count": (seen or {}).get("count", 0) + 1, "ids": new_ids,
+                                           "error": error}
+                    if live:
+                        _plan_steps(on_stage, live, workspace.steps[before:], explicit)
                     messages.append({
                         "role": "tool", "tool_name": call.name,
                         "content": tools.compact(result, TOOL_TEXT_LIMIT),
@@ -344,7 +471,12 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
                 if finish_payload is not None:
                     stop_reason = "finish"
                     break
-                if _trim(messages, limit_chars=limit_chars, tool_specs=tool_specs):
+                if repeats >= MAX_REPEATS:
+                    stop_reason = "повтор шагов"
+                    break
+                limit_chars = context_limit_chars(reply_tokens, chars_per_token)
+                if _trim(messages, limit_chars=limit_chars, tool_specs=tool_specs,
+                         target_chars=context_target_chars(limit_chars)):
                     outcome.context_trims += 1
                 continue
             # Нет вызовов: модель либо уже отвечает текстом, либо застряла.
@@ -412,6 +544,9 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
     if stop_reason == "лимит времени" and max_seconds and max_seconds > 0:
         analysis.limitations.append(
             f"Анализ остановлен: лимит времени уровня — {_minutes(max_seconds)}; выводы — по собранным данным.")
+    elif stop_reason == "повтор шагов":
+        analysis.limitations.append(
+            "Сбор данных закончен досрочно: ИИ повторял уже сделанный шаг; выводы — по собранным данным.")
     elif stop_reason and stop_reason not in ("finish", "finish-text", "prose"):
         analysis.limitations.append(f"Анализ остановлен ({stop_reason}); выводы по собранным данным.")
     # Типы утверждений и правила рекомендаций ставит код, а не модель (ИИ-25, ИИ-16).
@@ -425,6 +560,10 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
     _emit(on_stage, _stage_from_step(write_step, "done"))
 
     outcome.analysis = analysis
+    if live:
+        payload = finish_payload or {}
+        raw = payload.get("deviations") if isinstance(payload.get("deviations"), list) else []
+        outcome.deviations = [d for d in raw if isinstance(d, dict)][:10]
     has_data = any(rs.rows for rs in workspace.results.values())
     outcome.ok = bool(analysis.headline) and (has_data or bool(finish_payload) or bool(analysis.limitations))
     if not outcome.ok:
@@ -433,6 +572,51 @@ def run(question: str, scope: Scope, *, plan: Plan, history: list[dict] | None =
     main = outcome.main_result
     outcome.frame.update(memory.build_frame(question, plan, analysis, main.sql if main else None))
     return outcome
+
+
+def _plan_specs(tool_specs: list[dict]) -> list[dict]:
+    """ИИ-23: в режиме плана инструменты принимают номер пункта, а finish — отклонения от плана."""
+    out = []
+    for spec in tool_specs:
+        spec = copy.deepcopy(spec)
+        function = spec.get("function") or {}
+        props = function.get("parameters", {}).setdefault("properties", {})
+        if function.get("name") == "finish":
+            props["deviations"] = {
+                "type": "array", "description": "пункты плана, которые не выполнены или выполнены иначе, с причиной",
+                "items": {"type": "object", "properties": {
+                    "subtask": {"type": "string", "description": "номер пункта"},
+                    "reason": {"type": "string", "description": "почему, до 20 слов"}}}}
+        elif function.get("name") in PLAN_TOOLS:
+            props["subtask"] = {"type": "string", "description": "номер пункта утверждённого плана"}
+        out.append(spec)
+    return out
+
+
+PLAN_TOOLS = ("run_sql", "run_python", "create_chart", "read_file", "find_in_files")
+
+
+def _plan_event(on_stage: StageListener, card: dict, sid: str, state: str) -> None:
+    subtask = next((s for s in card["subtasks"] if s["id"] == sid), None)
+    if subtask is None:
+        return
+    _emit(on_stage, {"key": f"plan-{sid}", "state": state, "kind": "subtask", "subtask": sid,
+                     "label": subtask["title"]})
+
+
+def _plan_steps(on_stage: StageListener, card: dict, steps: list[Step], explicit: str | None) -> None:
+    """Привязать новые шаги агента к пунктам плана и отметить прогресс."""
+    for step in steps:
+        sid = planning.attribute(card, step.kind, explicit)
+        if not sid:
+            continue
+        step.subtask = sid
+        subtask = next(s for s in card["subtasks"] if s["id"] == sid)
+        if step.ok:
+            subtask["status"] = "done"
+            _plan_event(on_stage, card, sid, "done")
+        elif subtask.get("status") != "done":
+            subtask["status"] = "active"
 
 
 def _minutes(seconds: float) -> str:

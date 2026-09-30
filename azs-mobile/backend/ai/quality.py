@@ -65,8 +65,9 @@ def summary(days: int = 30) -> dict:
     since = _period(days)
     conn = _conn()
     try:
+        # Предложенный план (ИИ-23) — не ответ и не вопрос сверх выполненного: его не считаем.
         asked = conn.execute(
-            "SELECT COUNT(*) AS n FROM ai_queries WHERE created_at >= ?", (since,)
+            "SELECT COUNT(*) AS n FROM ai_queries WHERE created_at >= ? AND verdict != 'plan'", (since,)
         ).fetchone()["n"]
         verdicts = {row["verdict"]: row["n"] for row in conn.execute(
             "SELECT verdict, COUNT(*) AS n FROM ai_queries WHERE created_at >= ? "

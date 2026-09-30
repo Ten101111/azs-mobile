@@ -53,7 +53,8 @@ export default defineConfig({
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
       "Referrer-Policy": "strict-origin-when-cross-origin",
-      "Permissions-Policy": "geolocation=(self), camera=(), microphone=()",
+      // ИИ-01: микрофон — только своему сайту (голосовой ввод, Р-3); камера по-прежнему запрещена.
+      "Permissions-Policy": "geolocation=(self), camera=(), microphone=(self)",
     },
     proxy: {
       "/api": {

@@ -56,9 +56,15 @@ def _chart_table(chart: dict) -> tuple[list[str], list[list]]:
         return list(chart.get("columns") or []), [list(r) for r in chart.get("rows") or []]
     if kind == "kpi":
         cards = chart.get("cards") or []
+        with_base = any("base" in c for c in cards)
         with_delta = any("delta" in c for c in cards)
-        columns = ["Показатель", "Значение"] + (["Изменение"] if with_delta else [])
-        return columns, [[c.get("label"), c.get("value")] + ([c.get("delta")] if with_delta else []) for c in cards]
+        with_pct = any("deltaPct" in c for c in cards)
+        columns = (["Показатель", "Значение"] + (["База", "С чем сравнение"] if with_base else [])
+                   + (["Изменение"] if with_delta else []) + (["Изменение, %"] if with_pct else []))
+        return columns, [[c.get("label"), c.get("value")]
+                         + ([c.get("base"), c.get("baseLabel")] if with_base else [])
+                         + ([c.get("delta")] if with_delta else []) + ([c.get("deltaPct")] if with_pct else [])
+                         for c in cards]
     if kind == "scatter":
         points = chart.get("points") or []
         labelled = any("label" in p for p in points)
@@ -104,6 +110,8 @@ def part_of(answer: dict, part: str) -> dict:
         columns, rows = _chart_table(chart)
         source = str(chart.get("source") or "")
         step = _step(answer, source)
+        if step is None and chart.get("auto"):
+            step = {"sql": answer.get("sql") or ""}          # график «Лёгкого» — из основного запроса
         return {"what": "данные графика", "title": chart.get("title") or "График", "columns": columns, "rows": rows,
                 "source": source,
                 "truncated": "Показаны первые" in str(chart.get("note") or ""), "note": str(chart.get("note") or ""),

@@ -6979,6 +6979,10 @@ a {
   flex: 0 0 auto; padding: var(--s1) var(--s2); border-radius: var(--r-full);
   background: var(--surface-2); color: var(--muted); font-size: var(--t-meta);
 }
+/* Папка диалога в шапке (ИИ-11): её память и файлы учитываются в вопросах. */
+.ai-chip-folder { display: inline-flex; align-items: center; gap: 5px; max-width: 220px; min-width: 0; }
+.ai-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-chip-folder svg { flex: 0 0 auto; color: var(--amber); }
 .ai-head-button {
   flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s2);
   height: 36px; padding: 0 var(--s3); cursor: pointer;
@@ -7205,6 +7209,7 @@ a {
 /* --- действия под ответом ------------------------------------------------- */
 .ai-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .ai-actions-gap { flex: 1 1 auto; }
+a.ai-action { text-decoration: none; }   /* ИИ-22: «Презентация» — ссылка на файл в облике кнопки */
 .ai-action {
   display: inline-flex; align-items: center; gap: var(--s2);
   height: 36px; padding: 0 var(--s3); cursor: pointer;
@@ -7439,6 +7444,7 @@ a {
   .ai-composer-hint { display: none; }
   .ai-composer-meta { margin-top: 0; min-height: 0; padding: 0 var(--s3); }
   .ai-composer-meta:not(:has(.ai-composer-count)) { display: none; }
+  .ai-composer-meta:has(.ai-voice-status) { display: flex; padding-top: 2px; line-height: 1.35; }
   .ai-send { position: static; flex: 0 0 auto; width: 40px; height: 40px; }
   /* Цели нажатия на телефоне — не меньше 44px. */
   .ai-action { height: 44px; padding: 0 var(--s4); font-size: var(--t-ui); }
@@ -8024,9 +8030,19 @@ a {
 .ai-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .ai-legend-item i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 .ai-chart-note { font-size: var(--t-meta); color: var(--muted); }
-.ai-fact-delta { font-size: var(--t-meta); font-variant-numeric: tabular-nums; }
-.ai-fact-delta.up { color: var(--green); }
-.ai-fact-delta.down { color: var(--red-soft-text); }
+/* Под графиком: источник, период, фильтры и область (ИИ-17). */
+.ai-chart-source { margin: 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.ai-chart-compare { margin: 0; font-size: var(--t-meta); line-height: 1.5; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.ai-chart-compare .now { color: var(--text); font-weight: 600; }
+.ai-chart-compare strong { margin-left: 4px; color: var(--text-secondary); }
+.ai-chart-compare strong.down { color: var(--red); }
+.ai-legend-line { flex: 0 0 auto; }
+.ai-fact-delta { font-size: var(--t-meta); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* ИИ-17: корпоративная палитра — отклонение вниз красным, остальное серым. */
+.ai-fact-delta.up { color: var(--text-secondary); }
+.ai-fact-delta.down { color: var(--red); }
+.ai-fact-delta-abs { font-weight: 400; color: var(--muted); }
+.ai-fact-base { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .ai-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--s2); }
 .ai-step { display: flex; gap: var(--s2); align-items: flex-start; font-size: var(--t-ui); color: var(--text-secondary); }
@@ -8749,6 +8765,42 @@ a {
 .ai-attach:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .ai-attach:disabled { opacity: 0.5; cursor: default; }
 
+/* ИИ-01: голосовой ввод — микрофон рядом со скрепкой; во время записи — красная кнопка «стоп». */
+.ai-voice {
+  flex: 0 0 auto; align-self: flex-end; width: 38px; height: 38px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-voice:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.ai-voice:disabled { opacity: 0.5; cursor: default; }
+.ai-voice.recording { background: var(--red-fill); color: #fff; animation: aiVoicePulse 1.4s ease-out infinite; }
+.ai-voice.recording:hover { background: var(--red-fill-hover); color: #fff; }
+.ai-voice.busy { opacity: 1; color: var(--text); }
+.ai-voice.off { opacity: 0.55; }
+.ai-voice-spin { animation: aiSpin 0.9s linear infinite; }
+@keyframes aiVoicePulse {
+  0% { box-shadow: 0 0 0 0 rgba(227, 30, 36, 0.35); }
+  100% { box-shadow: 0 0 0 10px rgba(227, 30, 36, 0); }
+}
+@keyframes aiVoiceBlink { 50% { opacity: 0.25; } }
+.ai-voice-status { display: block; min-width: 0; color: var(--text-secondary); }
+.ai-voice-status.recording { color: var(--text); font-variant-numeric: tabular-nums; }
+.ai-voice-status.recording i {
+  display: inline-block; width: 8px; height: 8px; margin-right: 6px; vertical-align: 1px;
+  border-radius: 50%; background: var(--red); animation: aiVoiceBlink 1s ease-in-out infinite;
+}
+.ai-voice-status.error { color: var(--red-dark); }
+.ai-voice-status code { font-size: 0.95em; padding: 0 3px; border-radius: 4px; background: var(--surface-2); }
+.ai-voice-cancel {
+  margin-left: 6px; border: 0; padding: 0 2px; background: transparent; color: var(--muted);
+  font: inherit; font-size: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.ai-voice-cancel:hover { color: var(--text); }
+@media (prefers-reduced-motion: reduce) {
+  .ai-voice.recording, .ai-voice-status.recording i, .ai-voice-spin { animation: none; }
+}
+
 .ai-composer-wrap.drag .ai-composer { border-color: var(--red); border-style: dashed; box-shadow: 0 0 0 3px var(--red-soft); }
 .ai-drop-hint {
   width: 100%; max-width: var(--ai-column, 720px); padding: var(--s2) var(--s4);
@@ -8829,6 +8881,123 @@ a {
   .ai-attachments-files::-webkit-scrollbar { display: none; }
   .ai-attachments-files .ai-file { flex: 0 0 auto; max-width: 240px; }
   .ai-attach { width: 34px; height: 34px; }
+  .ai-voice { width: 34px; height: 34px; }
   .ai-memory-history li { grid-template-columns: minmax(0, 1fr) auto; row-gap: 0; padding: 4px 0; }
   .ai-memory-history time { grid-column: 1 / -1; font-size: 11.5px; }
+}
+
+
+/* --- Режим планирования (ИИ-23) ------------------------------------------------
+   Карточка плана до выполнения: семь полей, правка пунктов, «Выполнить».
+   Та же поверхность, что у окна папки: мягкая подложка, без тяжёлых рамок. */
+.ai-plan {
+  display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4) var(--s5);
+  border-radius: var(--r-lg); background: var(--surface); box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.ai-plan.running { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 35%, transparent); }
+.ai-plan.cancelled { background: var(--surface-2); box-shadow: none; gap: var(--s3); }
+.ai-plan-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.ai-plan-head > svg { color: var(--red); flex: 0 0 auto; }
+.ai-plan-head strong { font-size: 15px; font-weight: 650; }
+.ai-plan-sub { margin-left: auto; font-size: var(--t-meta); color: var(--muted); }
+.ai-plan-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ai-plan-label { font-size: 12px; font-weight: 650; letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted); }
+.ai-plan-input { min-height: 0; font-size: var(--t-ui); line-height: 1.45; resize: vertical; }
+.ai-plan-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ai-plan-list li {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: start; gap: var(--s2);
+  padding: 6px 6px 6px 4px; border-radius: var(--r-md);
+}
+.ai-plan-list li:hover { background: var(--surface-2); }
+.ai-plan-list li.invalid { background: var(--red-soft); }
+.ai-plan-list.readonly li { grid-template-columns: 26px minmax(0, 1fr); }
+.ai-plan-list.readonly li:hover { background: transparent; }
+.ai-plan-list li.extra .ai-plan-title { color: var(--muted); }
+.ai-plan-num {
+  width: 22px; height: 22px; margin-top: 3px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--surface-2); font-size: 12px; font-weight: 650; color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.ai-plan-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ai-plan-title-input {
+  display: block; width: 100%; padding: 4px 6px; margin-left: -6px; border: 1px solid transparent; border-radius: var(--r-sm);
+  background: transparent; color: var(--text); font: inherit; font-size: var(--t-ui); line-height: 1.4;
+  resize: none; overflow: hidden;
+}
+.ai-plan-title-input:hover:not(:disabled) { border-color: var(--hairline); background: var(--surface); }
+.ai-plan-title-input:focus-visible { outline: none; border-color: var(--red); background: var(--surface); box-shadow: 0 0 0 3px var(--red-soft); }
+.ai-plan-title-input:disabled { color: var(--text); opacity: 1; }
+.ai-plan-title { font-size: var(--t-ui); line-height: 1.45; color: var(--text); }
+.ai-plan-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s2); font-size: 12px; color: var(--muted); }
+.ai-plan-kind { padding: 1px 7px; border-radius: var(--r-full); background: var(--surface-2); font-weight: 600; color: var(--text-secondary); }
+.ai-plan-kind.is-user { background: var(--amber-soft); color: var(--amber-soft-text); }
+.ai-plan-issue, .ai-plan-error { font-size: 12.5px; color: var(--red-soft-text); }
+.ai-plan-error { margin: 0; }
+.ai-plan-note { font-size: 12.5px; line-height: 1.4; color: var(--muted); }
+.ai-plan-controls { display: inline-flex; gap: 2px; opacity: 0.55; transition: opacity 120ms ease; }
+.ai-plan-list li:hover .ai-plan-controls, .ai-plan-controls:focus-within { opacity: 1; }
+.ai-plan-icon {
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); cursor: pointer;
+}
+.ai-plan-icon:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+.ai-plan-icon:disabled { opacity: 0.35; cursor: default; }
+.ai-plan-add { display: flex; gap: var(--s2); align-items: center; }
+.ai-plan-add .ui-input { flex: 1 1 auto; min-width: 0; }
+.ai-plan-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4); }
+.ai-plan-bullets { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; font-size: var(--t-meta); line-height: 1.45; color: var(--text-secondary); }
+.ai-plan-scope { margin: 0; font-size: 12px; color: var(--muted); }
+.ai-plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.ai-plan-changed { font-size: 12.5px; color: var(--amber-soft-text); }
+.ai-plan-live { margin: 0; display: inline-flex; align-items: center; gap: var(--s2); font-size: var(--t-meta); color: var(--text-secondary); }
+.ai-plan-live svg, .ai-plan-status.active { animation: ai-plan-spin 1s linear infinite; color: var(--red); }
+.ai-plan-status { color: var(--icon-muted); }
+.ai-plan-status.done { color: var(--text-secondary); }
+.ai-plan-status.failed { color: var(--red); }
+.ai-plan-status.skipped { color: var(--amber); }
+@keyframes ai-plan-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ai-plan-live svg, .ai-plan-status.active { animation: none; } }
+
+/* После ответа — строка «По плану: выполнено N из M» с раскрытием. */
+.ai-plan-summary { display: flex; flex-direction: column; gap: var(--s2); }
+.ai-plan-summary-line {
+  align-self: flex-start; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s2);
+  padding: 6px 12px; border: 0; border-radius: var(--r-full); background: var(--surface-2); color: var(--text-secondary);
+  font: inherit; font-size: var(--t-meta); cursor: pointer;
+}
+.ai-plan-summary-line svg { color: var(--red); }
+.ai-plan-summary.warn .ai-plan-summary-line span:first-of-type { color: var(--amber-soft-text); font-weight: 600; }
+
+/* Кнопка «План» у поля ввода — рядом с уровнем, только для «Среднего» и «Высокого».
+   Выключена — как соседние кнопки; включена — мягкий красный, как выбранное в меню. */
+.ai-plan-toggle {
+  flex: 0 0 auto; align-self: flex-end; height: 38px; display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 var(--s3); border: 0; border-radius: var(--r-full); background: transparent; color: var(--muted);
+  font: inherit; font-size: var(--t-meta); font-weight: 600; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ai-plan-toggle:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.ai-plan-toggle.on { background: var(--red-soft); color: var(--red-soft-text); }
+.ai-plan-toggle.on:hover:not(:disabled) { background: var(--red-soft); filter: brightness(0.97); }
+.ai-plan-toggle:disabled { opacity: 0.5; cursor: default; }
+
+/* Журнал ИИ: план записи. */
+.journal-plan { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-meta); }
+.journal-plan h5 { margin: 0; font-size: var(--t-meta); font-weight: 650; }
+.journal-plan ol, .journal-plan ul { margin: 0; padding-left: 20px; color: var(--text-secondary); line-height: 1.5; }
+.journal-plan li.off { color: var(--amber-soft-text); }
+.journal-plan-changes { color: var(--muted); }
+
+@media (max-width: 640px) {
+  .ai-plan { padding: var(--s3); }
+  .ai-plan-sub { margin-left: 0; flex: 1 1 100%; }
+  .ai-plan-cols { grid-template-columns: minmax(0, 1fr); }
+  .ai-plan-controls { opacity: 1; }
+  .ai-plan-list li { grid-template-columns: 24px minmax(0, 1fr); }
+  .ai-plan-controls { grid-column: 2; justify-self: start; }
+  .ai-plan-add { flex-wrap: wrap; }
+  .ai-plan-add .ui-button { flex: 0 0 auto; }
+  /* На телефоне у кнопки «План» — только значок: поле ввода не должно сжиматься. */
+  .ai-plan-toggle { width: 34px; height: 34px; padding: 0; justify-content: center; }
+  .ai-plan-toggle-label { display: none; }
 }

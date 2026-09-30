@@ -242,15 +242,17 @@ class ChartTests(unittest.TestCase):
 
     def test_values_come_from_the_result_not_from_the_model(self):
         chart = charts.build(self.rs, {"type": "line", "x": "Месяц", "series": ["Чеки"], "group": "Регион"}, "c1")
-        self.assertEqual(chart["x"], ["2026-07", "2026-08"])
+        self.assertEqual(chart["x"], ["июл 2026", "авг 2026"])       # месяцы — по-русски (ИИ-17)
         self.assertEqual([s["name"] for s in chart["series"]], ["A", "B"])
         self.assertEqual(chart["series"][1]["values"], [50.0, 60.0])
 
     def test_kpi_waterfall_scatter_and_errors(self):
         kpi = charts.build(ResultSet(id="r2", columns=["Выручка", "Чеки"], rows=[[1000, 20]], source="sql"), {"type": "kpi"}, "c2")
         self.assertEqual([c["label"] for c in kpi["cards"]], ["Выручка", "Чеки"])
-        wf = charts.build(ResultSet(id="r3", columns=["Драйвер", "Вклад"], rows=[["АЗС", -10], ["на АЗС", -30]], source="python"),
-                          {"type": "waterfall", "x": "Драйвер", "series": ["Вклад"], "start": 100}, "c3")
+        # Начало водопада — колонка результата (ИИ-17: число не из результата не принимается).
+        wf = charts.build(ResultSet(id="r3", columns=["Драйвер", "Вклад", "База"], rows=[["АЗС", -10, 100], ["на АЗС", -30, 100]],
+                                    source="python"),
+                          {"type": "waterfall", "x": "Драйвер", "series": ["Вклад"], "start": "База"}, "c3")
         self.assertEqual(wf["total"], 60)
         sc = charts.build(ResultSet(id="r4", columns=["Трафик", "Конверсия", "АЗС"], rows=[[100, 30, "a"], [200, 25, "b"]], source="sql"),
                           {"type": "scatter", "x": "Трафик", "series": ["Конверсия"], "label": "АЗС"}, "c4")
@@ -348,7 +350,9 @@ class LoopTests(StandCase):
         self.assertFalse(any("остановлен" in item for item in outcome.analysis.limitations))
 
     def test_budget_exhaustion_is_reported_honestly(self):
-        script = [{"tool": "get_data_range", "arguments": {}}] * 30 + [{"headline": "Данных не собрано.", "happened": []}]
+        # Вызовы разные: одинаковые второй раз не выполняются (запрет повторов, 28.09.2026).
+        script = ([{"tool": "search_schema", "arguments": {"query": f"выручка {i}"}} for i in range(30)]
+                  + [{"headline": "Данных не собрано.", "happened": []}])
         os.environ["AI_AGENT_TURNS"] = "3"
         try:
             outcome = loop.run("Что-то", self.scope, plan=self._plan(), model=llm.ScriptedModel(script),
@@ -508,7 +512,7 @@ class ApiAgentTests(unittest.TestCase):
         self.seen: list[dict] = []
 
         def fake_ask(question, role, binding, actor, model=None, on_stage=None, depth="auto", history=None,
-                     control=None, files=None, memory=None):
+                     control=None, files=None, memory=None, **_kwargs):
             self.seen.append({"question": question, "depth": depth, "history": history or []})
             return ApiAgentTests._Answer()
 

@@ -847,6 +847,35 @@ MIT; 21st.dev/@mengto), только в корпоративных цветах.
     и т. п.) до первого запроса — следующий резерв скорости.
     Настройки Ollama, которые меняет владелец на маке (не код): `OLLAMA_FLASH_ATTENTION=1`,
     при нехватке памяти `OLLAMA_KV_CACHE_TYPE=q8_0`; `ollama ps` должен показывать 100% GPU.
+  - Скорость «Высокого» (28.09.2026, пункт 60). Разбор журнала: модель — 94 % времени ответа,
+    SQL — 5 %, проверки (валидатор, сверка чисел, разметка) — ~0,5 с; проверки не сокращаем. Потери:
+    1) повторы — `loop._call_key` (инструмент + аргументы без `subtask`/`purpose`, пробелы и «;»
+       схлопнуты): повтор не выполняется, модель получает `_repeat_reply` (где готовый результат);
+       ошибку можно повторить один раз; после `AI_AGENT_MAX_REPEATS` (2) — stop_reason «повтор
+       шагов», итог по собранным данным и пометка в limitations; `AgentOutcome.repeats` →
+       `model_trace.repeats`. В журнале 25.09 один расчёт Python выполнился 11 раз (≈4 мин из 6,5);
+    2) сжатие с запасом — `_trim(..., target_chars)`: у предела (75 %) сжимает до
+       `AI_CONTEXT_TRIM_TARGET` (0,5 контекста): старые результаты → все, кроме последнего →
+       длинные аргументы старых вызовов (`_brief_arguments`); знаков в токене — по
+       `prompt_eval_count` прошлого хода (`_prompt_tokens`), а не 2,5 с запасом. Было: 6 сжатий
+       за ответ, каждое — перечитывание 15–17 тыс. токенов (16–36 с);
+    3) места из вопроса — `backend/ai/places.py` (как `people.py`): регион, общество, город по
+       основе слова («Пермском крае», «в Перми», «ЦНП»); справочник — через валидатор с областью
+       данных, кэш `AI_PLACES_TTL` 1800 с, запрос — только при слове с заглавной (не первом) или
+       аббревиатуре; на ОХД городов нет — город указывает на регион с пометкой «все АЗС региона»;
+       блок `hits["places"]` в `agent_user`; `AI_PLACES=0` — выключить. Тесты — test_ai_speed (7),
+       test_ai_places (9).
+  - Голосовой ввод (ИИ-01, 29.09.2026): `src/aiVoice.jsx` (`useVoiceInput`, `AiVoiceButton`,
+    `AiVoiceStatus`, `toWav16k` — MediaRecorder → Web Audio → WAV 16 кГц моно) → `aiSpeech` в main.jsx →
+    `POST /api/ai/speech` → `backend/ai/speech.py`: `decode_wav` (модуль wave, всё в памяти), `is_silence`,
+    `RUNNER` (mlx-whisper или faster-whisper, `AI_STT_ENGINE` auto|mlx|faster|off, `AI_STT_MODEL`),
+    `normalize` (термины, `words_to_digits`, номера АЗС «58-123», фразы тишины), очередь `_slots`
+    (`AI_STT_CONCURRENCY` 1, `AI_STT_WAIT` 20 с), `AI_STT_MAX_SECONDS` 60; журнал — таблица `ai_speech`
+    (текст и длительность, без звука). Кнопка — при `status.speech.available`; пока движка нет,
+    `speech.status(admin=True)` отдаёт `setup` — кнопку видит только администратор (бледная, по нажатию —
+    как установить), остальные не видят. Движок не в
+    requirements.txt: `backend/requirements-speech.txt` + `./scripts/install_speech.sh`. Permissions-Policy —
+    `microphone=(self)` (main.py, vite.config.js; на nginx сервера — так же). Тесты — test_ai_speech (15).
   - «Журнал ИИ» в админке (25.09.2026): вкладка «Журнал ИИ» (`AiJournalPanel`, `AiJournalDetail`)
     — все обращения из `ai_queries`: период, роль, уровень, исход, поиск по тексту (casefold —
     SQLite LIKE не знает кириллицу) и пять тематических фильтров. Бэкенд: `backend/ai/topics.py`
@@ -907,11 +936,65 @@ MIT; 21st.dev/@mengto), только в корпоративных цветах.
        перетаскивание в `.ai-composer-wrap`, строка папки с переключателем памяти на вопрос;
        на телефоне файлы папки над полем свёрнуты в счётчик, вложения — в строку с прокруткой.
        Новая зависимость `pypdf` (requirements, `scripts/run_app.py` → REQUIRED_MODULES):
-       после обновления нужен перезапуск через `npm start`. Тесты — test_ai_files (14),
-       test_ai_files_agent (5, в т. ч. инъекции в файле и в памяти папки).
-  - Графики (ИИ-17, часть): на одной оси — одна единица. `charts.split_by_unit`
+       после обновления нужен перезапуск через `npm start`. Тесты — test_ai_files (15),
+       test_ai_files_agent (8, в т. ч. инъекции в файле и в памяти папки);
+    7) правки 25.09.2026 после проверки владельца: а) `files.mentions_file` (регулярка:
+       «во вложении», «в/из/по файлу», «приложенный документ», «я приложил таблицу»; «выгрузи
+       в файл» не считается) — вопрос про файл без файлов → `pipeline._no_file`, rule `no_file`,
+       verdict rejected, модель не зовётся; подсказка из `api._context` → `file_hint`
+       {folder, folders} (`files.folders_with_files`); во фронтенде no_file — «уточнение».
+       б) «Новый диалог в папке»: `AskRequest.folderId` (только без dialogId) →
+       `dialogs.folder_brief` (чужая — 404), `files.for_question(..., folder_id=)`,
+       `create_dialog(..., folder_id=)` в `_persist`; в консоли `newFolder`, чип папки в шапке.
+  - Графики (ИИ-17, 25.09.2026): на одной оси — одна единица. `charts.split_by_unit`
     снимает ряд в другой единице (л и т, ₽ и %) или масштабе ×100 с пометкой;
     подпись оси — из названия колонки (`column_unit`), а не из подписи модели.
+    `charts.build`: ключи с числами (`RAW_NUMBER_KEYS`) — ToolError; колонки KPI/base
+    проверяются; `start` водопада — колонка или число из результата; у графика
+    `source`, `sourceTitle`, `sourceKind`, `period` (`result_period` по колонке дат);
+    `MAX_SERIES` = 6 (группы — 6 крупнейших, порядок данных); даты оси — `_x_labels`.
+    `compare`: x — дата (день или месяц), series — одна колонка, `shift` year|month,
+    пары — та же дата год/месяц назад, без пары — отбрасываются; `total` sum|avg →
+    `periods[].total`, `changePct`; дубли дат — отказ «сгруппируй». KPI `base` →
+    `delta`, `deltaPct`, `baseLabel`. `auto_chart` — график «Лёгкого» в `_ask_fast`
+    (линия по датам, столбцы до 30 объектов; `auto: true`, source r1; выгрузка берёт
+    SQL ответа). Фронтенд `aiAnalysis.jsx`: `SERIES_COLORS` (красный + серые),
+    `SERIES_DASH`, `singleBarColor`, `ChartCaption`, `CompareTotals`, `ChartDataTable`
+    (visually-hidden), `AiChart` принимает `context` {period, filters, scope}; в быстром
+    ответе main.jsx рисует `answer.charts`. Тесты — test_ai_charts (9).
+  - Режим планирования (ИИ-23, 25.09.2026): `backend/ai/agent/planning.py` — карточка (goal,
+    expected, subtasks [id, title, kind, after, origin, status], risks, success + standalone, taskType,
+    depth, period, filters, missing). `draft` — из разбора (`Plan.extra`: поля `PLAN_FIELDS`, их просит
+    `loop.triage(plan_fields=True)`); `validate` — правки человека (`OUTSIDE` — действия вне контура,
+    зависимость только от пункта выше, новые пункты u1…, `changes` для журнала); `prompt_block` — план
+    в задании агенту; `resolve`/`attribute` — шаг → пункт (`subtask` в аргументах инструмента, иначе
+    первый невыполненный пункт того же вида); `progress` — статусы, причины, шаги сверх плана.
+    `pipeline.ask(plan_mode=on|off, approved, original)` — on только для «Среднего» и «Высокого»
+    (кнопка «План» у поля ввода, решение владельца 25.09.2026): план — Answer(rule="plan",
+    plan_card), в журнал с verdict «plan»; утверждённый — без разбора (`_plan_from_card`),
+    `loop.run(plan_card=…)` добавляет `subtask` в инструменты и `deviations` в finish (`_plan_specs`),
+    события этапов kind "subtask". Журнал: `plan_json` (proposed / approved / changes / result),
+    `journal.set_plan` (cancelled, approved → run). API: `AskRequest.planMode`, `planFor`, `plan`
+    (`_planned`: своя карточка в статусе draft, иначе 404 / 409; неверные правки — 400); ответ по плану
+    встаёт на место карточки (`dialogs.update_message`); `POST /api/ai/messages/{id}/plan/cancel`;
+    `_history` пропускает draft/cancelled; `_close`: rule plan → статус запуска plan (квота
+    «Высокого» не тратится). Фронтенд: `src/aiPlan.jsx` (`AiPlanCard`, `AiPlanSummary`,
+    `AiPlanToggle`, `PLAN_DEPTHS`), кнопка «План» у поля (`azs:ai-plan`, по умолчанию выкл.), `runPlan` /
+    `cancelPlan` в консоли, `JournalPlan` в «Журнале ИИ». Качество ИИ не считает строки plan
+    вопросами. Тесты — test_ai_planning (6).
+  - Презентации (ИИ-22, этап 1, 25.09.2026): кнопка «Презентация» в `.ai-actions` (`aiPresentable` в
+    main.jsx) → `GET /api/ai/messages/{id}/presentation` → `backend/ai/slides.py` (python-pptx 1.0.2 в
+    requirements и `REQUIRED_MODULES` run_app.py; импорт внутри эндпоинта — без пакета 503). Без модели:
+    `outline(message, meta)` — список слайдов (title, headline, chart, kpi, table, points, recs, limits,
+    sources), `render` — python-pptx, `build` → (bytes, число слайдов). Числа — только из сохранённого
+    ответа (ряды графиков, строки таблиц, карточки KPI, `periods`/`changePct` сравнения); тексты выводов
+    не переписываются; SQL в файл не попадает. `MAX_SLIDES` 15, `TABLE_ROWS` 12, `TABLE_COLS` 8; высоты
+    текста оцениваются по числу знаков (`_lines`, с запасом). Метки типов — из `analysis.claims`,
+    рекомендации — из `analysis.recommendations`. Водопад — накопительные столбцы с невидимым основанием
+    (`_waterfall_bars`, ось не с нуля — пометка). Стиль проекта; шаблон ОНПО — `AI_PPTX_TEMPLATE`
+    (.potx открывается подменой типа главной части). Отказ `NotPresentable` → 409; чужой ответ → 404;
+    сборка → `ai_exports` (part deck, format pptx). Заглушка облачного стенда отдаёт PPTX тем же
+    построителем. Тесты — test_ai_slides (18). Этап 2 (план слайдов моделью, квота Р-2) — не сделан.
   - Визуальная проверка без Ollama: стенд в облачной среде — vite dev +
     заглушка API на порту 8000 с потоком этапов (SSE) и Playwright.
 - Справки — блок H того же документа (СП-01…СП-09), лист «Справки», реестр З-31.

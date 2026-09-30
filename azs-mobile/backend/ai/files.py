@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from typing import Any, Callable
@@ -204,11 +205,21 @@ def link_drafts(user_id: int, file_ids: list[int], dialog_id: int) -> int:
     return int(moved)
 
 
-def for_question(user_id: int, dialog_id: int | None, draft_ids: list[int] | None = None) -> list[dict]:
-    """Файлы, которые учитывает вопрос: диалога, его папки и черновики этого вопроса — с содержимым."""
+def for_question(user_id: int, dialog_id: int | None, draft_ids: list[int] | None = None,
+                 folder_id: int | None = None) -> list[dict]:
+    """Файлы, которые учитывает вопрос: диалога, его папки и черновики этого вопроса — с содержимым.
+
+    `folder_id` — первый вопрос «Нового диалога в папке»: диалога ещё нет, файлы — папки.
+    """
     conn = dialogs._connect()
     try:
         where, args = [], []
+        if not dialog_id and folder_id:
+            owned = conn.execute("SELECT id FROM ai_folders WHERE id = ? AND user_id = ?",
+                                 (int(folder_id), user_id)).fetchone()
+            if owned:
+                where.append("folder_id = ?")
+                args.append(int(folder_id))
         if dialog_id:
             where.append("dialog_id = ?")
             args.append(int(dialog_id))
@@ -239,6 +250,37 @@ def for_question(user_id: int, dialog_id: int | None, draft_ids: list[int] | Non
         return out
     finally:
         conn.close()
+
+
+def folders_with_files(user_id: int) -> list[str]:
+    """Названия папок пользователя, в которых есть файлы, — для подсказки «файл лежит в папке…»."""
+    conn = dialogs._connect()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT f.title FROM ai_files x JOIN ai_folders f ON f.id = x.folder_id "
+            "WHERE x.user_id = ? AND f.user_id = ? ORDER BY f.title", (user_id, user_id)).fetchall()
+    finally:
+        conn.close()
+    return [row[0] for row in rows]
+
+
+# Вопрос ссылается на приложенный файл: «во вложении», «в файле», «приложил таблицу».
+# Просьбы выгрузить («выгрузи в файл», «в Excel») сюда не попадают: там «в файл», а не «в файле».
+_FILE_WORDS = r"(?:файл\w*|документ\w*|таблиц\w*|книг\w*|выгрузк\w*|excel|эксел\w*|xlsx|pdf|csv)"
+FILE_REFERENCE = re.compile(
+    r"(?:\b(?:во?|из)\s+вложени"
+    r"|\bвложенн\w*\s+" + _FILE_WORDS +
+    r"|\b(?:приложенн|прикрепленн|загруженн|присланн|отправленн|вложенн)\w*\s+(?:мной\s+|мною\s+)?" + _FILE_WORDS +
+    r"|\b(?:в|из|по)\s+(?:эт\w+\s+|мо\w+\s+|приложенн\w+\s+|прикрепленн\w+\s+|загруженн\w+\s+)?файл(?:е|а|у)\b"
+    r"|\b(?:приложил|прикрепил|загрузил|вложил|скинул|отправил|прислал)\w*\b[^.?!]{0,40}?" + _FILE_WORDS +
+    r")",
+    re.IGNORECASE,
+)
+
+
+def mentions_file(question: str) -> bool:
+    """Вопрос про приложенный файл (ИИ-07): без файла на него нельзя отвечать витриной."""
+    return bool(FILE_REFERENCE.search((question or "").lower().replace("ё", "е")))
 
 
 def for_journal(files: list[dict]) -> list[dict]:

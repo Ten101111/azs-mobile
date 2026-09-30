@@ -10,11 +10,13 @@ import AiOrb, { orbStateFromPipeline } from "./orb/AiOrb.jsx";
 import AiMiniOrb from "./orb/AiMiniOrb.jsx";
 import {
   AiAnalysis, aiAgentStages, aiAnalysisText, AI_DEPTH_FALLBACK, DEPTH_TITLES as AI_DEPTH_TITLES,
-  TASK_TITLES as AI_TASK_TITLES, AiDownload, AiExpandButton, AiFullscreen,
+  TASK_TITLES as AI_TASK_TITLES, AiDownload, AiExpandButton, AiFullscreen, AiChart,
 } from "./aiAnalysis.jsx";
 import { ReportsScreen } from "./reports.jsx";
 import { Note, NoteAction } from "./note.jsx";
 import { FileCard } from "./fileCard.jsx";
+import { AiPlanCard, AiPlanSummary, AiPlanToggle, PLAN_DEPTHS } from "./aiPlan.jsx";
+import { AiVoiceButton, AiVoiceStatus, useVoiceInput } from "./aiVoice.jsx";
 import {
   AlertTriangle,
   Archive,
@@ -57,6 +59,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Presentation,
   RefreshCw,
   RotateCcw,
   Search,
@@ -3725,6 +3728,7 @@ const JOURNAL_STOP = {
   "лимит ходов модели": "лимит шагов уровня — итог по собранным данным",
   "лимит времени": "лимит времени — итог по собранным данным",
   "сбой хода модели": "сбой хода модели — итог по собранным данным",
+  "повтор шагов": "ИИ повторял уже сделанный шаг — итог по собранным данным",
   cancelled: "остановлен человеком",
 };
 
@@ -4020,6 +4024,8 @@ function AiJournalDetail({ id }) {
         ))}
       </dl>
 
+      {item.plan && <JournalPlan plan={item.plan} />}
+
       {files.length > 0 && (
         <div className="journal-files" aria-label="Файлы вопроса">
           {files.map((file) => (
@@ -4078,6 +4084,44 @@ function AiJournalDetail({ id }) {
           <summary>SQL итогового запроса</summary>
           <pre>{item.sql}</pre>
         </details>
+      )}
+    </div>
+  );
+}
+
+// ИИ-23: план в журнале — предложенный, судьба (утверждён, отменён), правки человека и итог.
+const JOURNAL_PLAN_OPS = { remove: "убрал", add: "добавил", edit: "переписал", move: "переставил пункты" };
+const JOURNAL_PLAN_STATUS = { done: "выполнен", failed: "не удался", skipped: "пропущен", pending: "не начат" };
+
+function JournalPlan({ plan }) {
+  const proposed = plan.proposed?.subtasks || [];
+  const status = plan.status === "cancelled" ? "отменён человеком" : plan.status === "approved" ? "утверждён — выполнение отдельной записью"
+    : plan.result ? `выполнен: ${plan.done} из ${plan.total} пунктов` : "ждёт подтверждения";
+  return (
+    <div className="journal-plan">
+      <h5>{`План · ${status}`}</h5>
+      {!plan.result && proposed.length > 0 && (
+        <ol>{proposed.map((s) => <li key={s.id}>{s.title}</li>)}</ol>
+      )}
+      {(plan.changes || []).length > 0 && (
+        <ul className="journal-plan-changes">
+          {plan.changes.map((change, index) => (
+            <li key={index}>
+              {`Человек ${JOURNAL_PLAN_OPS[change.op] || change.op}`}
+              {change.op === "move" ? `: ${(change.order || []).join(" → ")}` : change.op === "edit"
+                ? ` ${change.field}: «${change.from}» → «${change.to}»` : `: «${change.title}»`}
+            </li>
+          ))}
+        </ul>
+      )}
+      {plan.result && (
+        <ol>
+          {plan.result.map((s, index) => (
+            <li key={index} className={s.status === "done" ? "" : "off"}>
+              {`${s.title} — ${JOURNAL_PLAN_STATUS[s.status] || s.status}${s.note ? `: ${s.note}` : ""}`}
+            </li>
+          ))}
+        </ol>
       )}
     </div>
   );
@@ -5262,7 +5306,7 @@ function AiReveal({ open, children, className }) {
   );
 }
 
-const AI_CLARIFY_RULES = new Set(["parse", "multi", "empty"]);
+const AI_CLARIFY_RULES = new Set(["parse", "multi", "empty", "no_file"]);
 const AI_FAILURE_RULES = new Set(["execution", "model_unavailable"]);
 
 function aiOutcome(answer) {
@@ -5284,6 +5328,7 @@ const AI_REFUSAL_TITLES = {
   parse: "Уточните, о чём речь",
   multi: "Уточните, о чём речь",
   empty: "Уточните, о чём речь",
+  no_file: "Файл к вопросу не приложен",
 };
 
 const AI_REFUSAL_HINTS = {
@@ -5297,6 +5342,7 @@ const AI_REFUSAL_HINTS = {
   parse: "Назовите показатель, период и объекты — тогда не придётся угадывать.",
   multi: "Задайте один вопрос за раз — так понятнее, что именно считать.",
   empty: "Назовите показатель, период и объекты — тогда не придётся угадывать.",
+  no_file: "Файлы папки видны только диалогам этой папки; файл, приложенный скрепкой, — только своему диалогу.",
 };
 
 // Этапы строятся только из измеренных величин. Промежутка, который никто
@@ -5943,7 +5989,7 @@ function aiDropProps(onDropDialog, setOver) {
   };
 }
 
-function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, onDelete, onDropDialog, onContext }) {
+function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, onDelete, onDropDialog, onContext, onNewDialog }) {
   const moreRef = useRef(null);
   const [menu, setMenu] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -5998,6 +6044,9 @@ function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, on
           </button>
           {menu && (
             <AiPopMenu anchorRef={moreRef} onClose={() => setMenu(false)} label={`Действия с папкой «${folder.title}»`}>
+              <button type="button" role="menuitem" onClick={() => { setMenu(false); onNewDialog(); }}>
+                <Plus size={14} /> Новый диалог в папке
+              </button>
               <button type="button" role="menuitem" onClick={() => { setMenu(false); onContext(); }}>
                 <StickyNote size={14} /> Память и файлы
               </button>
@@ -6042,7 +6091,8 @@ function AiFolderBlock({ folder, dialogs, open, onToggle, rowProps, onRename, on
 function AiSidebar({
   dialogs, folders = [], limits = null, notice = null, onNotice = () => {}, activeId, loading,
   onNew, onOpen, onRename, onPin, onDelete, onMove, onArchive, onArchiveOldest,
-  onCreateFolder, onRenameFolder, onDeleteFolder, onFolderContext = () => {}, whoLabel, whoName, onClose, onCollapse, searchRef,
+  onCreateFolder, onRenameFolder, onDeleteFolder, onFolderContext = () => {}, onNewInFolder = () => {},
+  whoLabel, whoName, onClose, onCollapse, searchRef,
 }) {
   const [query, setQuery] = useState("");
   const [openFolders, setOpenFolders] = useState(() => new Set());
@@ -6229,6 +6279,7 @@ function AiSidebar({
                     onDelete={(mode) => onDeleteFolder(folder.id, mode)}
                     onDropDialog={(id) => onMove(id, folder.id)}
                     onContext={() => onFolderContext(folder)}
+                    onNewDialog={() => onNewInFolder(folder)}
                   />
                 ))}
               </div>
@@ -6328,6 +6379,26 @@ function aiReadDepth() {
 function aiWriteDepth(value) {
   try {
     window.localStorage.setItem(AI_DEPTH_KEY, value);
+  } catch {
+    // хранилище недоступно — выбор живёт до перезагрузки
+  }
+}
+
+// Кнопка «План» (ИИ-23): показать план перед выполнением — только «Средний» и «Высокий».
+// По умолчанию выключена; выбор запоминается в браузере.
+const AI_PLAN_KEY = "azs:ai-plan";
+
+function aiReadPlanOn() {
+  try {
+    return window.localStorage.getItem(AI_PLAN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function aiWritePlanOn(value) {
+  try {
+    window.localStorage.setItem(AI_PLAN_KEY, value ? "1" : "0");
   } catch {
     // хранилище недоступно — выбор живёт до перезагрузки
   }
@@ -6634,6 +6705,13 @@ function AiAnswerBody({ answer, maySeeSql, messageId = null }) {
 
       {rows.length === 0 && <div className="ai-empty">Запрос выполнен, данных по условию нет.</div>}
 
+      {/* ИИ-17: простой график «Лёгкого» — код строит его из того же результата, без модели. */}
+      {(answer.charts || []).map((chart) => (
+        <AiChart key={chart.id} chart={chart} fmt={{ cell: aiFormatCell, decimals: aiColumnDecimals, int: asInt }}
+          download={messageId ? { messageId, part: `chart-${chart.id}` } : null}
+          context={{ scope: answer.scopeLabel }} />
+      ))}
+
       {rows.length > 0 && !single && !facts && (
         <AiRowsTable columns={columns} rows={rows} decimals={decimals} truncated={answer.truncated}
           download={messageId ? { messageId, part: "main" } : null} />
@@ -6750,6 +6828,25 @@ async function aiUploadFile(file, { dialogId = null, folderId = null } = {}) {
     const error = new Error(detail.detail || `Файл не принят (${response.status})`);
     error.limit = response.headers.get("X-AI-Limit") || "";
     throw error;
+  }
+  return response.json();
+}
+
+// ИИ-01: запись голоса (WAV 16 кГц) → текст. Распознаёт локальная модель на сервере ИИ, звук не хранится.
+async function aiSpeech(wav) {
+  const response = await fetch("/api/ai/speech", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "audio/wav", Accept: "application/json" },
+    body: wav,
+  });
+  if (response.status === 401) {
+    emitAuthRequired();
+    throw new Error("Сессия истекла — войдите заново");
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.detail || `Речь не распознана (${response.status})`);
   }
   return response.json();
 }
@@ -6939,8 +7036,12 @@ function AiFolderContextDialog({ folder, onClose, onChanged }) {
   );
 }
 
-function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen, onCopy, onSettled, depthTitles = AI_DEPTH_TITLES, deepBlocked = false }) {
+function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen, onCopy, onSettled, depthTitles = AI_DEPTH_TITLES, deepBlocked = false,
+  plan = null, onRunPlan = null, onCancelPlan = null }) {
   const answer = item.answer || {};
+  // ИИ-23: пока план не выполнен, вместо ответа — карточка плана.
+  const planCard = answer.planCard;
+  const planPending = planCard && planCard.status !== "done";
   // «Углубить» до «Высокого» не предлагаем, когда его квота на сегодня исчерпана (ИИ-03).
   const next = answer.ok ? AI_DEEPER[answer.depth] : null;
   const deeper = next === "deep" && deepBlocked ? null : next;
@@ -6961,8 +7062,24 @@ function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen,
         {fresh && <AiSettleOrb outcome={aiOutcome(answer)} onSettled={onSettled} />}
         <AiThinking answer={answer} />
         <AiContextLine context={answer.context} />
-        <AiAnswerBody answer={answer} maySeeSql={maySeeSql} messageId={item.id} />
-        <div className="ai-actions">
+        {planPending ? (
+          <AiPlanCard
+            card={planCard}
+            running={Boolean(plan?.running)}
+            live={plan?.live || {}}
+            liveNote={plan?.note || ""}
+            error={plan?.error || ""}
+            onRun={(card) => onRunPlan?.(item, card)}
+            onCancel={() => onCancelPlan?.(item)}
+            onRepeat={() => onRepeat(item.question)}
+          />
+        ) : (
+          <>
+            <AiPlanSummary card={planCard} />
+            <AiAnswerBody answer={answer} maySeeSql={maySeeSql} messageId={item.id} />
+          </>
+        )}
+        {!planPending && <div className="ai-actions">
           <button type="button" className="ai-action rate" onClick={() => onRate(item)}>
             <Star size={15} /> {item.rating ? "Изменить оценку" : "Оценить ответ"}
           </button>
@@ -6973,6 +7090,17 @@ function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen,
           <button type="button" className="ai-action" onClick={() => onCopy(item)}>
             {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Скопировано" : "Копировать"}
           </button>
+          {item.id && aiPresentable(answer) && (
+            // ИИ-22: презентацию собирает сервер из сохранённого ответа — числа из результатов, не из модели.
+            <a
+              className="ai-action"
+              href={`/api/ai/messages/${item.id}/presentation`}
+              download
+              title="Скачать презентацию PowerPoint: главный вывод, графики, таблицы, выводы и источники"
+            >
+              <Presentation size={15} aria-hidden="true" /> Презентация
+            </a>
+          )}
           {deeper && onDeepen && (
             <button
               type="button"
@@ -6986,10 +7114,16 @@ function AiMessage({ item, maySeeSql, copied, fresh, onRate, onRepeat, onDeepen,
           <button type="button" className="ai-action" onClick={() => onRepeat(item.question)}>
             <RotateCcw size={15} /> Повторить
           </button>
-        </div>
+        </div>}
       </div>
     </motion.article>
   );
+}
+
+// ИИ-22: презентация — из готового ответа, где есть вывод или данные (не ошибка и не план до выполнения).
+function aiPresentable(answer) {
+  if (!answer?.ok || (answer.planCard && answer.planCard.status !== "done")) return false;
+  return Boolean(answer.analysis?.headline || answer.summary || (answer.rows || []).length || (answer.charts || []).length);
 }
 
 // --- рабочая область -------------------------------------------------------
@@ -7204,6 +7338,16 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     setDepthState(value);
     aiWriteDepth(value);
   }
+  // ИИ-23: кнопка «План» — показать план перед выполнением («Средний» и «Высокий»);
+  // planRun — выполнение утверждённого плана (прогресс по пунктам).
+  const [planOn, setPlanOnState] = useState(aiReadPlanOn);
+  function setPlanOn(value) {
+    setPlanOnState(value);
+    aiWritePlanOn(value);
+  }
+  const planAvailable = PLAN_DEPTHS.includes(depth);
+  const [planRun, setPlanRun] = useState(null);
+  const [planErrors, setPlanErrors] = useState({});
   // Лимиты человека (ИИ-03): остаток «Высокого», длина вопроса. Приходят со
   // статусом и обновляются после каждого ответа — счётчик должен быть честным.
   const [limitState, setLimitState] = useState(null);
@@ -7211,6 +7355,29 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   const liveDepths = limitState?.depths || status?.depths || [];
   const depthOptions = liveDepths.length ? liveDepths : AI_DEPTH_FALLBACK;
   const questionMax = limits.questionChars || AI_QUESTION_MAX;
+  // ИИ-01: голос — если на сервере ИИ установлен движок распознавания. Пока его нет, кнопку
+  // видит только администратор: по нажатию — как установить (остальным нерабочая кнопка не нужна).
+  const speech = status?.speech || {};
+  const speechShown = Boolean(speech.available || speech.setup);
+  const voice = useVoiceInput({
+    maxSeconds: speech.maxSeconds || 60,
+    unavailable: speech.available ? "" : speech.setup || "",
+    send: aiSpeech,
+    onText: (text) => {
+      // Текст встаёт в поле для правки; вопрос человек отправляет сам.
+      setQuestion((current) => {
+        const base = current.trim();
+        return (base ? `${base} ${text}` : text).slice(0, questionMax);
+      });
+      requestAnimationFrame(() => {
+        const field = composer.current;
+        if (!field) return;
+        field.focus();
+        const end = field.value.length;
+        field.setSelectionRange?.(end, end);
+      });
+    },
+  });
   const [showSettings, setShowSettings] = useState(false);
 
   const [dialogs, setDialogs] = useState([]);
@@ -7224,6 +7391,9 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
   const [uploads, setUploads] = useState([]);
   const [folderInfo, setFolderInfo] = useState(null);
   const [useMemory, setUseMemory] = useState(true);
+  // «Новый диалог в папке» (ИИ-11): диалога ещё нет, но первый вопрос уже учитывает
+  // память и файлы папки, а сервер создаёт диалог сразу в ней.
+  const [newFolder, setNewFolder] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [folderDialog, setFolderDialog] = useState(null);
   const fileInput = useRef(null);
@@ -7333,16 +7503,32 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     return () => { alive = false; };
   }, [activeId]);
 
+  // Новый диалог в папке: строка папки над полем — из памяти и файлов папки.
+  useEffect(() => {
+    if (activeId) return undefined;
+    if (!newFolder) { setFolderInfo(null); return undefined; }
+    let alive = true;
+    aiSend(`/api/ai/folders/${newFolder.id}/memory`)
+      .then((data) => {
+        if (alive) setFolderInfo({ id: newFolder.id, title: data?.folder || newFolder.title, memory: Boolean(data?.text), files: data?.files || [] });
+      })
+      .catch(() => { if (alive) setFolderInfo({ id: newFolder.id, title: newFolder.title, memory: false, files: [] }); });
+    return () => { alive = false; };
+  }, [activeId, newFolder]);
+
   // Черновики (файлы до первого вопроса) относятся только к новому диалогу.
   const shownFiles = activeId ? dialogFiles : drafts;
 
   // Память и файлы папки поменялись в окне папки — обновить строку над полем ввода.
   const refreshFolderInfo = useCallback(() => {
-    if (!activeId) return;
+    if (!activeId) {
+      if (newFolder) setNewFolder((folder) => (folder ? { ...folder } : folder));   // перечитать папку
+      return;
+    }
     aiSend(`/api/ai/dialogs/${activeId}/messages`)
       .then((data) => { setDialogFiles(data?.files || []); setFolderInfo(data?.folder || null); })
       .catch(() => {});
-  }, [activeId]);
+  }, [activeId, newFolder]);
 
   async function uploadFiles(list) {
     const target = activeId;
@@ -7438,7 +7624,10 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       dialogId: activeId ?? undefined,
       // ИИ-07: черновики — только у первого вопроса нового диалога; файлы диалога и папки сервер берёт сам.
       fileIds: activeId ? [] : drafts.map((file) => file.id),
+      folderId: activeId ? undefined : newFolder?.id,
       useMemory,
+      // План — только если кнопка включена и уровень «Средний» или «Высокий».
+      planMode: planOn && PLAN_DEPTHS.includes(overrides.depth || depth) ? "on" : "off",
     };
     try {
       let data;
@@ -7467,6 +7656,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       }]);
       if (data.dialogId && data.dialogId !== activeId) {
         if (drafts.length) setDrafts([]);        // черновики перешли в новый диалог
+        setNewFolder(null);                       // диалог создан в папке — дальше он сам знает папку
         setActiveId(data.dialogId);
       }
       loadDialogs();
@@ -7488,12 +7678,89 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     }
   }
 
+  // ИИ-23: выполнить утверждённый план — ответ встанет на место карточки того же вопроса.
+  async function runPlan(item, card) {
+    if (pending) return;
+    setPending(item.question);
+    setLiveStages([]);
+    setError("");
+    setErrorInfo(null);
+    setPlanErrors((current) => ({ ...current, [item.id]: "" }));
+    setPlanRun({ id: item.id, live: {}, note: "" });
+    const controller = new AbortController();
+    running.current = { runId: null, controller, stopped: false };
+    const body = {
+      question: item.question,
+      role: identity?.role || undefined,
+      binding: identity?.binding || undefined,
+      model: model || undefined,
+      depth: card.depth || "deep",
+      dialogId: activeId ?? undefined,
+      planFor: item.id,
+      plan: card,
+      useMemory,
+    };
+    const onStage = (event) => {
+      if (event.kind === "subtask") {
+        setPlanRun((current) => (current ? { ...current, live: { ...current.live, [event.subtask]: event.state } } : current));
+      } else if (event.state === "active" && event.label) {
+        setPlanRun((current) => (current ? { ...current, note: event.label } : current));
+      }
+    };
+    try {
+      let data;
+      try {
+        data = await aiStream(body, { onStage, onRun: (runId) => { running.current.runId = runId; }, signal: controller.signal });
+      } catch (streamError) {
+        if (!streamError.noStream) throw streamError;
+        data = await aiSend("/api/ai/ask", { method: "POST", body: JSON.stringify(body) });
+      }
+      freshIds.current.add(item.id);
+      setItems((list) => list.map((entry) => (entry.id === item.id ? { ...entry, answer: data } : entry)));
+      loadDialogs();
+      refreshLimits();
+    } catch (err) {
+      const stopped = running.current.stopped || err.cancelled || err.name === "AbortError";
+      setPlanErrors((current) => ({
+        ...current,
+        [item.id]: stopped ? "Выполнение остановлено — план можно поправить и запустить снова." : (err.message || "План не выполнен"),
+      }));
+      if (err.limit) refreshLimits();
+    } finally {
+      running.current = { runId: null, controller: null, stopped: false };
+      setPending("");
+      setPlanRun(null);
+      setLiveStages([]);
+    }
+  }
+
+  async function cancelPlan(item) {
+    try {
+      const answer = await aiSend(`/api/ai/messages/${item.id}/plan/cancel`, { method: "POST" });
+      setItems((list) => list.map((entry) => (entry.id === item.id ? { ...entry, answer } : entry)));
+    } catch (err) {
+      setPlanErrors((current) => ({ ...current, [item.id]: err.message || "План не отменён" }));
+    }
+  }
+
   async function newDialog() {
     setActiveId(null);
     setItems([]);
     setDrafts([]);
+    setNewFolder(null);
     setError("");
     onDrawer(false);
+  }
+
+  function newDialogInFolder(folder) {
+    setActiveId(null);
+    setItems([]);
+    setDrafts([]);
+    setError("");
+    setNewFolder({ id: folder.id, title: folder.title });
+    setUseMemory(true);
+    onDrawer(false);
+    window.setTimeout(() => composer.current?.focus(), 0);
   }
 
   async function renameDialog(id, title) {
@@ -7532,6 +7799,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
     try {
       await aiSend(`/api/ai/dialogs/${id}/move`, { method: "POST", body: JSON.stringify({ folderId }) });
       await loadDialogs();
+      if (id === activeId) refreshFolderInfo();   // память и файлы новой папки — сразу над полем
     } catch (err) {
       sideFailure(err, "Не удалось перенести диалог");
     }
@@ -7585,7 +7853,9 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       const inside = dialogs.filter((d) => d.folder_id === id).map((d) => d.id);
       await aiSend(`/api/ai/folders/${id}?dialogs=${mode}`, { method: "DELETE" });
       if (mode === "delete" && inside.includes(activeId)) { setActiveId(null); setItems([]); }
+      if (newFolder?.id === id) setNewFolder(null);
       await loadDialogs();
+      if (activeId && !(mode === "delete" && inside.includes(activeId))) refreshFolderInfo();
     } catch (err) {
       sideFailure(err, "Не удалось удалить папку");
     }
@@ -7627,7 +7897,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       activeId={activeId}
       loading={dialogsLoading}
       onNew={newDialog}
-      onOpen={(id) => { setActiveId(id); onDrawer(false); }}
+      onOpen={(id) => { setNewFolder(null); setActiveId(id); onDrawer(false); }}
       onRename={renameDialog}
       onPin={pinDialog}
       onDelete={removeDialog}
@@ -7642,6 +7912,7 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       onRenameFolder={renameFolder}
       onDeleteFolder={deleteFolder}
       onFolderContext={(folder) => { onDrawer(false); setFolderDialog(folder); }}
+      onNewInFolder={newDialogInFolder}
       whoLabel={whoLabel}
       whoName={status?.ownName || status?.ownEmail || ""}
       onClose={drawer ? () => onDrawer(false) : undefined}
@@ -7689,6 +7960,14 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
       <div className="ai-main">
         <header className="ai-main-head">
           <h2>{activeDialog ? activeDialog.title : "Новый диалог"}</h2>
+          {(activeId ? folderInfo : newFolder) && (
+            <span className="ai-chip ai-chip-folder" title="Память и файлы этой папки учитываются в вопросах диалога">
+              <Folder size={12} aria-hidden="true" />
+              <span className="ai-chip-name">
+                {(folders.find((folder) => folder.id === (activeId ? folderInfo.id : newFolder.id)) || (activeId ? folderInfo : newFolder)).title}
+              </span>
+            </span>
+          )}
           {status?.backend && (
             <span className="ai-chip">
               {status.backend === "postgres" ? "Витрина ОХД" : "Демонстрационный стенд"}
@@ -7803,9 +8082,13 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
                   onDeepen={(text, next) => ask(text, { depth: next })}
                   deepBlocked={Boolean(depthOptions.find((option) => option.code === "deep")?.disabled)}
                   onCopy={copyAnswer}
+                  plan={{ running: planRun?.id === item.id, live: planRun?.id === item.id ? planRun.live : {},
+                          note: planRun?.id === item.id ? planRun.note : "", error: planErrors[item.id] || "" }}
+                  onRunPlan={runPlan}
+                  onCancelPlan={cancelPlan}
                 />
               ))}
-              {pending && (
+              {pending && !planRun && (
                 <motion.article
                   className="ai-turn"
                   initial={reducedMotion ? false : { opacity: 0, y: 8 }}
@@ -7988,6 +8271,8 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
             >
               <Paperclip size={17} />
             </button>
+            {speechShown && <AiVoiceButton voice={voice} disabled={Boolean(pending)} />}
+            {planAvailable && <AiPlanToggle on={planOn} onChange={setPlanOn} disabled={Boolean(pending)} />}
             <AiDepthPicker value={depth} options={depthOptions} onChange={setDepth} disabled={Boolean(pending)} />
             {pending ? (
               <button
@@ -8012,7 +8297,9 @@ function AnalyticsAiConsole({ status, drawer = false, onDrawer = () => {} }) {
             )}
           </div>
           <div className="ai-composer-meta">
-            <span className="ai-composer-hint">Enter — отправить, Shift+Enter — перенос строки</span>
+            {voice.state !== "idle" || voice.message
+              ? <AiVoiceStatus voice={voice} />
+              : <span className="ai-composer-hint">Enter — отправить, Shift+Enter — перенос строки</span>}
             {question.length >= questionMax * 0.8 && (
               <span className={question.length >= questionMax ? "ai-composer-count full" : "ai-composer-count"}>
                 {question.length} / {questionMax}

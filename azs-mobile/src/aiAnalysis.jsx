@@ -25,7 +25,12 @@ export const TASK_TITLES = {
   anomaly: "поиск аномалий", opportunity: "точки роста", whatif: "сценарий", other: "разбор",
 };
 
-const SERIES_COLORS = ["var(--text)", "var(--red)", "var(--muted)", "var(--line-strong)", "var(--amber)", "var(--green)"];
+// ИИ-17: корпоративная палитра — красный у главного ряда (и у отклонения вниз), остальные
+// ряды серые разной плотности; на линиях — ещё и пунктир, чтобы ряды различались без цвета.
+const SERIES_COLORS = ["var(--red)", "var(--text-secondary)", "var(--muted)", "var(--line-strong)", "var(--text)", "var(--icon-muted)"];
+const SERIES_DASH = [undefined, undefined, "6 4", undefined, "2 3", "6 3 2 3"];
+// Сравнение периодов: текущий — красный, прошлый — серый пунктир.
+const COMPARE_DASH = [undefined, "6 4"];
 
 // --- форматирование ----------------------------------------------------------
 
@@ -82,13 +87,20 @@ function useWidth(fallback = 560) {
 
 // --- график ----------------------------------------------------------------
 
-function Legend({ series }) {
+function Legend({ series, lines = false, dashes = SERIES_DASH }) {
   if (!series || series.length < 2) return null;
   return (
     <div className="ai-legend">
       {series.map((s, i) => (
         <span key={s.name} className="ai-legend-item">
-          <i style={{ background: SERIES_COLORS[i % SERIES_COLORS.length] }} />
+          {lines ? (
+            <svg width="18" height="8" aria-hidden="true" className="ai-legend-line">
+              <line x1="1" x2="17" y1="4" y2="4" stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
+                strokeWidth={i === 0 ? 2.4 : 1.8} strokeDasharray={dashes[i % dashes.length]} strokeLinecap="round" />
+            </svg>
+          ) : (
+            <i style={{ background: SERIES_COLORS[i % SERIES_COLORS.length] }} />
+          )}
           {s.name}
         </span>
       ))}
@@ -96,8 +108,20 @@ function Legend({ series }) {
   );
 }
 
+// Одна серия столбцов: главный ряд — красный; если в ряду есть минусы, это отклонение —
+// тогда красным только минус, остальное серым.
+function singleBarColor(series, v) {
+  const signed = series[0].values.some((x) => x !== null && x !== undefined && x < 0);
+  if (!signed) return "var(--red)";
+  return v < 0 ? "var(--red)" : "var(--text-secondary)";
+}
+
 function Axes({ width, height, pad, ticks, yScale, xLabels, xPositions, unit }) {
-  const every = Math.max(1, Math.ceil(xLabels.length / Math.max(2, Math.floor((width - pad.left - pad.right) / 72))));
+  // Сколько подписей помещается: по длине самой длинной (до 14 знаков), а не по сетке 72 px.
+  const labelWidth = Math.min(14, Math.max(1, ...xLabels.map((l) => String(l ?? "").length))) * 6.6 + 12;
+  const fits = Math.max(2, Math.floor((width - pad.left - pad.right) / labelWidth));
+  const every = Math.max(1, Math.ceil(xLabels.length / fits));
+  const last = xLabels.length - 1;
   return (
     <g className="ai-axes">
       {ticks.map((t) => (
@@ -107,7 +131,8 @@ function Axes({ width, height, pad, ticks, yScale, xLabels, xPositions, unit }) 
         </g>
       ))}
       {xLabels.map((label, i) => (
-        (i % every === 0 || i === xLabels.length - 1) && (
+        // Отсчёт — от последней подписи: последний период (текущий месяц, последний день) виден всегда.
+        (last - i) % every === 0 && (
           <text key={`${label}-${i}`} x={xPositions[i]} y={height - pad.bottom + 16} textAnchor="middle">
             <title>{label}</title>
             {trim(label, 14)}
@@ -119,7 +144,7 @@ function Axes({ width, height, pad, ticks, yScale, xLabels, xPositions, unit }) 
   );
 }
 
-function LineChart({ chart, width, height = 260 }) {
+function LineChart({ chart, width, height = 260, dashes = SERIES_DASH }) {
   const pad = { top: 22, right: 40, bottom: 34, left: 56 };
   const labels = chart.x || [];
   const series = chart.series || [];
@@ -147,7 +172,7 @@ function LineChart({ chart, width, height = 260 }) {
         const last = [...points].reverse().find(Boolean);
         return (
           <g key={s.name} className="ai-series">
-            <path d={path} fill="none" stroke={color} strokeWidth={si === 0 ? 2.2 : 1.8} strokeLinejoin="round" strokeLinecap="round" strokeDasharray={si >= 2 ? "4 4" : undefined} />
+            <path d={path} fill="none" stroke={color} strokeWidth={si === 0 ? 2.4 : 1.8} strokeLinejoin="round" strokeLinecap="round" strokeDasharray={dashes[si % dashes.length]} />
             {labels.length <= 40 && points.map((p, i) => p && (
               <circle key={i} cx={p[0]} cy={p[1]} r={2.6} fill={color}>
                 <title>{`${labels[i]} — ${s.name}: ${full(s.values[i])}`}</title>
@@ -171,7 +196,7 @@ function BarChart({ chart, width, stacked = false, height: tall = 260 }) {
   const horizontal = labels.length > 12 || (labels.length > 5 && labels.some((l) => String(l).length > 12));
   if (horizontal) return <HorizontalBars chart={chart} width={width} stacked={stacked} />;
   const height = tall;
-  const pad = { top: 22, right: 16, bottom: 34, left: 56 };
+  const pad = { top: 30, right: 16, bottom: 34, left: 56 };
   const totals = labels.map((_, i) => {
     if (!stacked) return series.map((s) => s.values[i] || 0);
     const pos = series.reduce((acc, s) => acc + Math.max(0, s.values[i] || 0), 0);
@@ -188,7 +213,8 @@ function BarChart({ chart, width, stacked = false, height: tall = 260 }) {
   const xs = labels.map((_, i) => pad.left + slot * (i + 0.5));
   const groupWidth = Math.min(slot * 0.7, 56);
   const barWidth = stacked ? groupWidth : groupWidth / Math.max(1, series.length);
-  const showValues = labels.length <= 12 && series.length === 1;
+  // Подписи над столбцами — только если им хватает места (на телефоне 12 столбцов уже тесно).
+  const showValues = labels.length <= 12 && series.length === 1 && slot >= 44;
   return (
     <svg className="ai-chart" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={chart.title}>
       <Axes width={width} height={height} pad={pad} ticks={ticks} yScale={yScale} xLabels={labels} xPositions={xs} unit={chart.unit} />
@@ -198,7 +224,7 @@ function BarChart({ chart, width, stacked = false, height: tall = 260 }) {
         return series.map((s, si) => {
           const v = s.values[i];
           if (v === null || v === undefined) return null;
-          const color = series.length === 1 ? (v < 0 ? "var(--red)" : "var(--text)") : SERIES_COLORS[si % SERIES_COLORS.length];
+          const color = series.length === 1 ? singleBarColor(series, v) : SERIES_COLORS[si % SERIES_COLORS.length];
           let y0;
           let y1;
           let x;
@@ -238,7 +264,11 @@ function HorizontalBars({ chart, width, stacked }) {
   const labels = (chart.x || []).slice(0, MAX_HORIZONTAL_ROWS);
   const series = (chart.series || []).map((s) => ({ ...s, values: s.values.slice(0, MAX_HORIZONTAL_ROWS) }));
   const row = 22;
-  const pad = { top: 8, right: 84, bottom: total > labels.length ? 22 : 8, left: Math.min(200, Math.max(80, Math.max(...labels.map((l) => String(l).length)) * 7)) };
+  // На узком экране подписи слева не должны съедать столбцы: не больше трети ширины.
+  const pad = {
+    top: 8, right: width < 480 ? 60 : 84, bottom: total > labels.length ? 22 : 8,
+    left: Math.min(200, Math.round(width * 0.36), Math.max(72, Math.max(...labels.map((l) => String(l).length)) * 7)),
+  };
   const height = pad.top + pad.bottom + labels.length * row;
   const totals = labels.map((_, i) => series.map((s) => s.values[i] || 0)).flat();
   const min = Math.min(0, ...totals);
@@ -259,7 +289,7 @@ function HorizontalBars({ chart, width, stacked }) {
             {series.map((s, si) => {
               const v = s.values[i];
               if (v === null || v === undefined) return null;
-              const color = series.length === 1 ? (v < 0 ? "var(--red)" : "var(--text)") : SERIES_COLORS[si % SERIES_COLORS.length];
+              const color = series.length === 1 ? singleBarColor(series, v) : SERIES_COLORS[si % SERIES_COLORS.length];
               const x0 = xScale(Math.min(0, v));
               const x1 = xScale(Math.max(0, v));
               const yy = y + 3 + (stacked || series.length === 1 ? 0 : barH * si);
@@ -314,7 +344,7 @@ function Waterfall({ chart, width, height: tall = 260 }) {
       {steps.map((s, i) => {
         const top = Math.min(yScale(s.from), yScale(s.to));
         const h = Math.max(1.5, Math.abs(yScale(s.to) - yScale(s.from)));
-        const color = s.kind === "total" ? "var(--line-strong)" : s.kind === "neg" ? "var(--red)" : "var(--text)";
+        const color = s.kind === "total" ? "var(--line-strong)" : s.kind === "neg" ? "var(--red)" : "var(--text-secondary)";
         const value = s.kind === "total" ? s.to : s.to - s.from;
         return (
           <g key={`${s.label}-${i}`}>
@@ -371,18 +401,35 @@ function Scatter({ chart, width, height = 280 }) {
   );
 }
 
+function signed(value, text) {
+  return `${value > 0 ? "+" : value < 0 ? "−" : ""}${text}`;
+}
+
 function KpiCards({ chart, fmt }) {
   return (
     <div className="ai-facts">
-      {(chart.cards || []).map((card) => (
-        <div className="ai-fact" key={card.label}>
-          <div className="ai-fact-value">{fmt.cell(card.value)}</div>
-          <div className="ai-fact-label">{card.label}</div>
-          {card.delta !== undefined && card.delta !== null && (
-            <div className={`ai-fact-delta ${card.delta < 0 ? "down" : "up"}`}>{card.delta > 0 ? "+" : ""}{fmt.cell(card.delta)}</div>
-          )}
-        </div>
-      ))}
+      {(chart.cards || []).map((card) => {
+        const hasPct = card.deltaPct !== undefined && card.deltaPct !== null;
+        const hasDelta = card.delta !== undefined && card.delta !== null;
+        const down = (hasPct ? card.deltaPct : card.delta) < 0;
+        return (
+          <div className="ai-fact" key={card.label}>
+            <div className="ai-fact-value">{fmt.cell(card.value)}</div>
+            <div className="ai-fact-label">{card.label}</div>
+            {(hasPct || hasDelta) && (
+              <div className={`ai-fact-delta ${down ? "down" : "up"}`}>
+                {hasPct
+                  ? `${signed(card.deltaPct, `${Math.abs(card.deltaPct).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} %`)}`
+                  : signed(card.delta, fmt.cell(Math.abs(card.delta)))}
+                {hasPct && hasDelta && <span className="ai-fact-delta-abs">{` (${signed(card.delta, fmt.cell(Math.abs(card.delta)))})`}</span>}
+              </div>
+            )}
+            {card.base !== undefined && card.base !== null && (
+              <div className="ai-fact-base">{`${card.baseLabel || "база"}: ${fmt.cell(card.base)}`}</div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -490,10 +537,84 @@ export function AiTable({ columns, rows, fmt, title, meta, expandable = true, do
 
 // Графики с осями можно открыть на весь экран; карточкам KPI и таблице-графику
 // это не нужно.
-const EXPANDABLE_CHARTS = new Set(["line", "bar", "stacked_bar", "waterfall", "scatter"]);
+const EXPANDABLE_CHARTS = new Set(["line", "bar", "stacked_bar", "waterfall", "scatter", "compare"]);
+const LINE_CHARTS = new Set(["line", "compare"]);
+
+// ИИ-17: под каждым графиком — откуда числа, за какой период и с какими фильтрами.
+function chartSourceText(chart) {
+  if (chart.auto) return "тот же запрос к витрине, что и таблица ответа";
+  const kind = chart.sourceKind;
+  const title = chart.sourceTitle;
+  if (kind === "file" || kind === "file_text") return title || "файл пользователя";
+  const what = kind === "python" ? "расчёт" : "запрос к витрине";
+  return title ? `${what} «${title}» (${chart.source})` : `${what} ${chart.source || ""}`.trim();
+}
+
+function ChartCaption({ chart, context }) {
+  const parts = [`Источник: ${chartSourceText(chart)}`];
+  const period = chart.period || context?.period;
+  if (period) parts.push(`Период: ${period}`);
+  const filters = (context?.filters || []).filter(Boolean);
+  if (filters.length) parts.push(`Фильтры: ${filters.join("; ")}`);
+  if (context?.scope) parts.push(`Область: ${context.scope}`);
+  return <p className="ai-chart-source">{parts.join(" · ")}</p>;
+}
+
+// Итоги двух периодов (compare, total = sum | avg): посчитаны кодом по одинаковым дням.
+function CompareTotals({ chart }) {
+  const periods = chart.periods || [];
+  if (!periods.length || periods.some((p) => p.total === undefined || p.total === null)) return null;
+  const unit = chart.unit ? ` ${chart.unit}` : "";
+  const word = chart.aggregate === "avg" ? "В среднем" : "Итого";
+  return (
+    <p className="ai-chart-compare">
+      <span>{`${word}: `}</span>
+      {periods.map((p, i) => (
+        <span key={p.label} className={i === 0 ? "now" : ""}>{`${p.label} — ${full(p.total)}${unit}${i < periods.length - 1 ? "; " : ""}`}</span>
+      ))}
+      {chart.changePct !== undefined && chart.changePct !== null && (
+        <strong className={chart.changePct < 0 ? "down" : ""}>
+          {` ${signed(chart.changePct, `${Math.abs(chart.changePct).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} %`)}`}
+        </strong>
+      )}
+    </p>
+  );
+}
+
+// Те же числа таблицей — для экранного диктора (SVG он не прочитает).
+function chartData(chart) {
+  if (chart.type === "scatter") {
+    const points = chart.points || [];
+    const labelled = points.some((p) => p.label);
+    return {
+      columns: [...(labelled ? ["Подпись"] : []), chart.xTitle || "X", chart.yTitle || "Y"],
+      rows: points.map((p) => [...(labelled ? [p.label] : []), full(p.x), full(p.y)]),
+    };
+  }
+  const series = chart.series || [];
+  const unit = chart.unit ? `, ${chart.unit}` : "";
+  return {
+    columns: [chart.xTitle || "Ось X", ...series.map((s) => `${s.name}${unit}`)],
+    rows: (chart.x || []).map((x, i) => [x, ...series.map((s) => full(s.values[i]))]),
+  };
+}
+
+function ChartDataTable({ chart }) {
+  if (chart.type === "kpi" || chart.type === "table") return null;
+  const { columns, rows } = chartData(chart);
+  if (!rows.length) return null;
+  return (
+    <table className="visually-hidden">
+      <caption>{`Данные графика «${chart.title || "график"}»`}</caption>
+      <thead><tr>{columns.map((c) => <th key={c} scope="col">{c}</th>)}</tr></thead>
+      <tbody>{rows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody>
+    </table>
+  );
+}
 
 function ChartBody({ chart, fmt, width, height }) {
   if (chart.type === "line") return <LineChart chart={chart} width={width} height={height} />;
+  if (chart.type === "compare") return <LineChart chart={chart} width={width} height={height} dashes={COMPARE_DASH} />;
   if (chart.type === "bar") return <BarChart chart={chart} width={width} height={height} />;
   if (chart.type === "stacked_bar") return <BarChart chart={chart} width={width} stacked height={height} />;
   if (chart.type === "waterfall") return <Waterfall chart={chart} width={width} height={height} />;
@@ -503,19 +624,26 @@ function ChartBody({ chart, fmt, width, height }) {
   return null;
 }
 
-function FullscreenChart({ chart, fmt }) {
+function ChartLegend({ chart }) {
+  if (chart.type === "kpi" || chart.type === "table") return null;
+  return <Legend series={chart.series} lines={LINE_CHARTS.has(chart.type)} dashes={chart.type === "compare" ? COMPARE_DASH : SERIES_DASH} />;
+}
+
+function FullscreenChart({ chart, fmt, context }) {
   const [ref, width] = useWidth(900);
   const height = Math.max(320, Math.min(640, Math.round((typeof window !== "undefined" ? window.innerHeight : 800) - 220)));
   return (
     <div className="ai-chart-card full">
+      <CompareTotals chart={chart} />
       <div ref={ref} className="ai-chart-body"><ChartBody chart={chart} fmt={fmt} width={width} height={height} /></div>
-      {chart.type !== "kpi" && chart.type !== "table" && <Legend series={chart.series} />}
+      <ChartLegend chart={chart} />
       {chart.note && <div className="ai-chart-note">{chart.note}</div>}
+      <ChartCaption chart={chart} context={context} />
     </div>
   );
 }
 
-export function AiChart({ chart, fmt, download = null }) {
+export function AiChart({ chart, fmt, download = null, context = null }) {
   const [ref, width] = useWidth();
   const [full, setFull] = useState(false);
   const expandable = EXPANDABLE_CHARTS.has(chart.type);
@@ -526,12 +654,15 @@ export function AiChart({ chart, fmt, download = null }) {
         <AiDownload download={download} />
         {expandable && <AiExpandButton onClick={() => setFull(true)} />}
       </div>
+      <CompareTotals chart={chart} />
       <div ref={ref} className="ai-chart-body"><ChartBody chart={chart} fmt={fmt} width={width} /></div>
-      {chart.type !== "kpi" && chart.type !== "table" && <Legend series={chart.series} />}
+      <ChartLegend chart={chart} />
       {chart.note && <div className="ai-chart-note">{chart.note}</div>}
+      <ChartCaption chart={chart} context={context} />
+      <ChartDataTable chart={chart} />
       {full && (
         <AiFullscreen title={chart.title || "График"} onClose={() => setFull(false)}>
-          <FullscreenChart chart={chart} fmt={fmt} />
+          <FullscreenChart chart={chart} fmt={fmt} context={context} />
         </AiFullscreen>
       )}
     </figure>
@@ -745,7 +876,8 @@ export function AiAnalysis({ answer, maySeeSql, Fold, fmt, messageId = null }) {
       {analysis.headline && <p className="ai-headline">{analysis.headline}</p>}
       <Section title="Что произошло" items={analysis.happened} />
       {(answer.charts || []).map((chart) => (
-        <AiChart key={chart.id} chart={chart} fmt={fmt} download={download(`chart-${chart.id}`)} />
+        <AiChart key={chart.id} chart={chart} fmt={fmt} download={download(`chart-${chart.id}`)}
+          context={{ period: answer.plan?.period, filters: answer.plan?.filters, scope: answer.scopeLabel }} />
       ))}
       <Section title="Почему" items={analysis.why} />
       <Section title="Где именно" items={analysis.where} />

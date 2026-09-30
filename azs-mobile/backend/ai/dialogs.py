@@ -254,24 +254,31 @@ def can_start(user_id: int, role: str | None) -> None:
         conn.close()
 
 
-def create_dialog(user_id: int, title: str = "", role: str | None = None, check: bool = True) -> dict:
-    """Новый диалог. `check=False` — ответ уже получен, его нельзя потерять из-за лимита."""
+def create_dialog(user_id: int, title: str = "", role: str | None = None, check: bool = True,
+                  folder_id: int | None = None) -> dict:
+    """Новый диалог. `check=False` — ответ уже получен, его нельзя потерять из-за лимита.
+
+    `folder_id` — «Новый диалог в папке» (ИИ-11): диалог сразу в своей папке.
+    """
     now = _now()
     clean = " ".join((title or "").split())[:TITLE_LIMIT] or "Новый диалог"
     conn = _connect()
     try:
         if check:
             _check_active(conn, user_id, role)
+        if folder_id is not None:
+            _folder(conn, int(folder_id), user_id)
         cursor = conn.execute(
-            "INSERT INTO ai_dialogs (user_id, title, created_at, updated_at, owner_role) VALUES (?, ?, ?, ?, ?)",
-            (user_id, clean, now, now, role),
+            "INSERT INTO ai_dialogs (user_id, title, created_at, updated_at, owner_role, folder_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, clean, now, now, role, folder_id),
         )
         conn.commit()
         dialog_id = int(cursor.lastrowid)
     finally:
         conn.close()
     return {"id": dialog_id, "title": clean, "created_at": now, "updated_at": now,
-            "pinned": 0, "last_question": None, "messages": 0, "folder_id": None,
+            "pinned": 0, "last_question": None, "messages": 0, "folder_id": folder_id,
             "archived_at": None, "archived": False, "expires_at": None, "expires_soon": False}
 
 
@@ -558,7 +565,7 @@ def message(message_id: int, user_id: int) -> dict:
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT m.id, m.created_at, m.question, m.answer_json, m.journal_id, "
+            "SELECT m.id, m.dialog_id, m.created_at, m.question, m.answer_json, m.journal_id, "
             "       q.role, q.binding, q.actor, q.scope_label, q.sql_final "
             "FROM ai_messages m JOIN ai_dialogs d ON d.id = m.dialog_id "
             "LEFT JOIN ai_queries q ON q.id = m.journal_id "
@@ -574,8 +581,27 @@ def message(message_id: int, user_id: int) -> dict:
     except json.JSONDecodeError:
         answer = {}
     return {"id": int(row["id"]), "createdAt": int(row["created_at"]), "question": row["question"],
-            "answer": answer, "journalId": row["journal_id"],
+            "answer": answer, "journalId": row["journal_id"], "dialogId": int(row["dialog_id"]),
             "journal": {k: row[k] for k in ("role", "binding", "actor", "scope_label", "sql_final")}}
+
+
+def update_message(message_id: int, user_id: int, answer: dict, journal_id: int | None = None) -> dict:
+    """ИИ-23: план выполнен или отменён — ответ встаёт на место карточки плана того же вопроса."""
+    now = _now()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT m.id, m.dialog_id, d.title FROM ai_messages m JOIN ai_dialogs d ON d.id = m.dialog_id "
+            "WHERE m.id = ? AND d.user_id = ?", (message_id, user_id)).fetchone()
+        if row is None:
+            raise NotFound("Ответ не найден")
+        conn.execute("UPDATE ai_messages SET answer_json = ?, journal_id = COALESCE(?, journal_id) WHERE id = ?",
+                     (json.dumps(answer, ensure_ascii=False), journal_id, message_id))
+        conn.execute("UPDATE ai_dialogs SET updated_at = ?, archived_at = NULL WHERE id = ?", (now, row["dialog_id"]))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": int(message_id), "dialogId": int(row["dialog_id"]), "title": row["title"], "createdAt": now}
 
 
 def record_export(message_id: int, user_id: int, journal_id: int | None, part: str, fmt: str, row_count: int) -> None:
@@ -669,6 +695,17 @@ def set_folder_memory(folder_id: int, user_id: int, text: str, role: str | None 
     finally:
         conn.close()
     return folder_memory(folder_id, user_id, role)
+
+
+def folder_brief(folder_id: int, user_id: int) -> dict:
+    """Папка и её память для первого вопроса «Нового диалога в папке»; чужая — NotFound."""
+    conn = _connect()
+    try:
+        row = _folder(conn, int(folder_id), user_id)
+        memory = conn.execute("SELECT text FROM ai_folder_memory WHERE folder_id = ?", (int(folder_id),)).fetchone()
+    finally:
+        conn.close()
+    return {"id": int(row["id"]), "title": row["title"], "memory": (memory["text"] if memory else "") or ""}
 
 
 def dialog_folder(dialog_id: int | None, user_id: int) -> dict | None:

@@ -171,7 +171,8 @@ Add these headers on the static-file virtual host (the one serving `index.html`)
 add_header X-Content-Type-Options "nosniff" always;
 add_header X-Frame-Options "DENY" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-add_header Permissions-Policy "geolocation=(self), camera=(), microphone=()" always;
+# microphone=(self) — голосовой ввод ИИ (ИИ-01, решение Р-3): микрофон только своему сайту.
+add_header Permissions-Policy "geolocation=(self), camera=(), microphone=(self)" always;
 add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 # frame-ancestors cannot be set in a <meta> tag; it must come from this header:
 add_header Content-Security-Policy "

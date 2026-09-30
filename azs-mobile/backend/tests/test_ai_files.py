@@ -118,6 +118,15 @@ class ParseTests(unittest.TestCase):
         with self.assertRaisesRegex(file_parse.Rejected, "паролем"):
             file_parse.parse_bytes("secret.pdf", pdf_bytes(["x"], encrypt=True))
 
+    def test_question_mentions_attached_file(self):
+        for text in ("Во вложении файл с классификацией АЗС — сколько их?", "Сколько АЗС в этом файле?",
+                     "По файлу посчитай план", "Я приложил таблицу, сверь с фактом", "Из вложения возьми список",
+                     "В приложенном документе цели — кто отстаёт?", "Сравни с загруженной выгрузкой"):
+            self.assertTrue(files.mentions_file(text), text)
+        for text in ("Выгрузи топ-10 АЗС в файл", "Экспорт в Excel выручки НТУ", "Сколько АЗС в Сочи?",
+                     "Сделай таблицу по обществам", "Сохрани таблицу в Excel"):
+            self.assertFalse(files.mentions_file(text), text)
+
     def test_signature_macros_password_and_formats(self):
         with self.assertRaisesRegex(file_parse.Rejected, "не совпадает"):
             file_parse.detect("fake.pdf", b"PK\x03\x04 not a pdf")

@@ -1,0 +1,4 @@
+# ИИ-01: голосовой ввод. Ставится отдельно: ./scripts/install_speech.sh (модель ≈1,6 ГБ).
+# Мак на Apple Silicon — mlx-whisper (распознаёт на видеокарте); остальные — faster-whisper (процессор).
+mlx-whisper>=0.4.2; sys_platform == "darwin" and platform_machine == "arm64"
+faster-whisper>=1.1; sys_platform != "darwin" or platform_machine != "arm64"

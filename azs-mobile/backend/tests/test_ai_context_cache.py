@@ -21,7 +21,9 @@ BIG_SQL = 'SELECT metric_date AS "Дата", ksss AS "АЗС", revenue AS "Вы�
 
 
 def _script(sql_steps: int) -> list:
-    steps = [{"tool": "run_sql", "arguments": {"sql": BIG_SQL, "purpose": f"шаг {i + 1}"}} for i in range(sql_steps)]
+    # Запросы разные: одинаковый запрос второй раз не выполняется (запрет повторов, 28.09.2026).
+    steps = [{"tool": "run_sql", "arguments": {"sql": f"{BIG_SQL} LIMIT {1000 + i}", "purpose": f"шаг {i + 1}"}}
+             for i in range(sql_steps)]
     steps.append({"tool": "finish", "arguments": {"headline": "Итог по стенду.", "happened": [], "main_result": "r1"}})
     return steps
 
@@ -66,7 +68,7 @@ class ContextCacheTests(StandCase):
     def _run(self, steps: int, limit_chars: int | None = None):
         saved = loop.context_limit_chars
         if limit_chars is not None:
-            loop.context_limit_chars = lambda reply_tokens=None: limit_chars
+            loop.context_limit_chars = lambda reply_tokens=None, chars_per_token=None: limit_chars
         try:
             model = llm.ScriptedModel(_script(steps))
             plan = Plan(standalone_question="Выручка по дням", task_type="compare", depth="deep", steps=["a"])
@@ -97,7 +99,7 @@ class ContextCacheTests(StandCase):
         briefed = [m["content"].endswith(loop.BRIEF_MARK) for m in tools_seen]
         self.assertTrue(briefed[0])                                    # старые — сжаты
         self.assertEqual(briefed, sorted(briefed, reverse=True))       # сжато только начало, подряд
-        self.assertFalse(any(briefed[-loop.KEEP_RECENT_RESULTS:]))     # последние — целиком
+        self.assertFalse(briefed[-1])                                  # последний результат — целиком
 
     def test_trim_does_nothing_below_the_limit(self):
         messages = [{"role": "system", "content": "с"}, {"role": "user", "content": "в"},

@@ -85,6 +85,29 @@ class FilesInAgentTests(StandCase):
         self.assertNotIn("Цель на сентябрь", row[0])
         self.assertEqual(row[1], "Совещание по НТУ")
 
+    def test_question_about_missing_file_is_not_answered_from_the_stand(self):
+        # 25.09.2026: вопрос «во вложении файл…» без файла ушёл в витрину, и модель
+        # написала «в файле 3 447 АЗС». Теперь — отказ с подсказкой, модель не зовётся.
+        model = llm.ScriptedModel([])
+        pipeline.MODEL_FACTORY = lambda name: model
+        try:
+            answer = pipeline.ask("Во вложении у тебя есть файл с классификацией АЗС. Сколько АЗС в этом файле?",
+                                  "territory_manager", "ТМ Два", "test",
+                                  file_hint={"folder": None, "folders": ["Совещание по НТУ"]})
+            plain = pipeline.ask("Сколько АЗС в файле?", "territory_manager", "ТМ Два", "test")
+        finally:
+            pipeline.MODEL_FACTORY = None
+        self.assertFalse(answer.ok)
+        self.assertEqual(answer.rule, "no_file")
+        self.assertIsNone(answer.sql)
+        self.assertEqual(model.calls, [])
+        self.assertIn("«Совещание по НТУ»", answer.error)
+        self.assertIn("Новый диалог в папке", answer.error)
+        self.assertIn("скрепкой", plain.error)
+        row = sqlite3.connect(journal.JOURNAL_DB).execute(
+            "SELECT verdict, rule FROM ai_queries WHERE id = ?", (answer.journal_id,)).fetchone()
+        self.assertEqual(tuple(row), ("rejected", "no_file"))
+
     def test_tools_for_files_appear_only_with_files(self):
         self.assertIn("read_file", file_tools.TOOL_NAMES)
         brief = file_tools.brief([REPORT_FILE], None)
@@ -136,10 +159,12 @@ class FilesApiTests(StandCase):
         quotas.RUNS.reset()
         quotas.set_overrides({})
         self.seen = []
+        self.hints = []
 
         def fake_ask(question, role, binding, actor, model=None, on_stage=None, depth="auto", history=None,
-                     control=None, files=None, memory=None):
+                     control=None, files=None, memory=None, **kwargs):
             self.seen.append({"files": [f["name"] for f in files or []], "memory": memory})
+            self.hints.append(kwargs.get("file_hint"))
             return _Answer()
 
         self._ask = ai_api.pipeline.ask
@@ -201,6 +226,38 @@ class FilesApiTests(StandCase):
         self.assertEqual((folders[0]["files"], bool(folders[0]["memory"])), (1, True))
         too_long = self.client.put(f"/api/ai/folders/{folder}/memory", json={"text": "x" * 2500})
         self.assertEqual(too_long.status_code, 409)
+
+    def test_new_dialog_in_folder_uses_folder_from_the_first_question(self):
+        folder = self.client.post("/api/ai/folders", json={"title": "Совещание"}).json()["id"]
+        self.client.put(f"/api/ai/folders/{folder}/memory", json={"text": "Фокус на НТУ"})
+        self.upload("цели.txt", "Цель — 100".encode(), folderId=folder)
+        draft = self.upload("план.csv", "АЗС;План\n1001;10\n".encode()).json()
+        reply = self.client.post("/api/ai/ask", json={"question": "Итоги?", "folderId": folder,
+                                                      "fileIds": [draft["id"]]})
+        self.assertEqual(reply.status_code, 200, reply.text)
+        self.assertEqual(self.seen[-1], {"files": ["цели.txt", "план.csv"],
+                                         "memory": {"folder": "Совещание", "text": "Фокус на НТУ"}})
+        dialog = reply.json()["dialogId"]
+        opened = self.client.get(f"/api/ai/dialogs/{dialog}/messages").json()
+        self.assertEqual(opened["folder"]["id"], folder)
+        self.assertEqual([f["name"] for f in opened["files"]], ["план.csv"])
+        # Папка задана, а диалог уже есть — действует папка диалога, а не folderId.
+        self.client.post("/api/ai/ask", json={"question": "Ещё?", "dialogId": dialog, "folderId": 999})
+        self.assertEqual(self.seen[-1]["files"], ["цели.txt", "план.csv"])
+        # Чужая папка — «не найдена», вопрос не задаётся.
+        asked = len(self.seen)
+        self.user = _User(uid=8)
+        foreign = self.client.post("/api/ai/ask", json={"question": "Итоги?", "folderId": folder})
+        self.assertEqual(foreign.status_code, 404)
+        self.assertEqual(len(self.seen), asked)
+
+    def test_question_without_files_gets_hint_where_files_are(self):
+        folder = self.client.post("/api/ai/folders", json={"title": "Классификация"}).json()["id"]
+        self.upload("cls.csv", "АЗС;Город\n1001;Сочи\n".encode(), folderId=folder)
+        self.client.post("/api/ai/ask", json={"question": "Сколько АЗС в файле?"})
+        self.assertEqual(self.hints[-1], {"folder": None, "folders": ["Классификация"]})
+        self.client.post("/api/ai/ask", json={"question": "Сколько АЗС в файле?", "folderId": folder})
+        self.assertIsNone(self.hints[-1])
 
 
 if __name__ == "__main__":

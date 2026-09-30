@@ -527,7 +527,8 @@ async def add_security_headers(request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("Permissions-Policy", "geolocation=(self), camera=(), microphone=()")
+    # ИИ-01: микрофон — только своему сайту (голосовой ввод, Р-3); камера по-прежнему запрещена.
+    response.headers.setdefault("Permissions-Policy", "geolocation=(self), camera=(), microphone=(self)")
     # API endpoints return JSON only — forbid all executable content at the CSP level.
     # The frontend HTML/JS is served by the static server (Vite / nginx) and must set
     # its own, more permissive CSP that allows Yandex Maps scripts.

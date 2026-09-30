@@ -90,7 +90,9 @@ AGENT_RULES = """\
    перцентили (run_python: outliers, whatif_lift, pareto). Для сценариев показывай baseline, допущения, эффект.
 5. Python только для вычислений над уже прочитанными результатами: тренд, выбросы, разложение, сценарии.
 6. График строй только там, где он нужен: динамика — line, сравнение объектов — bar, структура —
-   stacked_bar, вклад драйверов — waterfall, связь двух показателей — scatter. Для одного числа — нет.
+   stacked_bar, вклад драйверов — waterfall, связь двух показателей — scatter; год к году или месяц
+   к месяцу — compare (x — колонка даты или месяца, series — один показатель; одинаковое число дней
+   выровняет код); итог против плана или прошлого года — kpi с base. Не больше 6 рядов. Для одного числа — нет.
 7. Не спрашивай пользователя: всё, что есть в данных, выясни сам. Если показателя нет в витрине
    (список absent) — не досчитывай его и не подменяй похожим молча: назови это в limitations.
    Если за период данных нет — так и скажи, указав доступный диапазон дат.
@@ -156,7 +158,8 @@ NOT_ASKED_NOTE = ("Рекомендаций пользователь не про
 
 
 def agent_user(question: str, plan_dict: dict, scope_label: str, today: str,
-               data_range: dict | None, hits: dict | None, budget: dict, asked: bool = False) -> str:
+               data_range: dict | None, hits: dict | None, budget: dict, asked: bool = False,
+               plan_block: str = "") -> str:
     parts = [
         f"Сегодня {today}. Область данных пользователя: {scope_label}.",
     ]
@@ -174,12 +177,17 @@ def agent_user(question: str, plan_dict: dict, scope_label: str, today: str,
             parts.append("В витрине нет: " + "; ".join(hits["absent"]) + " — учти в limitations.")
         if hits.get("people"):
             parts.append(hits["people"])
+        if hits.get("places"):
+            parts.append(hits["places"])
         if hits.get("userContext"):
             parts.append(hits["userContext"])
     parts.append(
         f"Задача: {question}\nТип: {plan_dict.get('taskType')}, глубина: {plan_dict.get('depth')}."
     )
-    if plan_dict.get("steps"):
+    if plan_block:
+        # ИИ-23: план, утверждённый пользователем, — вместо внутреннего.
+        parts.append(plan_block)
+    elif plan_dict.get("steps"):
         parts.append("План:\n" + "\n".join(f"  {i + 1}. {s}" for i, s in enumerate(plan_dict["steps"])))
     parts.append(
         f"Бюджет: до {budget['sql']} запросов SQL, {budget['python']} вычислений Python, {budget['charts']} графиков."

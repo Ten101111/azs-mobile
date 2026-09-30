@@ -35,6 +35,8 @@ from . import limit_settings
 from . import retention
 from . import journal_view, topics
 from . import file_parse, files as file_store
+from . import speech as speech_mod
+from .agent import planning
 from .catalog import CATALOG
 
 
@@ -56,6 +58,14 @@ class AskRequest(BaseModel):
     # берутся сами); ИИ-11: учитывать ли память папки в этом вопросе.
     fileIds: list[int] = Field(default_factory=list, max_length=10)
     useMemory: bool = True
+    # «Новый диалог в папке» (ИИ-11): диалога ещё нет — он создаётся в этой папке,
+    # и первый же вопрос учитывает её память и файлы. При dialogId не используется.
+    folderId: int | None = None
+    # ИИ-23: кнопка «План» — on (показать план; только «Средний» и «Высокий») или off.
+    # planFor — ответ с карточкой плана, которую человек утвердил; plan — карточка с его правками.
+    planMode: str = Field(default="off", max_length=10)
+    planFor: int | None = None
+    plan: dict | None = None
 
 
 class LimitChange(BaseModel):
@@ -148,6 +158,8 @@ class AskResponse(BaseModel):
     quota: dict | None = None
     # ИИ-07 / ИИ-11: что учёл ответ — файлы и память папки.
     context: dict = {}
+    # ИИ-23: карточка плана — проект (status draft), отменённый или итог по пунктам.
+    planCard: dict | None = None
 
 
 class Identity(BaseModel):
@@ -184,6 +196,8 @@ class StatusResponse(BaseModel):
     depths: list[dict] = []
     # Лимиты человека (ИИ-03): квота «Высокого», одновременные вопросы, длина вопроса.
     limits: dict = {}
+    # ИИ-01: голосовой ввод — есть ли движок распознавания и предел записи.
+    speech: dict = {}
 
 
 # Уровни глубины (ИИ-20, 23.09.2026). Коды прежние — fast, analyze, deep:
@@ -309,6 +323,7 @@ def _response(answer, show_sql: bool) -> "AskResponse":
         totalMs=int(getattr(answer, "total_ms", 0) or 0),
         depthRequested=getattr(answer, "depth_requested", "auto") or "auto",
         context=getattr(answer, "context", {}) or {},
+        planCard=getattr(answer, "plan_card", None),
     )
 
 
@@ -464,6 +479,7 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
             agentEnabled=pipeline.AGENT_ENABLED,
             depths=_depths_for(user) if pipeline.AGENT_ENABLED else [],
             limits=_usage(user),
+            speech=speech_mod.status(admin=impersonate),
         )
 
     @router.get("/identities")
@@ -524,6 +540,8 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
         rule = getattr(answer, "rule", None)
         if rule == "cancelled":
             status_ = "cancelled"
+        elif rule == "plan":
+            status_ = "plan"          # ИИ-23: только план — «Высокий» ещё не тратился
         elif answer.ok:
             status_ = "ok"
         else:
@@ -568,6 +586,9 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
         except dialog_store.NotFound as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
         history = []
+        # ИИ-23: невыполненный или отменённый план — не ход диалога: ответа в нём нет.
+        turns = [t for t in turns
+                 if ((t.get("answer") or {}).get("planCard") or {}).get("status") not in ("draft", "cancelled")]
         # Память диалога — по роли (ИИ-02): сколько прошлых ходов видит модель.
         memory = int(quotas.value(_own_role(user), "dialog_memory"))
         for turn in turns[-memory:]:
@@ -590,15 +611,25 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
         dialog_id = payload.dialogId
         try:
             if dialog_id is None:
-                # Лимит активных проверен до вопроса (_can_start); готовый ответ не теряем.
-                dialog_id = dialog_store.create_dialog(int(user_id), role=_own_role(user), check=False)["id"]
+                # Лимит активных проверен до вопроса (_can_start); готовый ответ не теряем:
+                # если папку успели удалить, диалог создаётся вне папки.
+                try:
+                    dialog_id = dialog_store.create_dialog(int(user_id), role=_own_role(user), check=False,
+                                                           folder_id=payload.folderId)["id"]
+                except dialog_store.NotFound:
+                    dialog_id = dialog_store.create_dialog(int(user_id), role=_own_role(user), check=False)["id"]
             if payload.fileIds:
                 # ИИ-07: черновики, приложенные к вопросу, переходят в диалог.
                 file_store.link_drafts(int(user_id), payload.fileIds, int(dialog_id))
-            stored = dialog_store.append_message(
-                int(dialog_id), int(user_id), answer.question,
-                response.model_dump(), answer.journal_id,
-            )
+            if payload.planFor:
+                # ИИ-23: ответ по утверждённому плану встаёт на место карточки плана.
+                stored = dialog_store.update_message(int(payload.planFor), int(user_id),
+                                                     response.model_dump(), answer.journal_id)
+            else:
+                stored = dialog_store.append_message(
+                    int(dialog_id), int(user_id), answer.question,
+                    response.model_dump(), answer.journal_id,
+                )
         except dialog_store.NotFound as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
         response.dialogId = stored["dialogId"]
@@ -606,20 +637,68 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
         response.dialogTitle = stored["title"]
         return response
 
+    def _plan_mode(payload: AskRequest) -> str:
+        return "on" if (payload.planMode or "").strip().lower() == "on" else "off"
+
+    def _planned(payload: AskRequest, user) -> dict | None:
+        """ИИ-23: утверждение плана — своя карточка, ещё не выполненная; правки проверяет код."""
+        if payload.planFor is None:
+            return None
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            raise HTTPException(status_code=400, detail="План доступен только в сохранённом диалоге")
+        try:
+            stored = dialog_store.message(int(payload.planFor), int(user_id))
+        except dialog_store.NotFound as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        if payload.dialogId is not None and int(payload.dialogId) != stored["dialogId"]:
+            raise HTTPException(status_code=404, detail="Ответ не найден")
+        card = (stored["answer"] or {}).get("planCard") or {}
+        if card.get("status") != "draft":
+            raise HTTPException(status_code=409, detail="Этот план уже выполнен или отменён — задайте вопрос заново.")
+        try:
+            approved, _changes = planning.validate(payload.plan or card, card)
+        except planning.PlanInvalid as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        # Вопрос и диалог — из сохранённой карточки, а не из тела запроса.
+        payload.dialogId = stored["dialogId"]
+        payload.question = stored["question"]
+        payload.fileIds = []
+        return {"approved": approved, "original": card, "journalId": stored["journalId"]}
+
+    def _plan_done(planned: dict | None, answer) -> None:
+        """В записи журнала с предложенным планом — чем он кончился."""
+        if planned and answer is not None:
+            journal.set_plan(planned["journalId"], {"proposed": planned["original"], "status": "approved",
+                                                    "run": getattr(answer, "journal_id", None)})
+
     def _context(payload: AskRequest, user) -> dict:
         """Файлы и память папки, которые учитывает вопрос (ИИ-07, ИИ-11). Только свои."""
         user_id = getattr(user, "id", None)
         if user_id is None:
-            return {"files": [], "memory": None}
-        found = file_store.for_question(int(user_id), payload.dialogId, payload.fileIds)
-        folder = dialog_store.dialog_folder(payload.dialogId, int(user_id)) if payload.useMemory else None
-        memory = {"folder": folder["title"], "text": folder["memory"]} if folder and folder["memory"] else None
-        return {"files": found, "memory": memory}
+            return {"files": [], "memory": None, "hint": None}
+        uid = int(user_id)
+        folder_id = None if payload.dialogId else payload.folderId
+        if folder_id:
+            try:
+                folder = dialog_store.folder_brief(folder_id, uid)
+            except dialog_store.NotFound as err:
+                raise HTTPException(status_code=404, detail=str(err)) from err
+        else:
+            folder = dialog_store.dialog_folder(payload.dialogId, uid)
+        found = file_store.for_question(uid, payload.dialogId, payload.fileIds, folder_id=folder_id)
+        memory = ({"folder": folder["title"], "text": folder["memory"]}
+                  if payload.useMemory and folder and folder["memory"] else None)
+        # Файлов у вопроса нет — подсказка, где они есть, если вопрос на файл ссылается.
+        hint = None if found else {"folder": folder["title"] if folder else None,
+                                    "folders": file_store.folders_with_files(uid)}
+        return {"files": found, "memory": memory, "hint": hint}
 
     @router.post("/ask", response_model=AskResponse)
     def ai_ask(payload: AskRequest, user=Depends(guard)):
         role, binding, actor = _identity(payload, user)
-        depth = _depth(payload)
+        planned = _planned(payload, user)
+        depth = planned["approved"]["depth"] if planned else _depth(payload)
         history = _history(payload, user)
         _can_start(payload, user)
         context = _context(payload, user)
@@ -630,8 +709,12 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
                 payload.question, role, binding, actor,
                 model=(payload.model or "").strip() or None,
                 depth=depth, history=history, control=quotas.Control(run),
-                files=context["files"], memory=context["memory"],
+                files=context["files"], memory=context["memory"], file_hint=context["hint"],
+                plan_mode="off" if planned else _plan_mode(payload),
+                approved=planned["approved"] if planned else None,
+                original=planned["original"] if planned else None,
             )
+            _plan_done(planned, answer)
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
         finally:
@@ -653,7 +736,8 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
         role, binding, actor = _identity(payload, user)
         show_sql = _may_see_sql(user)
         model = (payload.model or "").strip() or None
-        depth = _depth(payload)
+        planned = _planned(payload, user)
+        depth = planned["approved"]["depth"] if planned else _depth(payload)
         history = _history(payload, user)
         # Лимиты проверяются до потока: отказ приходит обычным кодом 429 / 409 с причиной.
         _can_start(payload, user)
@@ -672,9 +756,13 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
                     payload.question, role, binding, actor, model=model,
                     on_stage=lambda event: events.put(("stage", event)),
                     depth=depth, history=history, control=quotas.Control(run),
-                    files=context["files"], memory=context["memory"],
+                    files=context["files"], memory=context["memory"], file_hint=context["hint"],
+                    plan_mode="off" if planned else _plan_mode(payload),
+                    approved=planned["approved"] if planned else None,
+                    original=planned["original"] if planned else None,
                 )
                 _close(run, answer)
+                _plan_done(planned, answer)
                 if getattr(answer, "rule", None) == "cancelled":
                     # Остановленный вопрос в диалог не пишется: человек от него отказался.
                     events.put(("failed", {"detail": "Запрос остановлен", "cancelled": True}))
@@ -815,6 +903,26 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
                        "files": file_store.list_files(int(user.id), folder_id=folder["id"])} if folder else None,
         }
 
+    # --- ИИ-23: отменить предложенный план ----------------------------------------------
+    @router.post("/messages/{message_id}/plan/cancel")
+    def ai_plan_cancel(message_id: int, user=Depends(guard)):
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            raise HTTPException(status_code=400, detail="План доступен только в сохранённом диалоге")
+        try:
+            stored = dialog_store.message(message_id, int(user_id))
+        except dialog_store.NotFound as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        answer = dict(stored["answer"] or {})
+        card = answer.get("planCard") or {}
+        if card.get("status") != "draft":
+            raise HTTPException(status_code=409, detail="Этот план уже выполнен или отменён.")
+        answer["planCard"] = {**card, "status": "cancelled"}
+        answer["summary"] = "План отменён — ИИ ничего не выполнял."
+        dialog_store.update_message(message_id, int(user_id), answer)
+        journal.set_plan(stored["journalId"], {"proposed": card, "status": "cancelled"})
+        return answer
+
     # --- ИИ-07: файлы пользователя ------------------------------------------------------
     @router.post("/files")
     async def ai_file_upload(request: Request, name: str = Query(max_length=255), dialogId: int | None = None,
@@ -839,6 +947,34 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
             raise _limit(err) from err
         except dialog_store.NotFound as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
+
+    # --- ИИ-01: голосовой ввод -------------------------------------------------------------
+    @router.post("/speech")
+    async def ai_speech(request: Request, user=Depends(guard)):
+        """Запись голоса (WAV 16 кГц моно, телом запроса) → текст для поля вопроса.
+
+        Распознаёт локальная модель (backend/ai/speech.py); звук не сохраняется — ни на диск,
+        ни в журнал; в журнале ai_speech — только текст и длительность. Текст не отправляется
+        как вопрос: человек видит его в поле ввода и правит.
+        """
+        declared = int(request.headers.get("content-length") or 0)
+        if declared > speech_mod.MAX_BYTES:
+            raise HTTPException(status_code=413, detail=f"Запись длиннее {int(speech_mod.MAX_SECONDS)} секунд")
+        data = await request.body()
+        from starlette.concurrency import run_in_threadpool
+
+        actor = getattr(user, "email", "") or str(getattr(user, "id", ""))
+        role = _own_role(user)
+        try:
+            result = await run_in_threadpool(speech_mod.transcribe_wav, data)
+        except speech_mod.SpeechError as err:
+            speech_mod.log(actor=actor, role=role, error=str(err))
+            raise HTTPException(status_code=err.status, detail=str(err)) from err
+        finally:
+            del data
+        speech_mod.log(actor=actor, role=role, result=result)
+        return {"text": result.text, "seconds": result.seconds, "ms": result.ms,
+                "empty": result.empty_reason if not result.text else ""}
 
     @router.get("/files")
     def ai_file_list(dialogId: int | None = None, folderId: int | None = None, user=Depends(guard)):
@@ -1008,6 +1144,55 @@ def build_router(require_admin: Callable, require_user: Callable | None = None,
         ascii_name = f"ai-answer-{message['id']}.{fmt}"
         return Response(content=blob, media_type=ai_export_mod.FORMATS[fmt], headers={
             "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}",
+            "Cache-Control": "no-store",
+        })
+
+    @router.get("/messages/{message_id}/presentation")
+    def ai_presentation(message_id: int, user=Depends(guard)):
+        """ИИ-22 (этап 1): презентация PPTX из своего ответа — вывод, графики, таблицы, выводы, источники.
+
+        Собирает детерминированный построитель (backend/ai/slides.py) без модели: числа — из
+        сохранённых результатов ответа. SQL в презентацию не попадает ни для какой роли.
+        """
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            raise HTTPException(status_code=404, detail="Ответ не найден")
+        try:
+            from . import slides as ai_slides
+        except ImportError as err:  # python-pptx ставит npm start (scripts/run_app.py) из requirements.txt
+            raise HTTPException(status_code=503, detail="Для презентаций нужен пакет python-pptx: "
+                                                        "перезапустите приложение (npm start)") from err
+        try:
+            message = dialog_store.message(int(message_id), int(user_id))
+        except dialog_store.NotFound as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        journal_row = message["journal"]
+        role_code = journal_row.get("role") or getattr(user, "role", "") or ""
+        spec = role_model.ROLES.get(role_code)
+        binding = journal_row.get("binding") or ""
+        role_title = (spec.title if spec else (getattr(user, "roleTitle", "") or role_code or "—")) + (
+            f" ({binding})" if binding else "")
+        if "(от имени:" in (journal_row.get("actor") or ""):
+            role_title += " — вопрос задан администратором от имени этой роли"
+        answer = message["answer"] or {}
+        dialect = getattr(CATALOG, "dialect", "sqlite") or "sqlite"
+        sqls = [journal_row.get("sql_final") or "", answer.get("sql") or ""]
+        sqls += [s.get("sql") or "" for s in answer.get("steps") or []]
+        tables = sorted({t for sql in sqls for t in ai_export_mod._tables_in(sql, dialect)})
+        meta = {"role": role_title,
+                "source": ("Витрина ОХД (DWH ЛИКАРД)" if executor.BACKEND == "postgres"
+                           else "Демонстрационный стенд (SQLite)"),
+                "tables": tables, "catalog": ai_export_mod.catalog_version(CATALOG),
+                "email": getattr(user, "email", "") or ""}
+        try:
+            blob, count = ai_slides.build(message, meta)
+        except ai_slides.NotPresentable as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        dialog_store.record_export(message["id"], int(user_id), message["journalId"], "deck", "pptx", count)
+        name = ai_slides.file_name(message["id"], message.get("question") or "")
+        return Response(content=blob, media_type=ai_slides.MEDIA_TYPE, headers={
+            "Content-Disposition": f"attachment; filename=\"ai-answer-{message['id']}.pptx\"; "
+                                   f"filename*=UTF-8''{quote(name)}",
             "Cache-Control": "no-store",
         })
 

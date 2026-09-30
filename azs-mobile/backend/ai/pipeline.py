@@ -20,6 +20,7 @@ from datetime import date
 from typing import Any, Callable
 
 from . import contract, executor, generator, journal, people as people_resolver, scope as scope_builder, textstyle
+from . import places as places_resolver
 from . import limits as ai_limits
 from . import files as file_store
 from .validator import Rejected, Scope, validate
@@ -122,21 +123,32 @@ class Answer:
     eval_ms: int = 0
     load_ms: int = 0
     context_trims: int = 0
+    repeats: int = 0          # 28.09.2026: повторные вызовы инструментов, которые не выполнялись
     # ИИ-07 / ИИ-11: что учёл ответ — файлы (без содержимого) и память папки.
     context: dict = field(default_factory=dict)
+    # ИИ-23: карточка плана — проект до выполнения (status draft) или итог по пунктам.
+    plan_card: dict | None = None
+    plan_log: dict | None = None
 
 
 def ask(question: str, role: str, binding: str | None, actor: str | None = None,
         model: str | None = None,
         on_stage: Callable[[dict], None] | None = None,
         depth: str = "auto", history: list[dict] | None = None, control=None,
-        files: list[dict] | None = None, memory: dict | None = None) -> Answer:
+        files: list[dict] | None = None, memory: dict | None = None,
+        file_hint: dict | None = None, plan_mode: str = "off",
+        approved: dict | None = None, original: dict | None = None) -> Answer:
     """Ответ на вопрос с полным временем ожидания — для ориентира на уровнях.
 
     `control` — запуск из backend/ai/quotas.py: отмена человеком и место в
     очереди «Высокого»; без него (тесты, скрипты) лимитов очереди нет.
     `files` — файлы вопроса с содержимым (files.for_question), `memory` —
-    {"folder", "text"} памяти папки (ИИ-07, ИИ-11).
+    {"folder", "text"} памяти папки (ИИ-07, ИИ-11). `file_hint` — где у человека
+    лежат файлы ({"folder", "folders"}), если к вопросу их нет.
+    `plan_mode` (ИИ-23): on — кнопка «План» включена: для «Среднего» и «Высокого» сначала
+    карточка плана (у «Лёгкого» и «Авто» плана нет); off — без плана. `approved` — план, который человек утвердил
+    (после planning.validate), `original` — каким его предложил ИИ: разбор задачи не
+    повторяется, агент идёт по утверждённым пунктам.
     """
     started = time.monotonic()
     requested = (depth or "auto").strip().lower()
@@ -144,7 +156,8 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
     token = generator.USAGE.set(usage)
     try:
         answer = _ask(question, role, binding, actor, model, on_stage, depth, history, control,
-                      files=files or [], memory=memory)
+                      files=files or [], memory=memory, file_hint=file_hint, plan_mode=plan_mode,
+                      approved=approved, original=original)
     finally:
         generator.USAGE.reset(token)
     _mark_context(answer, files or [], memory)
@@ -161,10 +174,13 @@ def ask(question: str, role: str, binding: str | None, actor: str | None = None,
             stop_reason=answer.stop_reason or None, depth_requested=answer.depth_requested,
             truncated=1 if answer.truncated else 0,
             model_prompt_ms=answer.prompt_ms, model_eval_ms=answer.eval_ms, model_load_ms=answer.load_ms,
-            model_trace=json.dumps({"calls": usage["trace"], "trims": answer.context_trims}, ensure_ascii=False),
+            model_trace=json.dumps({"calls": usage["trace"], "trims": answer.context_trims,
+                                    "repeats": answer.repeats}, ensure_ascii=False),
             # ИИ-07: в журнал — имя, вид, размер и контрольная сумма файлов, не содержимое.
             files_json=json.dumps(file_store.for_journal(files), ensure_ascii=False) if files else None,
             memory_folder=(memory or {}).get("folder") or None,
+            # ИИ-23: предложенный план; для выполнения — утверждённый, правки человека и итог по пунктам.
+            plan_json=json.dumps(answer.plan_log, ensure_ascii=False) if answer.plan_log else None,
         )
     except Exception:  # noqa: BLE001 - журнал не должен ронять ответ
         pass
@@ -188,6 +204,40 @@ def _mark_context(answer: Answer, files: list[dict], memory: dict | None) -> Non
         answer.notes = notes + [n for n in answer.notes if n not in notes]
 
 
+def _plan_from_card(card: dict, question: str) -> "Plan":
+    """План агента из утверждённой карточки (ИИ-23): уровень, период, фильтры — как в разборе."""
+    from .agent.state import Plan
+
+    depth = card.get("depth") if card.get("depth") in ("analyze", "deep") else "analyze"
+    return Plan(standalone_question=card.get("standalone") or question, task_type=card.get("taskType") or "other",
+                depth=depth, steps=[s["title"] for s in card.get("subtasks") or []],
+                metrics=list(card.get("metrics") or []), period=card.get("period") or "",
+                filters=list(card.get("filters") or []), missing=list(card.get("missing") or []),
+                source="approved")
+
+
+def _no_file(question: str, scope: Scope, hint: dict | None) -> Answer:
+    """Отказ «файл к вопросу не приложен» с подсказкой, где файлы есть."""
+    hint = hint or {}
+    folders = [title for title in hint.get("folders") or [] if title != hint.get("folder")]
+    parts = ["К этому вопросу файл не приложен, поэтому посчитать по файлу нельзя, "
+             "а подменять файл данными витрины ИИ не будет."]
+    if hint.get("folder"):
+        parts.append(f"В папке «{hint['folder']}» файлов нет — добавьте файл в «Память и файлы» папки "
+                     "или приложите его к вопросу скрепкой.")
+    if folders:
+        names = ", ".join(f"«{title}»" for title in folders[:3])
+        where = "папке" if len(folders) == 1 else "папках"
+        parts.append(f"Файлы есть в {where} {names}: они учитываются только в диалогах своей папки. "
+                     "Откройте меню папки → «Новый диалог в папке» или перенесите этот диалог в папку "
+                     "(«Переместить в…»).")
+    elif not hint.get("folder"):
+        parts.append("Приложите файл скрепкой у поля ввода — PDF, DOCX, XLSX, CSV, TXT или PPTX до 20 МБ — "
+                     "и задайте вопрос ещё раз.")
+    return Answer(ok=False, question=question, scope_label=scope.label, error=" ".join(parts),
+                  rule="no_file", depth="fast")
+
+
 def _cancelled(question: str, scope: Scope, depth: str) -> Answer:
     return Answer(ok=False, question=question, scope_label=scope.label, error="Запрос остановлен",
                   rule="cancelled", depth=depth, stop_reason="cancelled")
@@ -197,7 +247,9 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
          model: str | None = None,
          on_stage: Callable[[dict], None] | None = None,
          depth: str = "auto", history: list[dict] | None = None, control=None,
-         files: list[dict] | None = None, memory: dict | None = None) -> Answer:
+         files: list[dict] | None = None, memory: dict | None = None,
+         file_hint: dict | None = None, plan_mode: str = "off",
+         approved: dict | None = None, original: dict | None = None) -> Answer:
     question = (question or "").strip()
     if not question:
         return Answer(ok=False, question="", scope_label="", error="Пустой вопрос")
@@ -219,6 +271,12 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
     from .agent import file_tools
 
     files = files or []
+    if not files and file_store.mentions_file(question):
+        # Вопрос про файл, а файла у вопроса нет: витриной его не подменяем (25.09.2026:
+        # иначе модель пишет «в файле 3 447 АЗС», посчитав справочник витрины).
+        answer = _no_file(question, scope, file_hint)
+        _log(answer, scope, role, binding, actor, "rejected")
+        return answer
     user_context = file_tools.brief(files, memory)
     if memory and not files:
         # Быстрый путь видит память папки в подсказке генератора SQL.
@@ -247,25 +305,59 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
     hits = probe.semantic.find(question)
     if context:
         hits = {**hits, "people": context}
+    # Места из вопроса (регион, общество, город) — точные значения справочника в области данных:
+    # модель не тратит ходы на их поиск (28.09.2026).
+    places = places_resolver.resolve(question, scope, catalog=probe.catalog, semantic=probe.semantic)
+    if places:
+        hits = {**hits, "places": places.prompt_block()}
     if user_context:
         hits = {**hits, "userContext": user_context}
     today = date.today().isoformat()
 
-    _notify(on_stage, "plan", "active", kind="plan")
-    try:
-        plan = agent_loop.triage(
-            question, history=history, semantic=probe.semantic, model=chat, today=today,
-            data_range=data_range, hits=hits, depth=depth,
-        )
-    except ModelUnavailable as err:
-        answer = Answer(ok=False, question=question, scope_label=scope.label,
-                        error=str(err), rule="model_unavailable", depth=depth)
-        _notify(on_stage, "plan", "failed", note="Модель недоступна", kind="plan")
-        _log(answer, scope, role, binding, actor, "model_unavailable")
-        return answer
-    plan_note = (f"Разобрал задачу: {TASK_TITLES.get(plan.task_type, plan.task_type)} · "
-                 f"уровень «{DEPTH_TITLES.get(plan.depth, plan.depth)}»")
-    _notify(on_stage, "plan", "done", ms=plan.elapsed_ms or None, note=plan_note, kind="plan")
+    from .agent import planning
+
+    if approved:
+        # ИИ-23: человек утвердил план — разбор задачи не повторяется.
+        plan = _plan_from_card(approved, question)
+        _notify(on_stage, "plan", "done", kind="plan",
+                note=f"План утверждён: {len(approved.get('subtasks') or [])} пунктов · "
+                     f"уровень «{DEPTH_TITLES.get(plan.depth, plan.depth)}»")
+    else:
+        _notify(on_stage, "plan", "active", kind="plan")
+        # План — только по кнопке и только для «Среднего» и «Высокого» (решение владельца 25.09.2026).
+        wants_plan = plan_mode == "on" and depth in ("analyze", "deep")
+        try:
+            plan = agent_loop.triage(
+                question, history=history, semantic=probe.semantic, model=chat, today=today,
+                data_range=data_range, hits=hits, depth=depth, plan_fields=wants_plan,
+            )
+        except ModelUnavailable as err:
+            answer = Answer(ok=False, question=question, scope_label=scope.label,
+                            error=str(err), rule="model_unavailable", depth=depth)
+            _notify(on_stage, "plan", "failed", note="Модель недоступна", kind="plan")
+            _log(answer, scope, role, binding, actor, "model_unavailable")
+            return answer
+        effective = "analyze" if plan.depth == "fast" and files else plan.depth
+        if wants_plan and effective != "fast":
+            # Карточка плана вместо ответа: выполнение — только после подтверждения человеком.
+            plan.depth = effective
+            card = planning.draft(plan, plan.extra)
+            answer = Answer(ok=True, question=question, scope_label=scope.label, rule="plan",
+                            depth=plan.depth, task_type=plan.task_type, plan=plan.as_dict(),
+                            plan_ms=plan.elapsed_ms, model=getattr(chat, "model", None),
+                            summary="План анализа готов: проверьте пункты и нажмите «Выполнить».")
+            answer.plan_card = card
+            answer.plan_log = {"proposed": card}
+            answer.frame = {"question": question, "standalone": plan.standalone_question or question,
+                            "taskType": plan.task_type, "metrics": plan.metrics,
+                            "period": plan.period, "filters": plan.filters}
+            _notify(on_stage, "plan", "done", ms=plan.elapsed_ms or None, kind="plan",
+                    note=f"План готов: {len(card['subtasks'])} пунктов — жду подтверждения")
+            _log(answer, scope, role, binding, actor, "plan")
+            return answer
+        plan_note = (f"Разобрал задачу: {TASK_TITLES.get(plan.task_type, plan.task_type)} · "
+                     f"уровень «{DEPTH_TITLES.get(plan.depth, plan.depth)}»")
+        _notify(on_stage, "plan", "done", ms=plan.elapsed_ms or None, note=plan_note, kind="plan")
 
     if control is not None and control.cancelled():
         answer = _cancelled(question, scope, plan.depth)
@@ -320,11 +412,22 @@ def _ask(question: str, role: str, binding: str | None, actor: str | None = None
                        if run_limits.sql_timeout_s else None),
             scope_label=scope.label, today=today, data_range=data_range, hits=hits, limits=run_limits,
             should_stop=control.cancelled if control is not None else None, files=files,
+            plan_card=approved,
         )
     finally:
         if entered:
             control.leave_deep()
     answer = _from_outcome(question, scope, outcome, plan)
+    if approved:
+        # Итог по пунктам плана: выполнен, не удался, пропущен — с причиной (ИИ-23).
+        card = planning.progress(approved, answer.steps, outcome.deviations, finished=outcome.ok,
+                                 stop_reason=outcome.stop_reason)
+        card["changes"] = planning.changes(original or approved, approved)
+        answer.plan_card = card
+        answer.plan_log = {"proposed": original, "approved": approved, "changes": card["changes"],
+                           "done": card["done"], "total": len(card["subtasks"]),
+                           "result": [{"title": s["title"], "status": s["status"], "note": s.get("note", "")}
+                                      for s in card["subtasks"]], "extra": card.get("extra", [])}
     front = [note for note in (person_note, level_note, file_note) if note]
     if front:
         answer.notes = front + list(answer.notes)
@@ -434,6 +537,12 @@ def _ask_fast(question: str, model_question: str, scope: Scope, role: str, bindi
         answer.frame = {"question": question, "standalone": model_question,
                         "sql": " ".join(checked.sql.split())[:400],
                         "headline": summary[:240], "columns": list(answer.columns)[:8]}
+        if not no_data:
+            # ИИ-17: простой график и на «Лёгком» — код строит его из того же результата, без модели.
+            from .agent import charts as agent_charts
+
+            chart = agent_charts.auto_chart(answer.columns, answer.rows, source="r1")
+            answer.charts = [chart] if chart else []
         _log(answer, scope, role, binding, actor, "ok")
         return answer
 
@@ -489,6 +598,7 @@ def _from_outcome(question: str, scope: Scope, outcome, plan) -> Answer:
     answer.stop_reason = getattr(outcome, "stop_reason", "") or ""
     answer.tool_calls = int(getattr(outcome, "tool_calls", 0) or 0)
     answer.context_trims = int(getattr(outcome, "context_trims", 0) or 0)
+    answer.repeats = int(getattr(outcome, "repeats", 0) or 0)
     workspace = outcome.workspace
     answer.charts = list(workspace.charts)
     answer.steps = [step.public(with_code=True) for step in workspace.steps]
